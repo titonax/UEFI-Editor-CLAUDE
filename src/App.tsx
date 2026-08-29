@@ -1,6 +1,6 @@
 import React from "react";
 import s from "./App.module.css";
-import { useImmer } from "use-immer";
+import { useImmer, type Updater } from "use-immer";
 import { AppShell, Button, Group, Stack } from "@mantine/core";
 import type { Data } from "./components/scripts/types";
 import FileUploads, {
@@ -23,13 +23,29 @@ export default function App() {
     setupdataBinContainer: { isWrongFile: false },
   });
 
-  const [data, setData] = useImmer<Data>({} as Data);
+  const [data, setData] = useImmer<Data | null>(null);
+
+  // Children only ever see setLoadedData once `data` is confirmed non-null
+  // (they're rendered inside the `data ?` branch below), so it's typed as
+  // Updater<Data> for them - no `{} as Data` placeholder and no casts here.
+  const setLoadedData: Updater<Data> = (recipe) => {
+    setData((draft) => {
+      if (draft === null) {
+        return;
+      }
+      if (typeof recipe === "function") {
+        recipe(draft);
+      } else {
+        return recipe;
+      }
+    });
+  };
 
   const [currentFormIndex, setCurrentFormIndex] = React.useState(-1);
 
   return (
     <>
-      {Object.values(data).length !== 0 ? (
+      {data ? (
         <>
           <AppShell.Navbar>
             <Navigation
@@ -50,13 +66,13 @@ export default function App() {
               currentFormIndex={currentFormIndex}
               files={files as PopulatedFiles}
               data={data}
-              setData={setData}
+              setData={setLoadedData}
             />
           </AppShell.Footer>
           <AppShell.Main>
             <FormUi
               data={data}
-              setData={setData}
+              setData={setLoadedData}
               currentFormIndex={currentFormIndex}
               setCurrentFormIndex={setCurrentFormIndex}
             />
@@ -69,10 +85,14 @@ export default function App() {
               setFiles(extractedFiles);
               const parsed = await parseData(extractedFiles);
               parsed.firmwareFamily = "aptio-iv";
-              setData(parsed);
+              setLoadedData(parsed);
             }}
           />
-          <FileUploads files={files} setFiles={setFiles} setData={setData} />
+          <FileUploads
+            files={files}
+            setFiles={setFiles}
+            setData={setLoadedData}
+          />
           <Group justify="center">
             <Button
               variant="default"

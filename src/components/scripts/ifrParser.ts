@@ -438,6 +438,22 @@ function enrichConditions(
   }
 }
 
+// The line-by-line loop below tracks "the opcode currently being built" for
+// each prompt kind in a `current*` variable, reassigned whenever its own
+// opcode line is matched and read only while a corresponding scope sits on
+// `scopes` - which is only pushed right after the matching assignment. That
+// makes them non-null by construction at every read, but TypeScript can't
+// see across the scope stack to prove it; this turns a violation into a
+// clear error instead of a confusing "reading property of null" crash.
+function requireCurrent<T>(value: T | null): T {
+  if (value === null) {
+    throw new Error(
+      "Something went wrong. Please file a bug report on Github.",
+    );
+  }
+  return value;
+}
+
 export async function parseData(files: PopulatedFiles) {
   const [setupTxtHash, setupSctHash, amitseSctHash, setupdataBinHash] =
     await Promise.all([
@@ -490,11 +506,11 @@ export async function parseData(files: PopulatedFiles) {
   const forms: Forms = [];
   const suppressions: Suppression[] = [];
   const scopes: Scopes = [];
-  let currentForm: Form = {} as Form;
-  let currentString: StringPrompt = {} as StringPrompt;
-  let currentOneOf: OneOfPrompt = {} as OneOfPrompt;
-  let currentNumeric: NumericPrompt = {} as NumericPrompt;
-  let currentCheckBox: CheckBoxPrompt = {} as CheckBoxPrompt;
+  let currentForm: Form | null = null;
+  let currentString: StringPrompt | null = null;
+  let currentOneOf: OneOfPrompt | null = null;
+  let currentNumeric: NumericPrompt | null = null;
+  let currentCheckBox: CheckBoxPrompt | null = null;
 
   const currentSuppressions: Suppression[] = [];
 
@@ -646,16 +662,17 @@ export async function parseData(files: PopulatedFiles) {
 
       checkConditions(scopes, currentRef);
 
-      currentForm.children.push(currentRef);
+      const form = requireCurrent(currentForm);
+      form.children.push(currentRef);
 
       const referenceKey = formReferenceKey(
         formId,
-        targetFormSetGuid ?? currentForm.formSetGuid,
+        targetFormSetGuid ?? form.formSetGuid,
       );
       if (referenceKey in references) {
-        references[referenceKey].add(currentForm.formId);
+        references[referenceKey].add(form.formId);
       } else {
-        references[referenceKey] = new Set([currentForm.formId]);
+        references[referenceKey] = new Set([form.formId]);
       }
     }
 
@@ -797,7 +814,7 @@ export async function parseData(files: PopulatedFiles) {
       oneOfOption &&
       (currentScope.type === "OneOf" || isConditionKind(currentScope.type))
     ) {
-      currentOneOf.options.push({
+      requireCurrent(currentOneOf).options.push({
         option: oneOfOption[1],
         value: oneOfOption[2],
       });
@@ -811,14 +828,17 @@ export async function parseData(files: PopulatedFiles) {
         };
 
         if (currentScope.type === "Numeric") {
-          currentNumeric.defaults ??= [];
-          currentNumeric.defaults.push(oneDefault);
+          const numeric = requireCurrent(currentNumeric);
+          numeric.defaults ??= [];
+          numeric.defaults.push(oneDefault);
         } else if (currentScope.type === "CheckBox") {
-          currentCheckBox.defaults ??= [];
-          currentCheckBox.defaults.push(oneDefault);
+          const checkBoxPrompt = requireCurrent(currentCheckBox);
+          checkBoxPrompt.defaults ??= [];
+          checkBoxPrompt.defaults.push(oneDefault);
         } else if (currentScope.type === "OneOf") {
-          currentOneOf.defaults ??= [];
-          currentOneOf.defaults.push(oneDefault);
+          const oneOfPrompt = requireCurrent(currentOneOf);
+          oneOfPrompt.defaults ??= [];
+          oneOfPrompt.defaults.push(oneDefault);
         }
       }
 
@@ -826,15 +846,23 @@ export async function parseData(files: PopulatedFiles) {
         const scopeType = currentScope.type;
 
         if (scopeType === "Form") {
-          forms.push(currentForm);
+          forms.push(requireCurrent(currentForm));
         } else if (scopeType === "Numeric") {
-          currentForm.children.push(currentNumeric);
+          requireCurrent(currentForm).children.push(
+            requireCurrent(currentNumeric),
+          );
         } else if (scopeType === "CheckBox") {
-          currentForm.children.push(currentCheckBox);
+          requireCurrent(currentForm).children.push(
+            requireCurrent(currentCheckBox),
+          );
         } else if (scopeType === "OneOf") {
-          currentForm.children.push(currentOneOf);
+          requireCurrent(currentForm).children.push(
+            requireCurrent(currentOneOf),
+          );
         } else if (scopeType === "String") {
-          currentForm.children.push(currentString);
+          requireCurrent(currentForm).children.push(
+            requireCurrent(currentString),
+          );
         } else {
           const latestSuppression = currentSuppressions.pop();
 
