@@ -1,4 +1,5 @@
 import type { Data, VisibilityStatus } from "../scripts/types";
+import { normalizedHexId } from "../scripts/hexId";
 import {
   childVisibility,
   combineVisibility,
@@ -62,21 +63,16 @@ export interface MenuTree {
   signature: string;
 }
 
-function normalizedFormId(formId: string) {
-  const parsed = parseInt(formId);
-  return Number.isNaN(parsed) ? formId : String(parsed);
-}
-
 function sameGuid(left?: string, right?: string) {
   return (left ?? "").toLowerCase() === (right ?? "").toLowerCase();
 }
 
 function findFormIndex(data: Data, formId: string, formSetGuid?: string) {
-  const normalized = normalizedFormId(formId);
+  const normalized = normalizedHexId(formId);
   const inFormSet = data.forms.findIndex(
     (form) =>
       sameGuid(form.formSetGuid, formSetGuid) &&
-      normalizedFormId(form.formId) === normalized,
+      normalizedHexId(form.formId) === normalized,
   );
 
   if (inFormSet >= 0) {
@@ -84,7 +80,7 @@ function findFormIndex(data: Data, formId: string, formSetGuid?: string) {
   }
 
   return data.forms.findIndex(
-    (form) => normalizedFormId(form.formId) === normalized,
+    (form) => normalizedHexId(form.formId) === normalized,
   );
 }
 
@@ -288,7 +284,7 @@ export function buildMenuTree(data: Data): MenuTree {
               reference.formId,
               targetFormSetGuid,
             );
-            const childKey = `${key}/ref-${String(childIndex)}-${normalizedFormId(
+            const childKey = `${key}/ref-${String(childIndex)}-${normalizedHexId(
               reference.formId,
             )}`;
             const visibility = childVisibility(data, reference);
@@ -425,7 +421,7 @@ export function buildMenuTree(data: Data): MenuTree {
 
       if (formIndex < 0) {
         return {
-          key: `root-${String(menuIndex)}-${normalizedFormId(entry.formId)}`,
+          key: `root-${String(menuIndex)}-${normalizedHexId(entry.formId)}`,
           label: entry.name || `Missing root ${entry.formId}`,
           formName: "Menu root target was not found",
           formId: entry.formId,
@@ -452,7 +448,7 @@ export function buildMenuTree(data: Data): MenuTree {
       const form = data.forms[formIndex];
       return buildFormNode(
         formIndex,
-        `root-${String(menuIndex)}-${normalizedFormId(entry.formId)}`,
+        `root-${String(menuIndex)}-${normalizedHexId(entry.formId)}`,
         entry.name.length > 0
           ? entry.name
           : (form.formSetTitle ?? form.name),
@@ -593,11 +589,11 @@ export function buildMenuTree(data: Data): MenuTree {
     ...orphans.map((node) => node.key),
     ...data.forms.map(
       (form) =>
-        `${form.formSetGuid ?? ""}:${normalizedFormId(form.formId)}:${form.children
+        `${form.formSetGuid ?? ""}:${normalizedHexId(form.formId)}:${form.children
           .filter((child) => child.type === "Ref")
           .map(
             (child) =>
-              `${child.targetFormSetGuid ?? form.formSetGuid ?? ""}:${normalizedFormId(child.formId)}`,
+              `${child.targetFormSetGuid ?? form.formSetGuid ?? ""}:${normalizedHexId(child.formId)}`,
           )
           .join(",")}`,
     ),

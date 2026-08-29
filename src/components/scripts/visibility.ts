@@ -1,3 +1,4 @@
+import { normalizedHexId } from "./hexId";
 import type {
   ConditionSource,
   Data,
@@ -168,28 +169,23 @@ function emptySourceCounts(): ConditionSourceCounts {
   };
 }
 
-function normalizedFormId(formId: string) {
-  const parsed = parseInt(formId);
-  return Number.isNaN(parsed) ? formId : String(parsed);
-}
-
 function findReferencedForm(
   data: Data,
   formId: string,
   formSetGuid?: string,
 ) {
-  const normalized = normalizedFormId(formId);
+  const normalized = normalizedHexId(formId);
   const inFormSet = data.forms.findIndex(
     (form) =>
       (form.formSetGuid ?? "").toLowerCase() ===
         (formSetGuid ?? "").toLowerCase() &&
-      normalizedFormId(form.formId) === normalized,
+      normalizedHexId(form.formId) === normalized,
   );
 
   return inFormSet >= 0
     ? inFormSet
     : data.forms.findIndex(
-        (form) => normalizedFormId(form.formId) === normalized,
+        (form) => normalizedHexId(form.formId) === normalized,
       );
 }
 

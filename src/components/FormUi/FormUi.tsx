@@ -21,6 +21,7 @@ import type {
   VisibilityStatus,
 } from "../scripts/types";
 import { validateByteInput } from "../scripts/scripts";
+import { sameHexId } from "../scripts/hexId";
 import SearchUi from "./SearchUi/SearchUi";
 import {
   childVisibility,
@@ -351,19 +352,19 @@ const TableRow = React.memo(
                     .split("<br>")
                     .filter((line) => line !== "")
                     .map((line, index) => (
-                      <div key={index.toString() + line.slice(0, 10)}>
-                        {line}
-                      </div>
+                      // Static, stateless text rows recomputed from `child`
+                      // on every render - never reordered or animated, so
+                      // an index key is safe here.
+                      // eslint-disable-next-line react-x/no-array-index-key
+                      <div key={index}>{line}</div>
                     ))}
                 </div>
               )}
               {info.length > 0 && (
                 <div>
                   {info.map((item, index) => (
-                    <div
-                      key={index.toString() + item.toString().slice(0, 10)}
-                      className={s.infoRow}
-                    >
+                    // eslint-disable-next-line react-x/no-array-index-key -- static, stateless rows recomputed on every render
+                    <div key={index} className={s.infoRow}>
                       {item[0] === "newline" ? (
                         <br />
                       ) : (
@@ -388,27 +389,26 @@ const TableRow = React.memo(
     const newChild =
       newProps.data.forms[newProps.currentFormIndex].children[newProps.index];
 
-    return (
-      oldChild.accessLevel === newChild.accessLevel &&
-      oldChild.failsafe === newChild.failsafe &&
-      oldChild.optimal === newChild.optimal &&
-      JSON.stringify(
-        (oldChild.conditions ?? oldChild.suppressIf ?? []).map(
-          (offset) =>
-            oldProps.data.suppressions.find(
-              (suppression) => suppression.offset === offset
-            )?.active
-        )
-      ) ===
-        JSON.stringify(
-          (newChild.conditions ?? newChild.suppressIf ?? []).map(
-            (offset) =>
-              newProps.data.suppressions.find(
-                (suppression) => suppression.offset === offset
-              )?.active
-          )
-        )
-    );
+    if (
+      oldChild.accessLevel !== newChild.accessLevel ||
+      oldChild.failsafe !== newChild.failsafe ||
+      oldChild.optimal !== newChild.optimal
+    ) {
+      return false;
+    }
+
+    // The offset list itself is fixed at parse time; only a referenced
+    // suppression's `active` flag can change between renders.
+    const offsets = oldChild.conditions ?? oldChild.suppressIf ?? [];
+    return offsets.every((offset) => {
+      const wasActive = oldProps.data.suppressions.find(
+        (suppression) => suppression.offset === offset,
+      )?.active;
+      const isActive = newProps.data.suppressions.find(
+        (suppression) => suppression.offset === offset,
+      )?.active;
+      return wasActive === isActive;
+    });
   }
 );
 
@@ -437,13 +437,11 @@ export default function FormUi({
     let formIndex = data.forms.findIndex(
       (form) =>
         form.formSetGuid === sourceFormSetGuid &&
-        parseInt(form.formId) === parseInt(formId),
+        sameHexId(form.formId, formId),
     );
 
     if (formIndex < 0) {
-      formIndex = data.forms.findIndex(
-        (form) => parseInt(form.formId) === parseInt(formId),
-      );
+      formIndex = data.forms.findIndex((form) => sameHexId(form.formId, formId));
     }
 
     if (formIndex >= 0) {
@@ -476,9 +474,7 @@ export default function FormUi({
         </Table.Thead>
         <Table.Tbody>
           {data.menu.map((entry, index) => (
-            <Table.Tr
-              key={index.toString() + (entry.offset ?? "readonly") + entry.formId}
-            >
+            <Table.Tr key={`${entry.formSetGuid ?? ""}:${entry.formId}`}>
               <Table.Td
                 className={s.pointer}
                 onClick={() => {
@@ -504,13 +500,13 @@ export default function FormUi({
 
                     setData((draft) => {
                       draft.menu[index].formId = value;
-                      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/no-non-null-asserted-optional-chain
-                      draft.menu[index].name = data.forms.find(
+                      const matchedForm = data.forms.find(
                         (form) =>
                           (!entry.formSetGuid ||
                             form.formSetGuid === entry.formSetGuid) &&
-                          parseInt(form.formId) === parseInt(value),
-                      )?.name!;
+                          sameHexId(form.formId, value),
+                      );
+                      draft.menu[index].name = matchedForm?.name ?? entry.name;
                     });
                   }}
                 />
@@ -739,7 +735,7 @@ export default function FormUi({
       <Table.Tbody className={s.striped}>
         {data.forms[currentFormIndex].children.map((child, index) => (
           <TableRow
-            key={index.toString() + child.questionId}
+            key={`${child.type}:${child.questionId}`}
             child={child}
             index={index}
             handleRefClick={handleRefClick}

@@ -1,5 +1,6 @@
 import { saveAs } from "file-saver";
 import type { PopulatedFiles } from "../FileUploads/FileUploads";
+import { parseHexId, sameHexId } from "./hexId";
 import type {
   CheckBoxPrompt,
   ConditionKind,
@@ -89,7 +90,7 @@ function decToHexString(decimal: number) {
 }
 
 function formReferenceKey(formId: string, formSetGuid?: string) {
-  return `${formSetGuid ?? ""}:${String(parseInt(formId))}`;
+  return `${formSetGuid ?? ""}:${String(parseHexId(formId))}`;
 }
 
 function reversedHexBytes(value: string) {
@@ -186,11 +187,8 @@ function findVarStoreName(
     varStores.find(
       (varStore) =>
         varStore.formSetGuid === formSetGuid &&
-        parseInt(varStore.varStoreId) === parseInt(varStoreId),
-    ) ??
-    varStores.find(
-      (varStore) => parseInt(varStore.varStoreId) === parseInt(varStoreId),
-    )
+        sameHexId(varStore.varStoreId, varStoreId),
+    ) ?? varStores.find((varStore) => sameHexId(varStore.varStoreId, varStoreId))
   )?.name;
 }
 
@@ -220,6 +218,37 @@ function checkConditions(scopes: Scopes, formChild: FormChildren) {
   }
 }
 
+// The AMI SetupData "question metadata" record for a HII question is
+// anchored by that question's own VarOffset/QuestionId byte pairs (passed
+// in as `bytes`, taken from byteArray[2..3]/[4..5]/[6..7]). Relative to
+// where that anchor pattern starts in SetupData, the record also carries a
+// page id, the AMI access-level byte, and further along the failsafe and
+// optimal default bytes. These gaps were reverse-engineered from firmware
+// images (there is no public spec for this layout); they are expressed as
+// named lengths so the regex and the resulting byte offsets can never
+// drift out of sync with each other.
+const ANCHOR_PAIR_HEX_CHARS = 4; // two hex bytes, e.g. byteArray[6] + byteArray[7]
+const PAGE_ID_HEX_CHARS = 4;
+const ACCESS_LEVEL_HEX_CHARS = 2;
+const FAILSAFE_HEX_CHARS = 2;
+
+const GAP_ANCHOR67_TO_PAGE_ID = 20;
+const GAP_PAGE_ID_TO_ACCESS_LEVEL = 4;
+const GAP_ACCESS_LEVEL_TO_ANCHOR45 = 6;
+const GAP_ANCHOR45_TO_ANCHOR23 = 52;
+const GAP_ANCHOR23_TO_FAILSAFE = 4;
+
+const PAGE_ID_OFFSET = ANCHOR_PAIR_HEX_CHARS + GAP_ANCHOR67_TO_PAGE_ID;
+const ACCESS_LEVEL_OFFSET =
+  PAGE_ID_OFFSET + PAGE_ID_HEX_CHARS + GAP_PAGE_ID_TO_ACCESS_LEVEL;
+const ANCHOR45_OFFSET =
+  ACCESS_LEVEL_OFFSET + ACCESS_LEVEL_HEX_CHARS + GAP_ACCESS_LEVEL_TO_ANCHOR45;
+const ANCHOR23_OFFSET =
+  ANCHOR45_OFFSET + ANCHOR_PAIR_HEX_CHARS + GAP_ANCHOR45_TO_ANCHOR23;
+const FAILSAFE_OFFSET =
+  ANCHOR23_OFFSET + ANCHOR_PAIR_HEX_CHARS + GAP_ANCHOR23_TO_FAILSAFE;
+const OPTIMAL_OFFSET = FAILSAFE_OFFSET + FAILSAFE_HEX_CHARS;
+
 function getAdditionalData(
   bytes: string,
   hexSetupdataBin: string,
@@ -235,13 +264,15 @@ function getAdditionalData(
   const regex = new RegExp(
     byteArray[6] +
       byteArray[7] +
-      ".{20}(....).{4}(..).{6}" +
+      `.{${String(GAP_ANCHOR67_TO_PAGE_ID)}}(....).{${String(
+        GAP_PAGE_ID_TO_ACCESS_LEVEL,
+      )}}(..).{${String(GAP_ACCESS_LEVEL_TO_ANCHOR45)}}` +
       byteArray[4] +
       byteArray[5] +
-      ".{52}" +
+      `.{${String(GAP_ANCHOR45_TO_ANCHOR23)}}` +
       byteArray[2] +
       byteArray[3] +
-      ".{4}(..)(..)",
+      `.{${String(GAP_ANCHOR23_TO_FAILSAFE)}}(..)(..)`,
     "g",
   );
 
@@ -254,13 +285,13 @@ function getAdditionalData(
     const index = match.index;
 
     const offsets: Offsets = {
-      accessLevel: decToHexString((index + 32) / 2),
-      failsafe: decToHexString((index + 104) / 2),
-      optimal: decToHexString((index + 106) / 2),
+      accessLevel: decToHexString((index + ACCESS_LEVEL_OFFSET) / 2),
+      failsafe: decToHexString((index + FAILSAFE_OFFSET) / 2),
+      optimal: decToHexString((index + OPTIMAL_OFFSET) / 2),
     };
 
     if (isRef) {
-      offsets.pageId = decToHexString((index + 24) / 2);
+      offsets.pageId = decToHexString((index + PAGE_ID_OFFSET) / 2);
     }
 
     return {
@@ -385,18 +416,19 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
       const oldFormId = decToHexString(
         parseInt(oldValue.slice(-2) + oldValue.slice(-4, -2), 16),
       );
+      const oldForm = data.forms.find((form) =>
+        sameHexId(form.formId, oldFormId),
+      );
+      const newForm = data.forms.find((form) =>
+        sameHexId(form.formId, entry.formId),
+      );
+      if (!oldForm || !newForm) {
+        throw new Error(
+          "Something went wrong. Please file a bug report on Github.",
+        );
+      }
 
-      amitseSctChangeLog += `${
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        data.forms.find(
-          (form) => parseInt(form.formId) === parseInt(oldFormId),
-        )!.name
-      } | FormId ${oldFormId} -> ${
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        data.forms.find(
-          (form) => parseInt(form.formId) === parseInt(entry.formId),
-        )!.name
-      } | FormId ${entry.formId}\n`;
+      amitseSctChangeLog += `${oldForm.name} | FormId ${oldFormId} -> ${newForm.name} | FormId ${entry.formId}\n`;
 
       wasAmitseSctModified = true;
     }
@@ -650,7 +682,7 @@ function enrichConditions(
   for (const form of forms) {
     for (const child of form.children) {
       prompts.set(
-        `${form.formSetGuid ?? ""}:${String(parseInt(child.questionId))}`,
+        `${form.formSetGuid ?? ""}:${String(parseHexId(child.questionId))}`,
         child,
       );
     }
@@ -660,7 +692,7 @@ function enrichConditions(
     const referenced = (condition.questionIds ?? [])
       .map((questionId) =>
         prompts.get(
-          `${condition.formSetGuid ?? ""}:${String(parseInt(questionId))}`,
+          `${condition.formSetGuid ?? ""}:${String(parseHexId(questionId))}`,
         ),
       )
       .filter((child): child is FormChildren => child !== undefined);
@@ -669,7 +701,7 @@ function enrichConditions(
         const varStore = varStores.find(
           (candidate) =>
             candidate.formSetGuid === condition.formSetGuid &&
-            parseInt(candidate.varStoreId) === parseInt(varStoreId),
+            sameHexId(candidate.varStoreId, varStoreId),
         );
         return varStore !== undefined ? [{ varStoreId, varStore }] : [];
       },
@@ -1190,11 +1222,8 @@ export async function parseData(files: PopulatedFiles) {
         forms.find(
           (form) =>
             form.formSetGuid === formSet?.guid &&
-            parseInt(form.formId) === parseInt(hexEntry),
-        ) ??
-        forms.find(
-          (form) => parseInt(form.formId) === parseInt(hexEntry),
-        );
+            sameHexId(form.formId, hexEntry),
+        ) ?? forms.find((form) => sameHexId(form.formId, hexEntry));
       return {
         name: matchedForm?.name ?? formSet?.title ?? "",
         formId: hexEntry,
