@@ -238,31 +238,49 @@ function inferMenuProfiles(roots: MenuTreeNode[]): MenuProfile[] {
   });
 }
 
+interface BuildFormNodeOptions {
+  formIndex: number;
+  key: string;
+  label: string;
+  ancestors: Set<number>;
+  inheritedStatus: VisibilityStatus;
+  reachability: ReachabilityStatus;
+  conditionPath?: string[];
+  hardwareDependent?: boolean;
+  accessDependent?: boolean;
+  uiStateDependent?: boolean;
+  statusLabel?: string;
+  reachabilityLabel?: string;
+  rootSource?: RootSource;
+  pageMask?: string;
+  parentageLabel?: string;
+}
+
 export function buildMenuTree(data: Data): MenuTree {
   const reachable = new Set<number>();
   const expandableKeys: string[] = [];
   const firstKeyByFormIndex = new Map<number, string>();
 
-  function buildFormNode(
-    formIndex: number,
-    key: string,
-    label: string,
-    ancestors: Set<number>,
-    inheritedStatus: VisibilityStatus,
-    reachability: ReachabilityStatus,
-    conditionPath: string[] = [],
-    hardwareDependent = false,
-    accessDependent = false,
-    uiStateDependent = false,
-    statusLabel = visibilityLabel(inheritedStatus),
-    reachabilityLabel =
-      reachability === "detached"
+  function buildFormNode(options: BuildFormNodeOptions): MenuTreeNode {
+    const {
+      formIndex,
+      key,
+      label,
+      ancestors,
+      inheritedStatus,
+      reachability,
+      conditionPath = [],
+      hardwareDependent = false,
+      accessDependent = false,
+      uiStateDependent = false,
+      statusLabel = visibilityLabel(inheritedStatus),
+      reachabilityLabel = reachability === "detached"
         ? "Detached descendant"
         : "Reachable from menu",
-    rootSource?: RootSource,
-    pageMask?: string,
-    parentageLabel = "No incoming IFR reference was found.",
-  ): MenuTreeNode {
+      rootSource,
+      pageMask,
+      parentageLabel = "No incoming IFR reference was found.",
+    } = options;
     const form = data.forms[formIndex];
     const cycle = ancestors.has(formIndex);
     reachable.add(formIndex);
@@ -336,25 +354,29 @@ export function buildMenuTree(data: Data): MenuTree {
               inheritedStatus,
               visibility.status,
             );
-            return buildFormNode(
-              targetIndex,
-              childKey,
-              reference.name.length > 0 ? reference.name : target.name,
-              nextAncestors,
-              status,
-              reachability === "detached" ? "detached" : "reachable",
-              nextConditionPath,
-              nextHardwareDependent,
-              nextAccessDependent,
-              nextUiStateDependent,
-              inheritedStatusLabel(status, visibility.status, visibility.label),
-              reachability === "detached"
-                ? "Detached descendant"
-                : "Reachable through Ref",
-              undefined,
-              undefined,
-              `Referenced by ${form.name || form.formId} through an IFR Ref opcode.`,
-            );
+            return buildFormNode({
+              formIndex: targetIndex,
+              key: childKey,
+              label: reference.name.length > 0 ? reference.name : target.name,
+              ancestors: nextAncestors,
+              inheritedStatus: status,
+              reachability:
+                reachability === "detached" ? "detached" : "reachable",
+              conditionPath: nextConditionPath,
+              hardwareDependent: nextHardwareDependent,
+              accessDependent: nextAccessDependent,
+              uiStateDependent: nextUiStateDependent,
+              statusLabel: inheritedStatusLabel(
+                status,
+                visibility.status,
+                visibility.label,
+              ),
+              reachabilityLabel:
+                reachability === "detached"
+                  ? "Detached descendant"
+                  : "Reachable through Ref",
+              parentageLabel: `Referenced by ${form.name || form.formId} through an IFR Ref opcode.`,
+            });
           })
           .filter((node): node is MenuTreeNode => node !== null);
 
@@ -452,27 +474,25 @@ export function buildMenuTree(data: Data): MenuTree {
       }
 
       const form = data.forms[formIndex];
-      return buildFormNode(
+      return buildFormNode({
         formIndex,
-        `root-${String(menuIndex)}-${normalizedHexId(entry.formId)}`,
-        entry.name.length > 0
-          ? entry.name
-          : (form.formSetTitle ?? form.name),
-        new Set(),
-        "visible",
-        "root",
-        [],
-        false,
-        false,
-        false,
-        "No visibility gate",
+        key: `root-${String(menuIndex)}-${normalizedHexId(entry.formId)}`,
+        label:
+          entry.name.length > 0
+            ? entry.name
+            : (form.formSetTitle ?? form.name),
+        ancestors: new Set(),
+        inheritedStatus: "visible",
+        reachability: "root",
+        statusLabel: "No visibility gate",
         reachabilityLabel,
         rootSource,
-        entry.pageMask,
-        rootSource === "setupdata"
-          ? `Registered as a top-level AMITSE SetupData page${entry.pageMask ? ` with mask ${entry.pageMask}` : ""}. It has ${String(form.referencedIn.length)} incoming and ${String(form.children.filter((child) => child.type === "Ref").length)} outgoing IFR Ref(s); its parent is the AMITSE menu profile, not another HII form.`
-          : "Registered as a top-level menu entry; it does not require an IFR Ref parent.",
-      );
+        pageMask: entry.pageMask,
+        parentageLabel:
+          rootSource === "setupdata"
+            ? `Registered as a top-level AMITSE SetupData page${entry.pageMask ? ` with mask ${entry.pageMask}` : ""}. It has ${String(form.referencedIn.length)} incoming and ${String(form.children.filter((child) => child.type === "Ref").length)} outgoing IFR Ref(s); its parent is the AMITSE menu profile, not another HII form.`
+            : "Registered as a top-level menu entry; it does not require an IFR Ref parent.",
+      });
     })
     .filter((node): node is MenuTreeNode => node !== null);
 
@@ -480,23 +500,19 @@ export function buildMenuTree(data: Data): MenuTree {
     for (const [formIndex, form] of data.forms.entries()) {
       if (form.referencedIn.length === 0 && !reachable.has(formIndex)) {
         roots.push(
-          buildFormNode(
+          buildFormNode({
             formIndex,
-            `root-fallback-${String(formIndex)}`,
-            form.formSetTitle ?? form.name,
-            new Set(),
-            "visible",
-            "root",
-            [],
-            false,
-            false,
-            false,
-            "No visibility gate",
-            "Inferred graph entry",
-            "inferred",
-            undefined,
-            "Inferred as a root because no incoming IFR Ref was found.",
-          ),
+            key: `root-fallback-${String(formIndex)}`,
+            label: form.formSetTitle ?? form.name,
+            ancestors: new Set(),
+            inheritedStatus: "visible",
+            reachability: "root",
+            statusLabel: "No visibility gate",
+            reachabilityLabel: "Inferred graph entry",
+            rootSource: "inferred",
+            parentageLabel:
+              "Inferred as a root because no incoming IFR Ref was found.",
+          }),
         );
       }
     }
@@ -557,23 +573,17 @@ export function buildMenuTree(data: Data): MenuTree {
     }
     const form = data.forms[formIndex];
     orphans.push(
-      buildFormNode(
+      buildFormNode({
         formIndex,
-        `detached-${String(formIndex)}`,
-        form.formSetTitle ?? form.name,
-        new Set(),
-        "visible",
-        "detached",
-        [],
-        false,
-        false,
-        false,
-        "No visibility gate",
-        reason,
-        undefined,
-        undefined,
-        reason,
-      ),
+        key: `detached-${String(formIndex)}`,
+        label: form.formSetTitle ?? form.name,
+        ancestors: new Set(),
+        inheritedStatus: "visible",
+        reachability: "detached",
+        statusLabel: "No visibility gate",
+        reachabilityLabel: reason,
+        parentageLabel: reason,
+      }),
     );
   }
 
