@@ -6,7 +6,8 @@ import {
   inspectAptioIvImage,
   type AptioIvImageReport,
 } from "../scripts/aptioIvImage";
-import { extractAptioIvArtifacts } from "../scripts/aptioIvExtractor";
+import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
+import type { AptioIvExtractorWorkerResult } from "../scripts/aptioIvExtractorWorker";
 import type { PopulatedFiles } from "../FileUploads/FileUploads";
 
 function offsets(values: number[]) {
@@ -19,6 +20,47 @@ interface BiosImageUploadProps {
 
 function toHex(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Recursive nested-volume decompression + IFRExtractor both run as
+// synchronous WASM inside this worker, so a genuinely pathological or
+// deeply-nested image can run for a long time - or, if it hits a bug,
+// effectively forever. Running it off the main thread means the UI stays
+// responsive and a timeout can actually terminate it (a main-thread
+// setTimeout can't preempt a synchronous computation that never yields).
+const EXTRACTION_TIMEOUT_MS = 90_000;
+
+function extractInWorker(file: File): Promise<AptioIvArtifacts> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(
+      new URL("../scripts/aptioIvExtractorWorker.ts", import.meta.url),
+      { type: "module" },
+    );
+    const timeout = setTimeout(() => {
+      worker.terminate();
+      reject(
+        new Error(
+          `Extraction timed out after ${String(EXTRACTION_TIMEOUT_MS / 1000)}s. This image may be too deeply nested/compressed to process automatically - try the four-file expert mode below instead (extract Setup HII/SCT, the IFR Extractor TXT, AMITSE PE32, and SetupData BIN yourself, e.g. with UEFITool + IFRExtractor-RS).`,
+        ),
+      );
+    }, EXTRACTION_TIMEOUT_MS);
+
+    worker.onmessage = (event: MessageEvent<AptioIvExtractorWorkerResult>) => {
+      clearTimeout(timeout);
+      worker.terminate();
+      if (event.data.ok) {
+        resolve(event.data.artifacts);
+      } else {
+        reject(new Error(event.data.error));
+      }
+    };
+    worker.onerror = (event) => {
+      clearTimeout(timeout);
+      worker.terminate();
+      reject(new Error(event.message || "The extraction worker crashed."));
+    };
+    worker.postMessage(file);
+  });
 }
 
 export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
@@ -58,7 +100,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
                   return;
                 }
                 setStage("Decompressing nested volumes and locating Setup…");
-                const artifacts = await extractAptioIvArtifacts(selected);
+                const artifacts = await extractInWorker(selected);
                 setStage("Decoding IFR and building the menu tree…");
                 const setupFile = new File([artifacts.hii], "setup-aptio-iv.bin");
                 const ifrFile = new File([artifacts.ifrText], "setup-aptio-iv.ifr.txt", {
