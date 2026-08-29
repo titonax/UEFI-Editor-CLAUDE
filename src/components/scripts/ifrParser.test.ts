@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { calculateJsonChecksum } from "./hashing";
+import { calculateJsonChecksum, sha256Hex } from "./hashing";
 import { parseData, version } from "./ifrParser";
 import { buildFixtureFiles } from "./testFixtures";
+import type { PopulatedFiles } from "../FileUploads/FileUploads";
 
 describe("parseData", () => {
   it("parses forms, suppressions, and cross-form references from a verbose IFR dump", async () => {
@@ -137,5 +138,92 @@ describe("parseData validation", () => {
       .replace(/SHA256: [0-9a-f]{64}/, "SHA256: 0".repeat(64).slice(0, 64));
 
     await expect(parseData(files)).rejects.toThrow(/SHA256 mismatch/);
+  });
+});
+
+// A second, independent fixture covering opcode paths the main fixture
+// doesn't exercise: a String prompt, and a GrayOutIf (as opposed to
+// SuppressIf) condition - which sets `conditions` on its guarded child but
+// must NOT set `suppressIf`, since only SuppressIf actually hides anything.
+async function buildGrayOutAndStringFixtureFiles(): Promise<PopulatedFiles> {
+  const formSetGuid = "AAAAAAAA-1111-2222-3333-444444444444";
+
+  const lines = [
+    `0x00000010: FormSet Guid: ${formSetGuid}, Title: "Ext Setup", Help: "Root help"`,
+    `0x00000012: VarStore Guid: BBBBBBBB-5555-6666-7777-888888888888, VarStoreId: 0x0001, Size: 0x0010, Name: "Setup" {`,
+    `0x00000014: Form FormId: 0x1, Title: "Main" { 01 86 }`,
+    `0x00000016: \tGrayOutIf { 05 82 }`,
+    `0x00000018: \t\tTrue { 01 06 }`,
+    `0x0000001A: \t\tNumeric Prompt: "Grayed Number", Help: "Grayed help", QuestionFlags: 0x00, QuestionId: 0x0001, VarStoreId: 0x0001, VarOffset: 0x0000, Flags: 0x00, Size: 0x01, Min: 0x00, Max: 0x0A, Step: 0x01 { 07 86 }`,
+    `0x0000001C: \t\tEnd { 29 02 }`,
+    `0x0000001E: \tEnd { 29 02 }`,
+    `0x00000020: \tString Prompt: "A String", Help: "String help", QuestionFlags: 0x00, QuestionId: 0x0002, VarStoreId: 0x0001, VarStoreInfo: 0x0000, MinSize: 0x00, MaxSize: 0x10, Flags: 0x00 { 0A 86 }`,
+    `0x00000022: \tEnd { 29 02 }`,
+    `0x00000024: End { 29 02 }`,
+  ];
+
+  const setupSctBytes = new TextEncoder().encode("dummy-setup-sct-bytes-2");
+  const setupSctHash = await sha256Hex(setupSctBytes);
+
+  const setupTxt = [
+    "Program version: 1.6.1",
+    "Extraction mode: UEFI",
+    `SHA256: ${setupSctHash}`,
+    ...lines,
+  ].join("\n");
+
+  return {
+    setupTxtContainer: {
+      file: new File([setupTxt], "combined-1-ifr-outputs.txt"),
+      textContent: setupTxt,
+      isWrongFile: false,
+    },
+    setupSctContainer: {
+      file: new File([setupSctBytes], "SetupSct.sct"),
+      textContent: Array.from(setupSctBytes, (byte) =>
+        byte.toString(16).toUpperCase().padStart(2, "0"),
+      ).join(""),
+      isWrongFile: false,
+    },
+    amitseSctContainer: {
+      file: new File([], "AmiTseSct.sct"),
+      textContent: "",
+      isWrongFile: false,
+    },
+    setupdataBinContainer: {
+      file: new File([], "SetupDataVar.bin"),
+      textContent: "00000000",
+      isWrongFile: false,
+    },
+  };
+}
+
+describe("parseData - GrayOutIf and String prompts", () => {
+  it("sets conditions but not suppressIf for a GrayOutIf-guarded child", async () => {
+    const files = await buildGrayOutAndStringFixtureFiles();
+    const data = await parseData(files);
+
+    expect(data.forms).toHaveLength(1);
+    const [form] = data.forms;
+    expect(form.children).toHaveLength(2);
+
+    const numeric = form.children.find((child) => child.type === "Numeric");
+    if (!numeric) throw new Error("expected a Numeric child");
+    expect(numeric.conditions).toEqual(["0x00000016"]);
+    expect(numeric.suppressIf).toBeUndefined();
+
+    const string = form.children.find((child) => child.type === "String");
+    if (!string) throw new Error("expected a String child");
+    expect(string.name).toBe("A String");
+    expect(string.description).toBe("String help");
+    expect(string.conditions).toBeUndefined();
+
+    expect(data.suppressions).toHaveLength(1);
+    expect(data.suppressions[0]).toMatchObject({
+      kind: "GrayOutIf",
+      active: true,
+      constant: true,
+      source: "constant",
+    });
   });
 });
