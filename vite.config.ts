@@ -14,5 +14,5 @@ export default defineConfig({
       },
     }),
   ],
-  base: "/UEFI-Editor/",
+  base: "/UEFI-Editor-CLAUDE/",
 });
