@@ -3,7 +3,9 @@ import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 
 import "@mantine/core/styles.css";
+import "@mantine/notifications/styles.css";
 import { AppShell, MantineProvider, createTheme } from "@mantine/core";
+import { Notifications } from "@mantine/notifications";
 
 const theme = createTheme({
   colors: {
@@ -26,6 +28,7 @@ const theme = createTheme({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <MantineProvider theme={theme} defaultColorScheme="dark">
+      <Notifications position="top-right" />
       <AppShell
         navbar={{
           width: { base: 220, xs: 240, sm: 280, md: 320, lg: 360 },

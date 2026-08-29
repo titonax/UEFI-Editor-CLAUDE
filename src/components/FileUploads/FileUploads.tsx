@@ -1,6 +1,6 @@
 import React from "react";
 import type { Updater } from "use-immer";
-import { FileInput, Stack, LoadingOverlay } from "@mantine/core";
+import { Alert, FileInput, Stack, LoadingOverlay } from "@mantine/core";
 import { IconUpload } from "@tabler/icons-react";
 import { parseData } from "../scripts/scripts";
 import type { Data } from "../scripts/types";
@@ -38,6 +38,8 @@ export default function FileUploads({
   setFiles,
   setData,
 }: FileUploadsProps) {
+  const [error, setError] = React.useState("");
+
   React.useEffect(() => {
     if (
       files.setupSctContainer.file &&
@@ -78,9 +80,14 @@ export default function FileUploads({
           });
         });
       } else {
-        void parseData(files as PopulatedFiles).then((data) => {
-          setData(data);
-        });
+        setError("");
+        void parseData(files as PopulatedFiles)
+          .then((data) => {
+            setData(data);
+          })
+          .catch((reason: unknown) => {
+            setError(reason instanceof Error ? reason.message : String(reason));
+          });
       }
     }
   }, [files, setFiles, setData]);
@@ -103,6 +110,11 @@ export default function FileUploads({
         loaderProps={{ size: "xl" }}
       />
       <Stack>
+        {error && (
+          <Alert color="red" title="Could not parse the extracted files">
+            {error}
+          </Alert>
+        )}
         <FileInput
           leftSection={<IconUpload />}
           size="lg"

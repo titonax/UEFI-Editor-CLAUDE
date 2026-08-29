@@ -290,7 +290,7 @@ function getUint8Array(string: string) {
   return array;
 }
 
-export async function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
+export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
   let wasSetupSctModified = false;
   let wasAmitseSctModified = false;
   let wasSetupdataBinModified = false;
@@ -315,8 +315,9 @@ export async function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
           offsetToIndex(suppression.end) + 4,
         ) !== "2902"
       ) {
-        alert("Something went wrong. Please file a bug report on Github.");
-        return;
+        throw new Error(
+          "Something went wrong. Please file a bug report on Github.",
+        );
       }
 
       modifiedSetupSct = replaceAt(
@@ -509,11 +510,11 @@ export async function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
       }),
       "changelog.txt",
     );
-  } else {
-    alert("No modifications have been done.");
+
+    return { status: "downloaded" } as const;
   }
 
-  return Promise.resolve();
+  return { status: "no-changes" } as const;
 }
 
 function readableExpressionLine(line: string) {
@@ -770,31 +771,23 @@ export async function parseData(files: PopulatedFiles) {
       setupTxt.includes(`Program version: ${version}`),
     )
   ) {
-    alert(
+    throw new Error(
       `Wrong IFRExtractor-RS version. Compatible versions: ${wantedIFRExtractorVersions.join(
         ", ",
       )}.`,
     );
-    window.location.reload();
-    return {} as Data;
   }
 
   if (!setupTxt.includes("Extraction mode: UEFI")) {
-    alert("Only UEFI is supported.");
-    window.location.reload();
-    return {} as Data;
+    throw new Error("Only UEFI is supported.");
   }
 
   if (!/\{ .* \}/.test(setupTxt)) {
-    alert(`Use the "verbose" option of IFRExtractor.`);
-    window.location.reload();
-    return {} as Data;
+    throw new Error(`Use the "verbose" option of IFRExtractor.`);
   }
 
   if (!setupTxt.includes(`SHA256: ${setupSctHash}`)) {
-    alert("Setup SCT and IFR Extractor output TXT SHA256 mismatch");
-    window.location.reload();
-    return {} as Data;
+    throw new Error("Setup SCT and IFR Extractor output TXT SHA256 mismatch");
   }
 
   setupTxt = setupTxt.replace(/[\r\n|\n|\r](?!0x[0-9A-F]{3})/g, "<br>");
@@ -1161,9 +1154,9 @@ export async function parseData(files: PopulatedFiles) {
           const latestSuppression = currentSuppressions.pop();
 
           if (!latestSuppression) {
-            alert("Something went wrong. Please file a bug report on Github.");
-            window.location.reload();
-            return {} as Data;
+            throw new Error(
+              "Something went wrong. Please file a bug report on Github.",
+            );
           }
 
           suppressions.push({ ...latestSuppression, end: offset });
@@ -1175,9 +1168,9 @@ export async function parseData(files: PopulatedFiles) {
   }
 
   if (scopes.length !== 0 || currentSuppressions.length !== 0) {
-    alert("Something went wrong. Please file a bug report on Github.");
-    window.location.reload();
-    return {} as Data;
+    throw new Error(
+      "Something went wrong. Please file a bug report on Github.",
+    );
   }
 
   enrichConditions(forms, varStores, suppressions);
@@ -1257,5 +1250,5 @@ export async function parseData(files: PopulatedFiles) {
     },
   };
 
-  return Promise.resolve(dataJson);
+  return dataJson;
 }

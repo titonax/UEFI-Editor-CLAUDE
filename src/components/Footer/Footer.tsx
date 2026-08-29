@@ -1,4 +1,5 @@
 import { Button, FileButton, Group, TextInput } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { IconDownload, IconUpload } from "@tabler/icons-react";
 import { saveAs } from "file-saver";
 import React from "react";
@@ -39,27 +40,43 @@ export default function Footer({
             onChange={(file) => {
               if (file) {
                 void (async () => {
-                  const fileData = await file.text();
-                  const jsonData = JSON.parse(fileData) as Data;
+                  try {
+                    const fileData = await file.text();
+                    const jsonData = JSON.parse(fileData) as Data;
 
-                  if (
-                    jsonData.version === version &&
-                    jsonData.hashes.setupTxt === data.hashes.setupTxt &&
-                    jsonData.hashes.setupSct === data.hashes.setupSct &&
-                    jsonData.hashes.amitseSct === data.hashes.amitseSct &&
-                    jsonData.hashes.setupdataBin === data.hashes.setupdataBin &&
-                    (await calculateJsonChecksum(
-                      jsonData.menu,
-                      jsonData.forms,
-                      jsonData.suppressions,
-                    )) === data.hashes.offsetChecksum
-                  ) {
-                    setData(jsonData);
-                  } else {
-                    alert("Wrong JSON version or file hashes.");
+                    if (
+                      jsonData.version === version &&
+                      jsonData.hashes.setupTxt === data.hashes.setupTxt &&
+                      jsonData.hashes.setupSct === data.hashes.setupSct &&
+                      jsonData.hashes.amitseSct === data.hashes.amitseSct &&
+                      jsonData.hashes.setupdataBin ===
+                        data.hashes.setupdataBin &&
+                      (await calculateJsonChecksum(
+                        jsonData.menu,
+                        jsonData.forms,
+                        jsonData.suppressions,
+                      )) === data.hashes.offsetChecksum
+                    ) {
+                      setData(jsonData);
+                    } else {
+                      notifications.show({
+                        color: "red",
+                        title: "Could not load data.json",
+                        message: "Wrong JSON version or file hashes.",
+                      });
+                    }
+                  } catch (error) {
+                    notifications.show({
+                      color: "red",
+                      title: "Could not load data.json",
+                      message:
+                        error instanceof Error
+                          ? error.message
+                          : String(error),
+                    });
+                  } finally {
+                    resetRef.current?.();
                   }
-
-                  resetRef.current?.();
                 })();
               }
             }}
@@ -103,7 +120,23 @@ export default function Footer({
                 : undefined
             }
             onClick={() => {
-              void downloadModifiedFiles(data, files);
+              try {
+                const result = downloadModifiedFiles(data, files);
+                if (result.status === "no-changes") {
+                  notifications.show({
+                    color: "blue",
+                    title: "Nothing to download",
+                    message: "No modifications have been done.",
+                  });
+                }
+              } catch (error) {
+                notifications.show({
+                  color: "red",
+                  title: "Could not generate the UEFI files",
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                });
+              }
             }}
           >
             UEFI files
