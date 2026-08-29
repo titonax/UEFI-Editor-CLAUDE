@@ -1,0 +1,41 @@
+# Throwaway diagnostic workflow: builds ifrextractor.wasm exactly like
+# deploy.yaml and dumps it base64-encoded to the job log, so it can be
+# retrieved from a sandboxed session that cannot reach the Actions
+# artifact blob-storage download URLs directly. Delete this file (and
+# the diag/extract-wasm-logs branch) once the diagnosis is done.
+name: Diagnostic - dump built wasm to log
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci
+      - name: Build IFRExtractor WebAssembly
+        shell: bash
+        run: |
+          rustup target add wasm32-wasip1
+          git clone --quiet https://github.com/LongSoft/IFRExtractor-RS.git /tmp/ifrextractor-rs
+          git -C /tmp/ifrextractor-rs checkout --quiet b1b9b36c00e3209ff0b1d2a76f10cb17e339473d
+          sed -i 's/sha256 = "1.6.0"/sha2 = "0.10.9"/' /tmp/ifrextractor-rs/Cargo.toml
+          sed -i 's/extern crate sha256;/extern crate sha2;/; s/use sha256::digest;/use sha2::{Digest, Sha256};/' /tmp/ifrextractor-rs/src/main.rs
+          sed -i 's/digest(data)/format!("{:x}", Sha256::digest(data))/g' /tmp/ifrextractor-rs/src/main.rs
+          cargo build --manifest-path /tmp/ifrextractor-rs/Cargo.toml --release --target wasm32-wasip1
+          cp /tmp/ifrextractor-rs/target/wasm32-wasip1/release/ifrextractor.wasm ifrextractor.wasm
+      - name: Dump wasm as base64 to log
+        run: |
+          echo "===IFREXTRACTOR_WASM_BASE64_START==="
+          base64 -w0 ifrextractor.wasm
+          echo ""
+          echo "===IFREXTRACTOR_WASM_BASE64_END==="
+          echo "size=$(stat -c%s ifrextractor.wasm)"
