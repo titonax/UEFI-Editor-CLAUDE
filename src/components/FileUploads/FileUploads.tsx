@@ -2,7 +2,7 @@ import React from "react";
 import type { Updater } from "use-immer";
 import { Alert, FileInput, Stack, LoadingOverlay } from "@mantine/core";
 import { IconUpload } from "@tabler/icons-react";
-import { parseData } from "../scripts/scripts";
+import { parseData } from "../scripts/ifrParser";
 import type { Data } from "../scripts/types";
 const hexWorker = () =>
   new Worker(new URL("../scripts/hexWorker.ts", import.meta.url));

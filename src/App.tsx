@@ -13,7 +13,7 @@ import Header from "./components/Header/Header";
 import Footer from "./components/Footer/Footer";
 import { IconBrandGithub } from "@tabler/icons-react";
 import BiosImageUpload from "./components/BiosImageUpload/BiosImageUpload";
-import { parseData } from "./components/scripts/scripts";
+import { parseData } from "./components/scripts/ifrParser";
 
 export default function App() {
   const [files, setFiles] = useImmer<Files>({

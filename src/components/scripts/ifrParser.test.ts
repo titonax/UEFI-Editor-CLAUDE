@@ -1,0 +1,141 @@
+import { describe, expect, it } from "vitest";
+import { calculateJsonChecksum } from "./hashing";
+import { parseData, version } from "./ifrParser";
+import { buildFixtureFiles } from "./testFixtures";
+
+describe("parseData", () => {
+  it("parses forms, suppressions, and cross-form references from a verbose IFR dump", async () => {
+    const files = await buildFixtureFiles();
+    const data = await parseData(files);
+
+    expect(data.version).toBe(version);
+    expect(data.firmwareFamily).toBe("aptio-v");
+    expect(data.varStores).toEqual([
+      {
+        varStoreId: "0x0001",
+        size: "0x0010",
+        name: "Setup",
+        formSetGuid: "12345678-1234-1234-1234-123456789ABC",
+      },
+    ]);
+
+    expect(data.forms).toHaveLength(2);
+    const form1 = data.forms.find((form) => form.formId === "0x1");
+    const form2 = data.forms.find((form) => form.formId === "0x2");
+    if (!form1 || !form2) throw new Error("expected both forms to be parsed");
+
+    expect(form1.children).toHaveLength(4);
+
+    const checkBox = form1.children.find((child) => child.type === "CheckBox");
+    if (!checkBox) {
+      throw new Error("expected a CheckBox child");
+    }
+    expect(checkBox.name).toBe("Enable Feature");
+    expect(checkBox.questionId).toBe("0x0001");
+    expect(checkBox.varStoreName).toBe("Setup");
+    expect(checkBox.conditions).toEqual(["0x00000016"]);
+    expect(checkBox.suppressIf).toEqual(["0x00000016"]);
+    // No matching byte pattern exists in the (deliberately tiny) SetupData
+    // fixture, so the access-level/failsafe/optimal lookup must degrade to
+    // null instead of throwing.
+    expect(checkBox.accessLevel).toBeNull();
+    expect(checkBox.offsets).toBeNull();
+
+    const numeric = form1.children.find((child) => child.type === "Numeric");
+    if (!numeric) {
+      throw new Error("expected a Numeric child");
+    }
+    expect(numeric.min).toBe("0x00");
+    expect(numeric.max).toBe("0x0A");
+    expect(numeric.defaults).toEqual([{ defaultId: "0x0000", value: "0x05" }]);
+    expect(numeric.conditions).toBeUndefined();
+
+    const oneOf = form1.children.find((child) => child.type === "OneOf");
+    if (!oneOf) {
+      throw new Error("expected a OneOf child");
+    }
+    expect(oneOf.options).toEqual([
+      { option: "Option A", value: "0x00" },
+      { option: "Option B", value: "0x01" },
+    ]);
+
+    const ref = form1.children.find((child) => child.type === "Ref");
+    if (!ref) {
+      throw new Error("expected a Ref child");
+    }
+    expect(ref.formId).toBe("0x2");
+    expect(ref.targetFormSetGuid).toBe("12345678-1234-1234-1234-123456789ABC");
+
+    expect(form2.referencedIn).toEqual(["0x1"]);
+
+    expect(data.suppressions).toHaveLength(1);
+    const suppression = data.suppressions[0];
+    expect(suppression).toMatchObject({
+      offset: "0x00000016",
+      start: "0x0000001A",
+      end: "0x0000001E",
+      kind: "SuppressIf",
+      active: true,
+      constant: true,
+      source: "constant",
+      expression: "True",
+      varStoreNames: [],
+    });
+
+    // The menu falls back to the structural FormSet root because neither
+    // the AMITSE executable menu nor the SetupData page list contains any
+    // evidence in this fixture.
+    expect(data.menu).toEqual([
+      {
+        name: "Main Setup",
+        formId: "0x1",
+        offset: null,
+        formSetGuid: "12345678-1234-1234-1234-123456789ABC",
+        source: "formset",
+      },
+    ]);
+
+    const recomputedChecksum = await calculateJsonChecksum(
+      data.menu,
+      data.forms,
+      data.suppressions,
+    );
+    expect(data.hashes.offsetChecksum).toBe(recomputedChecksum);
+  });
+});
+
+describe("parseData validation", () => {
+  it("rejects an incompatible IFRExtractor-RS version", async () => {
+    const files = await buildFixtureFiles();
+    files.setupTxtContainer.textContent = files.setupTxtContainer.textContent
+      .replace("Program version: 1.6.1", "Program version: 9.9.9");
+
+    await expect(parseData(files)).rejects.toThrow(
+      /Wrong IFRExtractor-RS version/,
+    );
+  });
+
+  it("rejects a non-UEFI extraction mode", async () => {
+    const files = await buildFixtureFiles();
+    files.setupTxtContainer.textContent = files.setupTxtContainer.textContent
+      .replace("Extraction mode: UEFI", "Extraction mode: DOS");
+
+    await expect(parseData(files)).rejects.toThrow(/Only UEFI is supported/);
+  });
+
+  it("rejects a dump that was not extracted in verbose mode", async () => {
+    const files = await buildFixtureFiles();
+    files.setupTxtContainer.textContent = files.setupTxtContainer.textContent
+      .replace(/\{ [0-9A-F ]+ \}/g, "");
+
+    await expect(parseData(files)).rejects.toThrow(/verbose/);
+  });
+
+  it("rejects a SHA256 mismatch between Setup SCT and the IFR dump", async () => {
+    const files = await buildFixtureFiles();
+    files.setupTxtContainer.textContent = files.setupTxtContainer.textContent
+      .replace(/SHA256: [0-9a-f]{64}/, "SHA256: 0".repeat(64).slice(0, 64));
+
+    await expect(parseData(files)).rejects.toThrow(/SHA256 mismatch/);
+  });
+});

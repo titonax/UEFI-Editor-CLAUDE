@@ -20,7 +20,7 @@ import type {
   FormChildren,
   VisibilityStatus,
 } from "../scripts/types";
-import { validateByteInput } from "../scripts/scripts";
+import { validateByteInput } from "../scripts/binaryPatcher";
 import { sameHexId } from "../scripts/hexId";
 import SearchUi from "./SearchUi/SearchUi";
 import {

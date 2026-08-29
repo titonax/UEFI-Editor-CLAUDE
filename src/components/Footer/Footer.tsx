@@ -5,12 +5,9 @@ import { saveAs } from "file-saver";
 import React from "react";
 import type { Updater } from "use-immer";
 import type { PopulatedFiles } from "../FileUploads/FileUploads";
-import {
-  calculateJsonChecksum,
-  downloadModifiedFiles,
-  validateByteInput,
-  version,
-} from "../scripts/scripts";
+import { downloadModifiedFiles, validateByteInput } from "../scripts/binaryPatcher";
+import { calculateJsonChecksum } from "../scripts/hashing";
+import { version } from "../scripts/ifrParser";
 import type { Data, Suppression } from "../scripts/types";
 import s from "./Footer.module.css";
 
