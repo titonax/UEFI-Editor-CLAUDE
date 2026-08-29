@@ -454,68 +454,417 @@ function requireCurrent<T>(value: T | null): T {
   return value;
 }
 
-export async function parseData(files: PopulatedFiles) {
-  const [setupTxtHash, setupSctHash, amitseSctHash, setupdataBinHash] =
-    await Promise.all([
-      hashFile(files.setupTxtContainer.file),
-      hashFile(files.setupSctContainer.file),
-      hashFile(files.amitseSctContainer.file),
-      hashFile(files.setupdataBinContainer.file),
-    ]);
+// Bundles everything the line-by-line loop below accumulates as it scans
+// the IFR dump, so each opcode type's handling can live in its own
+// function instead of one ~430-line loop body.
+interface ParserState {
+  formSetIds: Set<string>;
+  formSetMetadata: Map<string, { guid: string; title: string }>;
+  formSetRoots: Menu;
+  pendingFormSetTitle: string | null;
+  currentFormSetGuid: string | undefined;
+  currentFormSetTitle: string | undefined;
+  varStores: VarStores;
+  forms: Forms;
+  suppressions: Suppression[];
+  scopes: Scopes;
+  currentForm: Form | null;
+  currentString: StringPrompt | null;
+  currentOneOf: OneOfPrompt | null;
+  currentNumeric: NumericPrompt | null;
+  currentCheckBox: CheckBoxPrompt | null;
+  currentSuppressions: Suppression[];
+  references: Record<string, Set<string>>;
+}
 
-  let setupTxt = files.setupTxtContainer.textContent;
-  const amitseSct = files.amitseSctContainer.textContent;
-  const setupdataBin = files.setupdataBinContainer.textContent;
+function createParserState(): ParserState {
+  return {
+    formSetIds: new Set(),
+    formSetMetadata: new Map(),
+    formSetRoots: [],
+    pendingFormSetTitle: null,
+    currentFormSetGuid: undefined,
+    currentFormSetTitle: undefined,
+    varStores: [],
+    forms: [],
+    suppressions: [],
+    scopes: [],
+    currentForm: null,
+    currentString: null,
+    currentOneOf: null,
+    currentNumeric: null,
+    currentCheckBox: null,
+    currentSuppressions: [],
+    references: {},
+  };
+}
 
-  if (
-    !wantedIFRExtractorVersions.some((version) =>
-      setupTxt.includes(`Program version: ${version}`),
-    )
-  ) {
-    throw new Error(
-      `Wrong IFRExtractor-RS version. Compatible versions: ${wantedIFRExtractorVersions.join(
-        ", ",
-      )}.`,
+function handleFormSetLine(state: ParserState, formSet: RegExpExecArray) {
+  const formSetId = formSet[4] + formSet[5];
+  state.currentFormSetGuid = [
+    formSet[1],
+    formSet[2],
+    formSet[3],
+    formSet[4],
+    formSet[5],
+  ].join("-");
+  state.currentFormSetTitle = formSet[6];
+  state.formSetIds.add(formSetId);
+  state.formSetMetadata.set(formSetId, {
+    guid: state.currentFormSetGuid,
+    title: state.currentFormSetTitle,
+  });
+  state.pendingFormSetTitle = state.currentFormSetTitle;
+}
+
+function handleVarStoreLine(state: ParserState, varStore: RegExpExecArray) {
+  state.varStores.push({
+    varStoreId: varStore[2],
+    size: varStore[3],
+    name: varStore[4],
+    formSetGuid: state.currentFormSetGuid,
+  });
+}
+
+function handleFormLine(
+  state: ParserState,
+  form: RegExpExecArray,
+  indentations: number,
+) {
+  if (state.pendingFormSetTitle !== null) {
+    state.formSetRoots.push({
+      name: state.pendingFormSetTitle,
+      formId: form[1],
+      offset: null,
+      formSetGuid: state.currentFormSetGuid,
+      source: "formset",
+    });
+    state.pendingFormSetTitle = null;
+  }
+
+  state.currentForm = {
+    name: form[2],
+    type: "Form",
+    formId: form[1],
+    formSetGuid: state.currentFormSetGuid,
+    formSetTitle: state.currentFormSetTitle,
+    referencedIn: [],
+    children: [],
+  };
+
+  if (hasScope(form[3])) {
+    state.scopes.push({ type: "Form", indentations });
+  }
+}
+
+function handleConditionLine(
+  state: ParserState,
+  condition: RegExpExecArray,
+  setupTxtArray: string[],
+  index: number,
+  indentations: number,
+  offset: string,
+) {
+  const kind = condition[1] as ConditionKind;
+  const conditionInfo = determineCondition(setupTxtArray, index);
+  state.scopes.push({
+    type: kind,
+    indentations,
+    offset,
+  });
+
+  state.currentSuppressions.push({
+    offset,
+    kind,
+    active: true,
+    start: conditionInfo.start,
+    expression: conditionInfo.expression,
+    questionIds: conditionInfo.questionIds,
+    varStoreIds: conditionInfo.varStoreIds,
+    constant: conditionInfo.constant,
+    formSetGuid: state.currentFormSetGuid,
+  } as Suppression);
+}
+
+function handleRefLine(
+  state: ParserState,
+  ref: RegExpExecArray,
+  refFormId: RegExpExecArray,
+  refFormSetGuid: RegExpExecArray | null,
+  setupdataBin: string,
+) {
+  const formId = refFormId[1];
+  const targetFormSetGuid = refFormSetGuid?.[1];
+
+  const currentRef: RefPrompt = {
+    name: ref[1],
+    description: ref[2],
+    type: "Ref",
+    questionId: ref[4],
+    varStoreId: ref[5],
+    varStoreName: findVarStoreName(
+      state.varStores,
+      ref[5],
+      state.currentFormSetGuid,
+    ),
+    formId,
+    targetFormSetGuid,
+    ...getAdditionalData(ref[8], setupdataBin, true),
+  };
+
+  checkConditions(state.scopes, currentRef);
+
+  const form = requireCurrent(state.currentForm);
+  form.children.push(currentRef);
+
+  const referenceKey = formReferenceKey(
+    formId,
+    targetFormSetGuid ?? form.formSetGuid,
+  );
+  if (referenceKey in state.references) {
+    state.references[referenceKey].add(form.formId);
+  } else {
+    state.references[referenceKey] = new Set([form.formId]);
+  }
+}
+
+function handleStringLine(
+  state: ParserState,
+  string: RegExpExecArray,
+  setupdataBin: string,
+  indentations: number,
+) {
+  const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
+    string[10],
+    setupdataBin,
+    false,
+  );
+
+  state.currentString = {
+    name: string[1],
+    description: string[2],
+    type: "String",
+    questionId: string[4],
+    varStoreId: string[5],
+    varStoreName: findVarStoreName(
+      state.varStores,
+      string[5],
+      state.currentFormSetGuid,
+    ),
+    accessLevel,
+    failsafe,
+    optimal,
+    offsets,
+  };
+
+  checkConditions(state.scopes, state.currentString);
+
+  if (hasScope(string[10])) {
+    state.scopes.push({ type: "String", indentations });
+  }
+}
+
+function handleNumericLine(
+  state: ParserState,
+  numeric: RegExpExecArray,
+  setupdataBin: string,
+  indentations: number,
+) {
+  const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
+    numeric[12],
+    setupdataBin,
+    false,
+  );
+
+  state.currentNumeric = {
+    name: numeric[1],
+    description: numeric[2],
+    type: "Numeric",
+    questionId: numeric[4],
+    varStoreId: numeric[5],
+    varStoreName: findVarStoreName(
+      state.varStores,
+      numeric[5],
+      state.currentFormSetGuid,
+    ),
+    varOffset: numeric[6],
+    size: numeric[8],
+    min: numeric[9],
+    max: numeric[10],
+    step: numeric[11],
+    accessLevel,
+    failsafe,
+    optimal,
+    offsets,
+  };
+
+  checkConditions(state.scopes, state.currentNumeric);
+
+  if (hasScope(numeric[12])) {
+    state.scopes.push({ type: "Numeric", indentations });
+  }
+}
+
+function handleCheckBoxLine(
+  state: ParserState,
+  checkBox: RegExpExecArray,
+  setupdataBin: string,
+  indentations: number,
+) {
+  const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
+    checkBox[8],
+    setupdataBin,
+    false,
+  );
+
+  state.currentCheckBox = {
+    name: checkBox[1],
+    description: checkBox[2],
+    type: "CheckBox",
+    questionId: checkBox[4],
+    varStoreId: checkBox[5],
+    varStoreName: findVarStoreName(
+      state.varStores,
+      checkBox[5],
+      state.currentFormSetGuid,
+    ),
+    varOffset: checkBox[6],
+    flags: checkBox[7],
+    accessLevel,
+    failsafe,
+    optimal,
+    offsets,
+  };
+
+  checkConditions(state.scopes, state.currentCheckBox);
+
+  if (hasScope(checkBox[8])) {
+    state.scopes.push({ type: "CheckBox", indentations });
+  }
+}
+
+function handleOneOfLine(
+  state: ParserState,
+  oneOf: RegExpExecArray,
+  setupdataBin: string,
+  indentations: number,
+) {
+  const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
+    oneOf[12],
+    setupdataBin,
+    false,
+  );
+
+  state.currentOneOf = {
+    name: oneOf[1],
+    description: oneOf[2],
+    type: "OneOf",
+    questionId: oneOf[4],
+    varStoreId: oneOf[5],
+    varStoreName: findVarStoreName(
+      state.varStores,
+      oneOf[5],
+      state.currentFormSetGuid,
+    ),
+    varOffset: oneOf[6],
+    size: oneOf[8],
+    options: [],
+    accessLevel,
+    failsafe,
+    optimal,
+    offsets,
+  };
+
+  checkConditions(state.scopes, state.currentOneOf);
+
+  if (hasScope(oneOf[12])) {
+    state.scopes.push({ type: "OneOf", indentations });
+  }
+}
+
+function handleOneOfOptionLine(
+  state: ParserState,
+  oneOfOption: RegExpExecArray,
+  currentScope: Scopes[number],
+) {
+  if (currentScope.type === "OneOf" || isConditionKind(currentScope.type)) {
+    requireCurrent(state.currentOneOf).options.push({
+      option: oneOfOption[1],
+      value: oneOfOption[2],
+    });
+  }
+}
+
+function handleDefaultLine(
+  state: ParserState,
+  defaultId: RegExpExecArray,
+  currentScope: Scopes[number],
+) {
+  const oneDefault = {
+    defaultId: defaultId[1],
+    value: defaultId[2],
+  };
+
+  if (currentScope.type === "Numeric") {
+    const numeric = requireCurrent(state.currentNumeric);
+    numeric.defaults ??= [];
+    numeric.defaults.push(oneDefault);
+  } else if (currentScope.type === "CheckBox") {
+    const checkBoxPrompt = requireCurrent(state.currentCheckBox);
+    checkBoxPrompt.defaults ??= [];
+    checkBoxPrompt.defaults.push(oneDefault);
+  } else if (currentScope.type === "OneOf") {
+    const oneOfPrompt = requireCurrent(state.currentOneOf);
+    oneOfPrompt.defaults ??= [];
+    oneOfPrompt.defaults.push(oneDefault);
+  }
+}
+
+// Commits the value built for the scope that just closed (Form/Numeric/
+// CheckBox/OneOf/String) into its permanent home, or - for a condition
+// scope - finalizes the matching suppression with its end offset.
+function handleEndLine(
+  state: ParserState,
+  currentScope: Scopes[number],
+  offset: string,
+) {
+  const scopeType = currentScope.type;
+
+  if (scopeType === "Form") {
+    state.forms.push(requireCurrent(state.currentForm));
+  } else if (scopeType === "Numeric") {
+    requireCurrent(state.currentForm).children.push(
+      requireCurrent(state.currentNumeric),
     );
+  } else if (scopeType === "CheckBox") {
+    requireCurrent(state.currentForm).children.push(
+      requireCurrent(state.currentCheckBox),
+    );
+  } else if (scopeType === "OneOf") {
+    requireCurrent(state.currentForm).children.push(
+      requireCurrent(state.currentOneOf),
+    );
+  } else if (scopeType === "String") {
+    requireCurrent(state.currentForm).children.push(
+      requireCurrent(state.currentString),
+    );
+  } else {
+    const latestSuppression = state.currentSuppressions.pop();
+
+    if (!latestSuppression) {
+      throw new Error(
+        "Something went wrong. Please file a bug report on Github.",
+      );
+    }
+
+    state.suppressions.push({ ...latestSuppression, end: offset });
   }
 
-  if (!setupTxt.includes("Extraction mode: UEFI")) {
-    throw new Error("Only UEFI is supported.");
-  }
+  state.scopes.pop();
+}
 
-  if (!/\{ .* \}/.test(setupTxt)) {
-    throw new Error(`Use the "verbose" option of IFRExtractor.`);
-  }
-
-  if (!setupTxt.includes(`SHA256: ${setupSctHash}`)) {
-    throw new Error("Setup SCT and IFR Extractor output TXT SHA256 mismatch");
-  }
-
-  setupTxt = setupTxt.replace(/[\r\n|\n|\r](?!0x[0-9A-F]{3})/g, "<br>");
-
-  const formSetIds = new Set<string>();
-  const formSetMetadata = new Map<
-    string,
-    { guid: string; title: string }
-  >();
-  const formSetRoots: Menu = [];
-  let pendingFormSetTitle: string | null = null;
-  let currentFormSetGuid: string | undefined;
-  let currentFormSetTitle: string | undefined;
-  const varStores: VarStores = [];
-  const forms: Forms = [];
-  const suppressions: Suppression[] = [];
-  const scopes: Scopes = [];
-  let currentForm: Form | null = null;
-  let currentString: StringPrompt | null = null;
-  let currentOneOf: OneOfPrompt | null = null;
-  let currentNumeric: NumericPrompt | null = null;
-  let currentCheckBox: CheckBoxPrompt | null = null;
-
-  const currentSuppressions: Suppression[] = [];
-
-  const references: Record<string, Set<string>> = {};
-
+function parseSetupTxt(setupTxt: string, setupdataBin: string): ParserState {
+  const state = createParserState();
   const setupTxtArray = setupTxt.split("\n");
 
   for (const [index, line] of setupTxtArray.entries()) {
@@ -562,329 +911,123 @@ export async function parseData(files: PopulatedFiles) {
     const end = /\{ 29 02 \}/.exec(line);
     const indentations = (line.match(/\t/g) ?? []).length;
     const offset = line.split(" ")[0].slice(0, -1);
-    const currentScope = scopes[scopes.length - 1];
+    const currentScope = state.scopes[state.scopes.length - 1];
 
     if (formSet) {
-      const formSetId = formSet[4] + formSet[5];
-      currentFormSetGuid = [
-        formSet[1],
-        formSet[2],
-        formSet[3],
-        formSet[4],
-        formSet[5],
-      ].join("-");
-      currentFormSetTitle = formSet[6];
-      formSetIds.add(formSetId);
-      formSetMetadata.set(formSetId, {
-        guid: currentFormSetGuid,
-        title: currentFormSetTitle,
-      });
-      pendingFormSetTitle = currentFormSetTitle;
+      handleFormSetLine(state, formSet);
     }
 
     if (varStore) {
-      varStores.push({
-        varStoreId: varStore[2],
-        size: varStore[3],
-        name: varStore[4],
-        formSetGuid: currentFormSetGuid,
-      });
+      handleVarStoreLine(state, varStore);
     }
 
     if (form) {
-      if (pendingFormSetTitle !== null) {
-        formSetRoots.push({
-          name: pendingFormSetTitle,
-          formId: form[1],
-          offset: null,
-          formSetGuid: currentFormSetGuid,
-          source: "formset",
-        });
-        pendingFormSetTitle = null;
-      }
-
-      currentForm = {
-        name: form[2],
-        type: "Form",
-        formId: form[1],
-        formSetGuid: currentFormSetGuid,
-        formSetTitle: currentFormSetTitle,
-        referencedIn: [],
-        children: [],
-      };
-
-      if (hasScope(form[3])) {
-        scopes.push({ type: "Form", indentations });
-      }
+      handleFormLine(state, form, indentations);
     }
 
     if (condition) {
-      const kind = condition[1] as ConditionKind;
-      const conditionInfo = determineCondition(setupTxtArray, index);
-      scopes.push({
-        type: kind,
+      handleConditionLine(
+        state,
+        condition,
+        setupTxtArray,
+        index,
         indentations,
         offset,
-      });
-
-      currentSuppressions.push({
-        offset,
-        kind,
-        active: true,
-        start: conditionInfo.start,
-        expression: conditionInfo.expression,
-        questionIds: conditionInfo.questionIds,
-        varStoreIds: conditionInfo.varStoreIds,
-        constant: conditionInfo.constant,
-        formSetGuid: currentFormSetGuid,
-      } as Suppression);
+      );
     }
 
     if (ref && refFormId) {
-      const formId = refFormId[1];
-      const targetFormSetGuid = refFormSetGuid?.[1];
-
-      const currentRef: RefPrompt = {
-        name: ref[1],
-        description: ref[2],
-        type: "Ref",
-        questionId: ref[4],
-        varStoreId: ref[5],
-        varStoreName: findVarStoreName(
-          varStores,
-          ref[5],
-          currentFormSetGuid,
-        ),
-        formId,
-        targetFormSetGuid,
-        ...getAdditionalData(ref[8], setupdataBin, true),
-      };
-
-      checkConditions(scopes, currentRef);
-
-      const form = requireCurrent(currentForm);
-      form.children.push(currentRef);
-
-      const referenceKey = formReferenceKey(
-        formId,
-        targetFormSetGuid ?? form.formSetGuid,
-      );
-      if (referenceKey in references) {
-        references[referenceKey].add(form.formId);
-      } else {
-        references[referenceKey] = new Set([form.formId]);
-      }
+      handleRefLine(state, ref, refFormId, refFormSetGuid, setupdataBin);
     }
 
     if (string) {
-      const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
-        string[10],
-        setupdataBin,
-        false,
-      );
-
-      currentString = {
-        name: string[1],
-        description: string[2],
-        type: "String",
-        questionId: string[4],
-        varStoreId: string[5],
-        varStoreName: findVarStoreName(
-          varStores,
-          string[5],
-          currentFormSetGuid,
-        ),
-        accessLevel,
-        failsafe,
-        optimal,
-        offsets,
-      };
-
-      checkConditions(scopes, currentString);
-
-      if (hasScope(string[10])) {
-        scopes.push({ type: "String", indentations });
-      }
+      handleStringLine(state, string, setupdataBin, indentations);
     }
 
     if (numeric) {
-      const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
-        numeric[12],
-        setupdataBin,
-        false,
-      );
-
-      currentNumeric = {
-        name: numeric[1],
-        description: numeric[2],
-        type: "Numeric",
-        questionId: numeric[4],
-        varStoreId: numeric[5],
-        varStoreName: findVarStoreName(
-          varStores,
-          numeric[5],
-          currentFormSetGuid,
-        ),
-        varOffset: numeric[6],
-        size: numeric[8],
-        min: numeric[9],
-        max: numeric[10],
-        step: numeric[11],
-        accessLevel,
-        failsafe,
-        optimal,
-        offsets,
-      };
-
-      checkConditions(scopes, currentNumeric);
-
-      if (hasScope(numeric[12])) {
-        scopes.push({ type: "Numeric", indentations });
-      }
+      handleNumericLine(state, numeric, setupdataBin, indentations);
     }
 
     if (checkBox) {
-      const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
-        checkBox[8],
-        setupdataBin,
-        false,
-      );
-
-      currentCheckBox = {
-        name: checkBox[1],
-        description: checkBox[2],
-        type: "CheckBox",
-        questionId: checkBox[4],
-        varStoreId: checkBox[5],
-        varStoreName: findVarStoreName(
-          varStores,
-          checkBox[5],
-          currentFormSetGuid,
-        ),
-        varOffset: checkBox[6],
-        flags: checkBox[7],
-        accessLevel,
-        failsafe,
-        optimal,
-        offsets,
-      };
-
-      checkConditions(scopes, currentCheckBox);
-
-      if (hasScope(checkBox[8])) {
-        scopes.push({ type: "CheckBox", indentations });
-      }
+      handleCheckBoxLine(state, checkBox, setupdataBin, indentations);
     }
 
     if (oneOf) {
-      const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
-        oneOf[12],
-        setupdataBin,
-        false,
-      );
-
-      currentOneOf = {
-        name: oneOf[1],
-        description: oneOf[2],
-        type: "OneOf",
-        questionId: oneOf[4],
-        varStoreId: oneOf[5],
-        varStoreName: findVarStoreName(
-          varStores,
-          oneOf[5],
-          currentFormSetGuid,
-        ),
-        varOffset: oneOf[6],
-        size: oneOf[8],
-        options: [],
-        accessLevel,
-        failsafe,
-        optimal,
-        offsets,
-      };
-
-      checkConditions(scopes, currentOneOf);
-
-      if (hasScope(oneOf[12])) {
-        scopes.push({ type: "OneOf", indentations });
-      }
+      handleOneOfLine(state, oneOf, setupdataBin, indentations);
     }
 
-    if (
-      oneOfOption &&
-      (currentScope.type === "OneOf" || isConditionKind(currentScope.type))
-    ) {
-      requireCurrent(currentOneOf).options.push({
-        option: oneOfOption[1],
-        value: oneOfOption[2],
-      });
+    if (oneOfOption) {
+      handleOneOfOptionLine(state, oneOfOption, currentScope);
     }
 
-    if (scopes.length !== 0) {
+    if (state.scopes.length !== 0) {
       if (defaultId) {
-        const oneDefault = {
-          defaultId: defaultId[1],
-          value: defaultId[2],
-        };
-
-        if (currentScope.type === "Numeric") {
-          const numeric = requireCurrent(currentNumeric);
-          numeric.defaults ??= [];
-          numeric.defaults.push(oneDefault);
-        } else if (currentScope.type === "CheckBox") {
-          const checkBoxPrompt = requireCurrent(currentCheckBox);
-          checkBoxPrompt.defaults ??= [];
-          checkBoxPrompt.defaults.push(oneDefault);
-        } else if (currentScope.type === "OneOf") {
-          const oneOfPrompt = requireCurrent(currentOneOf);
-          oneOfPrompt.defaults ??= [];
-          oneOfPrompt.defaults.push(oneDefault);
-        }
+        handleDefaultLine(state, defaultId, currentScope);
       }
 
       if (end && currentScope.indentations === indentations) {
-        const scopeType = currentScope.type;
-
-        if (scopeType === "Form") {
-          forms.push(requireCurrent(currentForm));
-        } else if (scopeType === "Numeric") {
-          requireCurrent(currentForm).children.push(
-            requireCurrent(currentNumeric),
-          );
-        } else if (scopeType === "CheckBox") {
-          requireCurrent(currentForm).children.push(
-            requireCurrent(currentCheckBox),
-          );
-        } else if (scopeType === "OneOf") {
-          requireCurrent(currentForm).children.push(
-            requireCurrent(currentOneOf),
-          );
-        } else if (scopeType === "String") {
-          requireCurrent(currentForm).children.push(
-            requireCurrent(currentString),
-          );
-        } else {
-          const latestSuppression = currentSuppressions.pop();
-
-          if (!latestSuppression) {
-            throw new Error(
-              "Something went wrong. Please file a bug report on Github.",
-            );
-          }
-
-          suppressions.push({ ...latestSuppression, end: offset });
-        }
-
-        scopes.pop();
+        handleEndLine(state, currentScope, offset);
       }
     }
   }
 
-  if (scopes.length !== 0 || currentSuppressions.length !== 0) {
+  if (state.scopes.length !== 0 || state.currentSuppressions.length !== 0) {
     throw new Error(
       "Something went wrong. Please file a bug report on Github.",
     );
   }
+
+  return state;
+}
+
+export async function parseData(files: PopulatedFiles) {
+  const [setupTxtHash, setupSctHash, amitseSctHash, setupdataBinHash] =
+    await Promise.all([
+      hashFile(files.setupTxtContainer.file),
+      hashFile(files.setupSctContainer.file),
+      hashFile(files.amitseSctContainer.file),
+      hashFile(files.setupdataBinContainer.file),
+    ]);
+
+  let setupTxt = files.setupTxtContainer.textContent;
+  const amitseSct = files.amitseSctContainer.textContent;
+  const setupdataBin = files.setupdataBinContainer.textContent;
+
+  if (
+    !wantedIFRExtractorVersions.some((version) =>
+      setupTxt.includes(`Program version: ${version}`),
+    )
+  ) {
+    throw new Error(
+      `Wrong IFRExtractor-RS version. Compatible versions: ${wantedIFRExtractorVersions.join(
+        ", ",
+      )}.`,
+    );
+  }
+
+  if (!setupTxt.includes("Extraction mode: UEFI")) {
+    throw new Error("Only UEFI is supported.");
+  }
+
+  if (!/\{ .* \}/.test(setupTxt)) {
+    throw new Error(`Use the "verbose" option of IFRExtractor.`);
+  }
+
+  if (!setupTxt.includes(`SHA256: ${setupSctHash}`)) {
+    throw new Error("Setup SCT and IFR Extractor output TXT SHA256 mismatch");
+  }
+
+  setupTxt = setupTxt.replace(/[\r\n|\n|\r](?!0x[0-9A-F]{3})/g, "<br>");
+
+  const {
+    formSetIds,
+    formSetMetadata,
+    formSetRoots,
+    varStores,
+    forms,
+    suppressions,
+    references,
+  } = parseSetupTxt(setupTxt, setupdataBin);
 
   enrichConditions(forms, varStores, suppressions);
 
