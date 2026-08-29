@@ -1,0 +1,61 @@
+.width {
+  width: 5rem;
+  min-width: 5rem;
+}
+.pointer {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.formIdWidth {
+  width: 14rem;
+}
+.formIdChildWidth {
+  width: 7rem;
+  min-width: 7rem;
+}
+.infoRow {
+  display: flex;
+}
+.infoRow > div {
+  width: 50%;
+}
+.memoRow:not(:last-of-type) {
+  border-bottom: calc(0.0625rem * 1) solid #373a40;
+}
+.memoRow > td {
+  padding: var(--table-vertical-spacing)
+    var(--table-horizontal-spacing, var(--mantine-spacing-xs));
+}
+.memoRow > td:not(:last-child) {
+  border-right: calc(0.0625rem * 1) solid #373a40;
+}
+.striped > tr:nth-child(odd) {
+  background-color: #25262b;
+}
+
+.conditionList {
+  min-width: 19rem;
+  max-width: 34rem;
+}
+
+.conditionCard {
+  padding: 0.4rem 0.45rem;
+  border: 1px solid var(--mantine-color-dark-4);
+  border-radius: var(--mantine-radius-sm);
+  background: var(--mantine-color-dark-7);
+}
+
+.conditionExpression {
+  overflow-wrap: anywhere;
+  color: var(--mantine-color-dark-0);
+  font-family: var(--mantine-font-family-monospace);
+}
+
+.visibilitySummary {
+  position: sticky;
+  z-index: 2;
+  top: 60px;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--mantine-color-dark-4);
+  background: var(--mantine-color-dark-8);
+}

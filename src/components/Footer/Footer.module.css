@@ -1,0 +1,13 @@
+.root {
+  padding: 0 1rem;
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+.textInput {
+  width: 3rem;
+  min-width: 3rem;
+}
+.maxWidth {
+  width: 100%;
+}
