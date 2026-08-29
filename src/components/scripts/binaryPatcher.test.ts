@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { downloadModifiedFiles, validateByteInput } from "./binaryPatcher";
 import { parseData } from "./ifrParser";
 import { buildFixtureFiles } from "./testFixtures";
+import type { Data } from "./types";
 
 const saveAsMock = vi.fn();
 vi.mock("file-saver", () => ({
@@ -174,5 +175,86 @@ describe("downloadModifiedFiles", () => {
     expect(changelogText).toContain("Access Level 00 -> 05");
     expect(changelogText).toContain("Failsafe 00 -> 0A");
     expect(changelogText).toContain("Optimal 00 -> 0F");
+  });
+
+  it("shifts a nested suppression's offsets by exactly one End opcode's width", async () => {
+    // A SuppressIf ("outer", bytes 10..26) that itself guards a second,
+    // fully nested SuppressIf ("child", bytes 14..20). Both are toggled
+    // inactive, and the suppressions array is deliberately given in
+    // parent-before-child order - the opposite of what parseData() would
+    // ever produce (it always closes the inner scope first) - so that
+    // outer's bookkeeping for "other suppressions nested inside me" is
+    // actually exercised instead of being dead code.
+    const beforeOuterStart = "AA".repeat(10); // 0..9
+    const outerStartToChildStart = "BB".repeat(4); // 10..13
+    const childGuarded = "CC".repeat(6); // 14..19
+    const childEndMarker = "2902"; // 20..21
+    const childEndToOuterEnd = "DD".repeat(4); // 22..25
+    const outerEndMarker = "2902"; // 26..27
+    const afterOuterEnd = "EE".repeat(6); // 28..33
+
+    const files = await buildFixtureFiles();
+    files.setupSctContainer.textContent =
+      beforeOuterStart +
+      outerStartToChildStart +
+      childGuarded +
+      childEndMarker +
+      childEndToOuterEnd +
+      outerEndMarker +
+      afterOuterEnd;
+
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [],
+      varStores: [],
+      version: "test",
+      hashes: {
+        setupTxt: "",
+        setupSct: "",
+        amitseSct: "",
+        setupdataBin: "",
+        offsetChecksum: "",
+      },
+      suppressions: [
+        {
+          offset: "0x0",
+          start: "0xA",
+          end: "0x1A",
+          kind: "SuppressIf",
+          active: false,
+        },
+        {
+          offset: "0x1",
+          start: "0xE",
+          end: "0x14",
+          kind: "SuppressIf",
+          active: false,
+        },
+      ],
+    };
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const patchedBlob = (saveAsMock.mock.calls[0] as [Blob, string])[0];
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    const patchedHex = Array.from(patchedBytes, (byte) =>
+      byte.toString(16).toUpperCase().padStart(2, "0"),
+    ).join("");
+
+    // Both End opcodes move to where their own suppression starts; the
+    // child's marker now sits right after outer's, exposing both
+    // previously-guarded regions.
+    expect(patchedHex).toBe(
+      beforeOuterStart +
+        "2902" +
+        outerStartToChildStart +
+        "2902" +
+        childGuarded +
+        childEndToOuterEnd +
+        afterOuterEnd,
+    );
   });
 });

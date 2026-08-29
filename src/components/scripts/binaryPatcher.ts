@@ -69,17 +69,32 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
       const end = parseHexId(suppression.end);
       moveEndOpcodeToStart(modifiedSetupSct, start, end);
 
+      // Any other suppression whose start/end falls strictly inside this
+      // one's guarded range physically moves by exactly one End-opcode's
+      // width: moveEndOpcodeToStart only shifts the [start, end) region
+      // right by END_OPCODE.length, it doesn't touch anything before
+      // `start` or at/after `end`. parseData() always pushes a nested
+      // suppression before the one that encloses it (scopes close
+      // innermost-first), so in practice this suppression's own
+      // moveEndOpcodeToStart call above has already run for every entry
+      // that could be nested inside it by the time we get here. This loop
+      // exists so the bookkeeping stays correct even if that ordering
+      // assumption is ever violated (e.g. a hand-edited data.json).
       for (const suppressionToUpdate of suppressions) {
         if (suppressionToUpdate.offset !== suppression.offset) {
           const updateStart = parseHexId(suppressionToUpdate.start);
           const updateEnd = parseHexId(suppressionToUpdate.end);
 
           if (start < updateStart && updateStart < end) {
-            suppressionToUpdate.start = decToHexString(updateStart + 4);
+            suppressionToUpdate.start = decToHexString(
+              updateStart + END_OPCODE.length,
+            );
           }
 
           if (start < updateEnd && updateEnd < end) {
-            suppressionToUpdate.end = decToHexString(updateEnd + 4);
+            suppressionToUpdate.end = decToHexString(
+              updateEnd + END_OPCODE.length,
+            );
           }
         }
       }
