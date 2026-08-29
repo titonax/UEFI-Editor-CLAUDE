@@ -1,5 +1,27 @@
-import { describe, expect, it } from "vitest";
-import { calculateJsonChecksum } from "./hashing";
+import { describe, expect, it, vi } from "vitest";
+import { calculateJsonChecksum, sha256Hex } from "./hashing";
+
+describe("sha256Hex", () => {
+  it("hashes normally when crypto.subtle resolves", async () => {
+    const hex = await sha256Hex(new TextEncoder().encode("hello"));
+    expect(hex).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("throws a diagnosable error instead of hanging forever when crypto.subtle.digest never resolves", async () => {
+    vi.useFakeTimers();
+    const digestSpy = vi
+      .spyOn(crypto.subtle, "digest")
+      .mockReturnValue(new Promise<ArrayBuffer>(() => undefined));
+
+    const pending = sha256Hex(new TextEncoder().encode("hello"));
+    const assertion = expect(pending).rejects.toThrow(/timed out/i);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+
+    digestSpy.mockRestore();
+    vi.useRealTimers();
+  });
+});
 
 describe("calculateJsonChecksum", () => {
   it("is deterministic for the same inputs", async () => {
