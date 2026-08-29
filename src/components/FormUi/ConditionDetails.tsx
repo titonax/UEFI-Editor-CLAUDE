@@ -65,7 +65,9 @@ export default function ConditionDetails({
   return (
     <Stack gap={5} className={s.conditionList}>
       {conditions.map((condition) => {
-        const index = data.suppressions.indexOf(condition);
+        const index = data.suppressions.findIndex(
+          (suppression) => suppression.offset === condition.offset,
+        );
         const kind = condition.kind ?? "SuppressIf";
         const source = condition.source ?? "unknown";
         const sourceMeta = conditionSourceMeta[source];

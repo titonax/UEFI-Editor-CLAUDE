@@ -6,7 +6,7 @@ import type { Data } from "../scripts/types";
 import { sameHexId } from "../scripts/hexId";
 import SearchUi from "./SearchUi/SearchUi";
 import { summarizeFormBranch } from "../scripts/visibility";
-import { buildMenuTree, findNodePath } from "../Navigation/menuTree";
+import { findNodePath, type MenuTree } from "../Navigation/menuTree";
 import RootsTable from "./RootsTable";
 import BranchSummary from "./BranchSummary";
 import TableRow from "./TableRow";
@@ -18,6 +18,7 @@ interface FormUiProps {
   setData: Updater<Data>;
   currentFormIndex: number;
   setCurrentFormIndex: React.Dispatch<React.SetStateAction<number>>;
+  tree: MenuTree;
 }
 
 export default function FormUi({
@@ -25,9 +26,27 @@ export default function FormUi({
   setData,
   currentFormIndex,
   setCurrentFormIndex,
+  tree,
 }: FormUiProps) {
   const [search, setSearch] = useDebouncedState("", 200);
-  const semanticTree = React.useMemo(() => buildMenuTree(data), [data]);
+
+  // Computed unconditionally so the useMemo below stays a fixed hook call
+  // regardless of which view (search / top-level menu / a specific form)
+  // ends up rendering; for the two non-form views these are simply unused.
+  const currentPath = findNodePath(tree.roots, currentFormIndex);
+  const orphanPath =
+    currentPath.length === 0
+      ? findNodePath(tree.orphans, currentFormIndex)
+      : [];
+  const activePath = currentPath.length > 0 ? currentPath : orphanPath;
+  const pageNode = activePath[activePath.length - 1];
+
+  const visibilitySummary = React.useMemo(() => {
+    if (currentFormIndex < 0) {
+      return null;
+    }
+    return summarizeFormBranch(data, currentFormIndex, pageNode.status);
+  }, [data, currentFormIndex, pageNode]);
 
   function handleRefClick(formId: string, formSetGuid?: string) {
     const sourceFormSetGuid =
@@ -68,28 +87,20 @@ export default function FormUi({
       <RootsTable
         data={data}
         setData={setData}
-        roots={semanticTree.roots}
+        roots={tree.roots}
         handleRefClick={handleRefClick}
       />
     );
   }
 
-  const currentPath = findNodePath(semanticTree.roots, currentFormIndex);
-  const orphanPath =
-    currentPath.length === 0
-      ? findNodePath(semanticTree.orphans, currentFormIndex)
-      : [];
-  const activePath = currentPath.length > 0 ? currentPath : orphanPath;
-  const pageNode = activePath[activePath.length - 1];
-  const activeProfile = semanticTree.profiles.find(
+  if (!visibilitySummary) {
+    return null;
+  }
+
+  const activeProfile = tree.profiles.find(
     (profile) => profile.id === pageNode.profileId,
   );
   const pageStatus = pageNode.status;
-  const visibilitySummary = summarizeFormBranch(
-    data,
-    currentFormIndex,
-    pageStatus,
-  );
 
   return (
     <Stack gap={0}>

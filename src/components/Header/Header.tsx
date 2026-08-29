@@ -1,21 +1,19 @@
 import React from "react";
 import { Group } from "@mantine/core";
 import s from "./Header.module.css";
-import type { Data } from "../scripts/types";
-import { buildMenuTree, findNodePath } from "../Navigation/menuTree";
+import { findNodePath, type MenuTree } from "../Navigation/menuTree";
 
 interface HeaderProps {
-  data: Data;
   currentFormIndex: number;
   setCurrentFormIndex: React.Dispatch<React.SetStateAction<number>>;
+  tree: MenuTree;
 }
 
 export default function Header({
-  data,
   currentFormIndex,
   setCurrentFormIndex,
+  tree,
 }: HeaderProps) {
-  const tree = React.useMemo(() => buildMenuTree(data), [data]);
   const activePath = React.useMemo(() => {
     if (currentFormIndex < 0) {
       return [];

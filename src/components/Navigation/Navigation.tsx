@@ -22,28 +22,22 @@ import {
 } from "@tabler/icons-react";
 import s from "./Navigation.module.css";
 import type { Data } from "../scripts/types";
-import {
-  buildMenuTree,
-  findNodePath,
-  type MenuTreeNode,
-} from "./menuTree";
+import { findNodePath, type MenuTree, type MenuTreeNode } from "./menuTree";
 import { SEARCH_VIEW, TOP_LEVEL_MENU_VIEW } from "../../formNavigation";
 
 interface NavigationProps {
   data: Data;
   currentFormIndex: number;
   setCurrentFormIndex: React.Dispatch<React.SetStateAction<number>>;
+  tree: MenuTree;
 }
 
 export default function Navigation({
   data,
   currentFormIndex,
   setCurrentFormIndex,
+  tree,
 }: NavigationProps) {
-  const tree = React.useMemo(
-    () => buildMenuTree(data),
-    [data],
-  );
   const [expanded, setExpanded] = React.useState(
     () => new Set(tree.roots.map((node) => node.key)),
   );

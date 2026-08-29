@@ -15,6 +15,7 @@ import { IconBrandGithub } from "@tabler/icons-react";
 import BiosImageUpload from "./components/BiosImageUpload/BiosImageUpload";
 import { parseData } from "./components/scripts/ifrParser";
 import { TOP_LEVEL_MENU_VIEW } from "./formNavigation";
+import { buildMenuTree } from "./components/Navigation/menuTree";
 
 export default function App() {
   const [files, setFiles] = useImmer<Files>({
@@ -46,80 +47,86 @@ export default function App() {
     TOP_LEVEL_MENU_VIEW,
   );
 
+  // Computed once here instead of independently inside Navigation, Header,
+  // and FormUi - it's a non-trivial recursive walk of the whole form graph
+  // (cycle detection, orphan detection, profile inference), and all three
+  // need the exact same result on every `data` change.
+  const tree = React.useMemo(() => (data ? buildMenuTree(data) : null), [
+    data,
+  ]);
+
+  if (!data || !tree) {
+    return (
+      <Stack className={s.padding} gap="xl">
+        <BiosImageUpload
+          onExtracted={async (extractedFiles) => {
+            setFiles(extractedFiles);
+            const parsed = await parseData(extractedFiles);
+            parsed.firmwareFamily = "aptio-iv";
+            setLoadedData(parsed);
+          }}
+        />
+        <FileUploads files={files} setFiles={setFiles} setData={setLoadedData} />
+        <Group justify="center">
+          <Button
+            variant="default"
+            size="lg"
+            component="a"
+            href="https://github.com/BoringBoredom/UEFI-Editor#usage-guide"
+            target="_blank"
+            leftSection={<IconBrandGithub />}
+          >
+            Usage guide
+          </Button>
+          <Button
+            variant="default"
+            size="lg"
+            component="a"
+            href="https://github.com/BoringBoredom/UEFI-Editor/issues"
+            target="_blank"
+            leftSection={<IconBrandGithub />}
+          >
+            Report a bug
+          </Button>
+        </Group>
+      </Stack>
+    );
+  }
+
   return (
     <>
-      {data ? (
-        <>
-          <AppShell.Navbar>
-            <Navigation
-              data={data}
-              currentFormIndex={currentFormIndex}
-              setCurrentFormIndex={setCurrentFormIndex}
-            />
-          </AppShell.Navbar>
-          <AppShell.Header>
-            <Header
-              data={data}
-              currentFormIndex={currentFormIndex}
-              setCurrentFormIndex={setCurrentFormIndex}
-            />
-          </AppShell.Header>
-          <AppShell.Footer>
-            <Footer
-              currentFormIndex={currentFormIndex}
-              files={files as PopulatedFiles}
-              data={data}
-              setData={setLoadedData}
-            />
-          </AppShell.Footer>
-          <AppShell.Main>
-            <FormUi
-              data={data}
-              setData={setLoadedData}
-              currentFormIndex={currentFormIndex}
-              setCurrentFormIndex={setCurrentFormIndex}
-            />
-          </AppShell.Main>
-        </>
-      ) : (
-        <Stack className={s.padding} gap="xl">
-          <BiosImageUpload
-            onExtracted={async (extractedFiles) => {
-              setFiles(extractedFiles);
-              const parsed = await parseData(extractedFiles);
-              parsed.firmwareFamily = "aptio-iv";
-              setLoadedData(parsed);
-            }}
-          />
-          <FileUploads
-            files={files}
-            setFiles={setFiles}
-            setData={setLoadedData}
-          />
-          <Group justify="center">
-            <Button
-              variant="default"
-              size="lg"
-              component="a"
-              href="https://github.com/BoringBoredom/UEFI-Editor#usage-guide"
-              target="_blank"
-              leftSection={<IconBrandGithub />}
-            >
-              Usage guide
-            </Button>
-            <Button
-              variant="default"
-              size="lg"
-              component="a"
-              href="https://github.com/BoringBoredom/UEFI-Editor/issues"
-              target="_blank"
-              leftSection={<IconBrandGithub />}
-            >
-              Report a bug
-            </Button>
-          </Group>
-        </Stack>
-      )}
+      <AppShell.Navbar>
+        <Navigation
+          data={data}
+          tree={tree}
+          currentFormIndex={currentFormIndex}
+          setCurrentFormIndex={setCurrentFormIndex}
+        />
+      </AppShell.Navbar>
+      <AppShell.Header>
+        <Header
+          tree={tree}
+          currentFormIndex={currentFormIndex}
+          setCurrentFormIndex={setCurrentFormIndex}
+        />
+      </AppShell.Header>
+      <AppShell.Footer>
+        <Footer
+          currentFormIndex={currentFormIndex}
+          files={files as PopulatedFiles}
+          data={data}
+          setData={setLoadedData}
+        />
+      </AppShell.Footer>
+      <AppShell.Main>
+        <FormUi
+          data={data}
+          tree={tree}
+          setData={setLoadedData}
+          currentFormIndex={currentFormIndex}
+          setCurrentFormIndex={setCurrentFormIndex}
+        />
+      </AppShell.Main>
     </>
   );
 }
