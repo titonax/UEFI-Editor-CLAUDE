@@ -1,0 +1,1 @@
+# UEFI-Editor-CLAUDE
