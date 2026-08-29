@@ -99,4 +99,80 @@ describe("downloadModifiedFiles", () => {
       /Something went wrong/,
     );
   });
+
+  it("patches the AMITSE menu table's little-endian FormId bytes", async () => {
+    const files = await buildFixtureFiles();
+    const data = await parseData(files);
+
+    // Byte-swapped (little-endian) 0x0001, i.e. the executable table
+    // currently points at form 0x1 ("Main Page").
+    files.amitseSctContainer.textContent = "0100";
+    data.menu = [
+      {
+        name: "Main Page",
+        formId: "0x2", // the user retargeted this root to form 0x2
+        offset: "0x0",
+        formSetGuid: "12345678-1234-1234-1234-123456789ABC",
+        source: "amitse",
+      },
+    ];
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const [patchedBlob, patchedName] = saveAsMock.mock.calls[0] as [
+      Blob,
+      string,
+    ];
+    expect(patchedName).toBe(files.amitseSctContainer.file.name);
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    // Little-endian 0x0002.
+    expect([...patchedBytes]).toEqual([0x02, 0x00]);
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain(
+      "Main Page | FormId 0x1 -> Advanced Page | FormId 0x2",
+    );
+  });
+
+  it("patches SetupData access-level/failsafe/optimal bytes", async () => {
+    const files = await buildFixtureFiles();
+    const data = await parseData(files);
+
+    files.setupdataBinContainer.textContent = "000000";
+    const checkBox = data.forms[0].children.find(
+      (child) => child.type === "CheckBox",
+    );
+    if (!checkBox) throw new Error("expected a CheckBox child");
+    checkBox.offsets = {
+      accessLevel: "0x0",
+      failsafe: "0x1",
+      optimal: "0x2",
+    };
+    checkBox.accessLevel = "05";
+    checkBox.failsafe = "0A";
+    checkBox.optimal = "0F";
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const [patchedBlob, patchedName] = saveAsMock.mock.calls[0] as [
+      Blob,
+      string,
+    ];
+    expect(patchedName).toBe(files.setupdataBinContainer.file.name);
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    expect([...patchedBytes]).toEqual([0x05, 0x0a, 0x0f]);
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain("Access Level 00 -> 05");
+    expect(changelogText).toContain("Failsafe 00 -> 0A");
+    expect(changelogText).toContain("Optimal 00 -> 0F");
+  });
 });

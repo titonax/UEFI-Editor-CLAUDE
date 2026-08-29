@@ -1,6 +1,6 @@
 import { saveAs } from "file-saver";
 import type { PopulatedFiles } from "../FileUploads/FileUploads";
-import { sameHexId } from "./hexId";
+import { parseHexId, sameHexId } from "./hexId";
 import type { Data, Suppression } from "./types";
 
 export function validateByteInput(value: string) {
@@ -11,30 +11,39 @@ export function validateByteInput(value: string) {
   );
 }
 
-export function replaceAt(
-  string: string,
-  index: number,
-  length: number,
-  replacement: string,
-) {
-  return string.slice(0, index) + replacement + string.slice(index + length);
-}
-
-export function offsetToIndex(offset: string) {
-  return parseInt(offset, 16) * 2;
-}
-
 export function decToHexString(decimal: number) {
   return `0x${decimal.toString(16).toUpperCase()}`;
 }
 
-export function getUint8Array(string: string) {
-  const array = [];
-  for (let i = 0, len = string.length; i < len; i += 2) {
-    array[i / 2] = parseInt(string.slice(i, i + 2), 16);
+function byteHex(byte: number) {
+  return byte.toString(16).toUpperCase().padStart(2, "0");
+}
+
+export function hexToBytes(hex: string) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+const END_OPCODE = [0x29, 0x02];
+
+// Moves the 2-byte "End" opcode that closes a SuppressIf scope from `end`
+// to `start`, unconditionally exposing the bytes it used to guard. Total
+// length is unchanged: the removed bytes at `end` are exactly the ones
+// inserted at `start`, so this is a single in-place shift of the region
+// between the two rather than a remove-then-insert on the whole buffer.
+function moveEndOpcodeToStart(bytes: Uint8Array, start: number, end: number) {
+  if (bytes[end] !== END_OPCODE[0] || bytes[end + 1] !== END_OPCODE[1]) {
+    throw new Error(
+      "Something went wrong. Please file a bug report on Github.",
+    );
   }
 
-  return array;
+  bytes.copyWithin(start + END_OPCODE.length, start, end);
+  bytes[start] = END_OPCODE[0];
+  bytes[start + 1] = END_OPCODE[1];
 }
 
 export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
@@ -44,7 +53,7 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
 
   let changeLog = "";
 
-  let modifiedSetupSct = files.setupSctContainer.textContent;
+  const modifiedSetupSct = hexToBytes(files.setupSctContainer.textContent);
   let setupSctChangeLog = "";
 
   const suppressions = JSON.parse(
@@ -56,53 +65,21 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
       continue;
     }
     if (!suppression.active) {
-      if (
-        modifiedSetupSct.slice(
-          offsetToIndex(suppression.end),
-          offsetToIndex(suppression.end) + 4,
-        ) !== "2902"
-      ) {
-        throw new Error(
-          "Something went wrong. Please file a bug report on Github.",
-        );
-      }
-
-      modifiedSetupSct = replaceAt(
-        modifiedSetupSct,
-        offsetToIndex(suppression.end),
-        4,
-        "",
-      );
-
-      modifiedSetupSct = replaceAt(
-        modifiedSetupSct,
-        offsetToIndex(suppression.start),
-        0,
-        "2902",
-      );
+      const start = parseHexId(suppression.start);
+      const end = parseHexId(suppression.end);
+      moveEndOpcodeToStart(modifiedSetupSct, start, end);
 
       for (const suppressionToUpdate of suppressions) {
         if (suppressionToUpdate.offset !== suppression.offset) {
-          if (
-            parseInt(suppression.start, 16) <
-              parseInt(suppressionToUpdate.start, 16) &&
-            parseInt(suppressionToUpdate.start, 16) <
-              parseInt(suppression.end, 16)
-          ) {
-            suppressionToUpdate.start = decToHexString(
-              (offsetToIndex(suppressionToUpdate.start) + 8) / 2,
-            );
+          const updateStart = parseHexId(suppressionToUpdate.start);
+          const updateEnd = parseHexId(suppressionToUpdate.end);
+
+          if (start < updateStart && updateStart < end) {
+            suppressionToUpdate.start = decToHexString(updateStart + 4);
           }
 
-          if (
-            parseInt(suppression.start, 16) <
-              parseInt(suppressionToUpdate.end, 16) &&
-            parseInt(suppressionToUpdate.end, 16) <
-              parseInt(suppression.end, 16)
-          ) {
-            suppressionToUpdate.end = decToHexString(
-              (offsetToIndex(suppressionToUpdate.end) + 8) / 2,
-            );
+          if (start < updateEnd && updateEnd < end) {
+            suppressionToUpdate.end = decToHexString(updateEnd + 4);
           }
         }
       }
@@ -113,7 +90,7 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
     }
   }
 
-  let modifiedAmitseSct = files.amitseSctContainer.textContent;
+  const modifiedAmitseSct = hexToBytes(files.amitseSctContainer.textContent);
   let amitseSctChangeLog = "";
 
   for (const entry of data.menu) {
@@ -121,19 +98,17 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
       continue;
     }
 
-    const padded = entry.formId.split("x")[1].padStart(4, "0");
-    const newValue = padded.slice(2) + padded.slice(0, 2);
-    const index = offsetToIndex(entry.offset);
-    const oldValue = modifiedAmitseSct.slice(index, index + 4);
+    const newFormId = parseHexId(entry.formId);
+    const index = parseHexId(entry.offset);
+    const oldFormId = modifiedAmitseSct[index] | (modifiedAmitseSct[index + 1] << 8);
 
-    if (newValue !== oldValue) {
-      modifiedAmitseSct = replaceAt(modifiedAmitseSct, index, 4, newValue);
+    if (newFormId !== oldFormId) {
+      modifiedAmitseSct[index] = newFormId & 0xff;
+      modifiedAmitseSct[index + 1] = (newFormId >> 8) & 0xff;
 
-      const oldFormId = decToHexString(
-        parseInt(oldValue.slice(-2) + oldValue.slice(-4, -2), 16),
-      );
+      const oldFormIdHex = decToHexString(oldFormId);
       const oldForm = data.forms.find((form) =>
-        sameHexId(form.formId, oldFormId),
+        sameHexId(form.formId, oldFormIdHex),
       );
       const newForm = data.forms.find((form) =>
         sameHexId(form.formId, entry.formId),
@@ -144,13 +119,15 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
         );
       }
 
-      amitseSctChangeLog += `${oldForm.name} | FormId ${oldFormId} -> ${newForm.name} | FormId ${entry.formId}\n`;
+      amitseSctChangeLog += `${oldForm.name} | FormId ${oldFormIdHex} -> ${newForm.name} | FormId ${entry.formId}\n`;
 
       wasAmitseSctModified = true;
     }
   }
 
-  let modifiedSetupdataBin = files.setupdataBinContainer.textContent;
+  const modifiedSetupdataBin = hexToBytes(
+    files.setupdataBinContainer.textContent,
+  );
   let setupdataBinChangeLog = "";
 
   for (const form of data.forms) {
@@ -161,56 +138,32 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
         child.failsafe &&
         child.optimal
       ) {
-        const accessLevelIndex = offsetToIndex(child.offsets.accessLevel);
-        const oldAccessLevel = modifiedSetupdataBin.slice(
-          accessLevelIndex,
-          accessLevelIndex + 2,
-        );
-        const newAccessLevel = child.accessLevel.padStart(2, "0");
+        const accessLevelIndex = parseHexId(child.offsets.accessLevel);
+        const oldAccessLevel = modifiedSetupdataBin[accessLevelIndex];
+        const newAccessLevel = parseHexId(child.accessLevel);
         if (oldAccessLevel !== newAccessLevel) {
-          modifiedSetupdataBin = replaceAt(
-            modifiedSetupdataBin,
-            accessLevelIndex,
-            2,
-            newAccessLevel,
-          );
-          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Access Level ${oldAccessLevel} -> ${newAccessLevel}\n`;
+          modifiedSetupdataBin[accessLevelIndex] = newAccessLevel;
+          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Access Level ${byteHex(oldAccessLevel)} -> ${byteHex(newAccessLevel)}\n`;
 
           wasSetupdataBinModified = true;
         }
 
-        const failsafeIndex = offsetToIndex(child.offsets.failsafe);
-        const oldFailsafe = modifiedSetupdataBin.slice(
-          failsafeIndex,
-          failsafeIndex + 2,
-        );
-        const newFailsafe = child.failsafe.padStart(2, "0");
+        const failsafeIndex = parseHexId(child.offsets.failsafe);
+        const oldFailsafe = modifiedSetupdataBin[failsafeIndex];
+        const newFailsafe = parseHexId(child.failsafe);
         if (oldFailsafe !== newFailsafe) {
-          modifiedSetupdataBin = replaceAt(
-            modifiedSetupdataBin,
-            failsafeIndex,
-            2,
-            newFailsafe,
-          );
-          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Failsafe ${oldFailsafe} -> ${newFailsafe}\n`;
+          modifiedSetupdataBin[failsafeIndex] = newFailsafe;
+          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Failsafe ${byteHex(oldFailsafe)} -> ${byteHex(newFailsafe)}\n`;
 
           wasSetupdataBinModified = true;
         }
 
-        const optimalIndex = offsetToIndex(child.offsets.optimal);
-        const oldOptimal = modifiedSetupdataBin.slice(
-          optimalIndex,
-          optimalIndex + 2,
-        );
-        const newOptimal = child.optimal.padStart(2, "0");
+        const optimalIndex = parseHexId(child.offsets.optimal);
+        const oldOptimal = modifiedSetupdataBin[optimalIndex];
+        const newOptimal = parseHexId(child.optimal);
         if (oldOptimal !== newOptimal) {
-          modifiedSetupdataBin = replaceAt(
-            modifiedSetupdataBin,
-            optimalIndex,
-            2,
-            newOptimal,
-          );
-          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Optimal ${oldOptimal} -> ${newOptimal}\n`;
+          modifiedSetupdataBin[optimalIndex] = newOptimal;
+          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Optimal ${byteHex(oldOptimal)} -> ${byteHex(newOptimal)}\n`;
 
           wasSetupdataBinModified = true;
         }
@@ -222,7 +175,7 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
     changeLog += `========== ${files.setupSctContainer.file.name} ==========\n\n${setupSctChangeLog}\n\n\n`;
 
     saveAs(
-      new Blob([new Uint8Array(getUint8Array(modifiedSetupSct))], {
+      new Blob([modifiedSetupSct], {
         type: "application/octet-stream",
       }),
       files.setupSctContainer.file.name,
@@ -233,7 +186,7 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
     changeLog += `========== ${files.amitseSctContainer.file.name} ==========\n\n${amitseSctChangeLog}\n\n\n`;
 
     saveAs(
-      new Blob([new Uint8Array(getUint8Array(modifiedAmitseSct))], {
+      new Blob([modifiedAmitseSct], {
         type: "application/octet-stream",
       }),
       files.amitseSctContainer.file.name,
@@ -244,7 +197,7 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
     changeLog += `========== ${files.setupdataBinContainer.file.name} ==========\n\n${setupdataBinChangeLog}\n\n\n`;
 
     saveAs(
-      new Blob([new Uint8Array(getUint8Array(modifiedSetupdataBin))], {
+      new Blob([modifiedSetupdataBin], {
         type: "application/octet-stream",
       }),
       files.setupdataBinContainer.file.name,
