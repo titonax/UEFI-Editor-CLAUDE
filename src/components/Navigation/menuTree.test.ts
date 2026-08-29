@@ -169,6 +169,76 @@ describe("buildMenuTree", () => {
     expect(buildMenuTree(data).signature).toBe(buildMenuTree(data).signature);
   });
 
+  // Real AMI setups share sub-pages across many parent menus: the same form
+  // is reached via several different Ref paths, and buildFormNode
+  // deliberately re-expands it once per incoming path (each path can carry
+  // its own inherited visibility). Chaining diamonds (a fan-out into two
+  // branches that reconverge on a shared form) doubles the number of paths
+  // to everything past it at each stage, so a chain of just a few dozen
+  // diamonds blows up to millions of node builds - this must terminate in
+  // bounded time and report itself as truncated instead of hanging.
+  function buildDiamondChain(stages: number) {
+    const forms: Form[] = [];
+    for (let stage = 0; stage < stages; stage++) {
+      const entryIndex = stage * 3;
+      forms.push(
+        makeForm({
+          formId: `0x${entryIndex.toString(16)}`,
+          name: `Entry ${String(stage)}`,
+          children: [
+            makeRef({ formId: `0x${(entryIndex + 1).toString(16)}` }),
+            makeRef({ formId: `0x${(entryIndex + 2).toString(16)}` }),
+          ],
+        }),
+      );
+      forms.push(
+        makeForm({
+          formId: `0x${(entryIndex + 1).toString(16)}`,
+          name: `Left ${String(stage)}`,
+          children: [makeRef({ formId: `0x${(entryIndex + 3).toString(16)}` })],
+        }),
+      );
+      forms.push(
+        makeForm({
+          formId: `0x${(entryIndex + 2).toString(16)}`,
+          name: `Right ${String(stage)}`,
+          children: [makeRef({ formId: `0x${(entryIndex + 3).toString(16)}` })],
+        }),
+      );
+    }
+    forms.push(
+      makeForm({
+        formId: `0x${(stages * 3).toString(16)}`,
+        name: "Leaf",
+      }),
+    );
+    return forms;
+  }
+
+  it("caps a diamond-shaped Ref graph instead of exploding into millions of nodes", () => {
+    const forms = buildDiamondChain(30);
+    const data = makeData({
+      forms,
+      menu: [makeMenuRoot({ formId: "0x0" })],
+    });
+
+    const tree = buildMenuTree(data);
+
+    expect(tree.truncated).toBe(true);
+  });
+
+  it("does not truncate a small, ordinary graph", () => {
+    const forms = [
+      makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
+      makeForm({ formId: "0x2" }),
+    ];
+    const data = makeData({ forms, menu: [makeMenuRoot()] });
+
+    const tree = buildMenuTree(data);
+
+    expect(tree.truncated).toBe(false);
+  });
+
   it("changes signature when a Ref target changes", () => {
     const withoutRef = makeData({
       forms: [

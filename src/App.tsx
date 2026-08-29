@@ -60,9 +60,14 @@ export default function App() {
       <Stack className={s.padding} gap="xl">
         <BiosImageUpload
           onExtracted={async (extractedFiles) => {
-            setFiles(extractedFiles);
+            // Parse first, then set `files` and `data` together. Setting
+            // `files` before `data` is ready would re-render FileUploads
+            // with all four slots already populated - its own effect would
+            // then kick off a second, redundant parseData() in parallel
+            // with this one, racing to overwrite whichever data lands last.
             const parsed = await parseData(extractedFiles);
             parsed.firmwareFamily = "aptio-iv";
+            setFiles(extractedFiles);
             setLoadedData(parsed);
           }}
         />

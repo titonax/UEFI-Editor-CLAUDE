@@ -61,6 +61,7 @@ export interface MenuTree {
   expandableKeys: string[];
   firstKeyByFormIndex: Map<number, string>;
   signature: string;
+  truncated: boolean;
 }
 
 function sameGuid(left?: string, right?: string) {
@@ -256,12 +257,29 @@ interface BuildFormNodeOptions {
   parentageLabel?: string;
 }
 
+// Ref cycles are already stopped by the ancestors check below, but a form
+// reached via multiple different Ref paths (a "diamond": several menus all
+// linking to the same shared sub-page) is deliberately re-expanded once per
+// incoming path, since each path can carry its own inherited visibility
+// status. Real AMI Aptio setups share sub-pages heavily, so a chain of just
+// a few dozen such diamonds can multiply into millions of node builds and
+// freeze the tab. This caps total node creation so the tree always finishes
+// in bounded time; MenuTree.truncated tells the UI to warn instead of
+// silently rendering an incomplete tree.
+const MAX_MENU_TREE_NODES = 20000;
+
 export function buildMenuTree(data: Data): MenuTree {
   const reachable = new Set<number>();
   const expandableKeys: string[] = [];
   const firstKeyByFormIndex = new Map<number, string>();
+  let nodeCount = 0;
+  let truncated = false;
 
   function buildFormNode(options: BuildFormNodeOptions): MenuTreeNode {
+    nodeCount++;
+    if (nodeCount > MAX_MENU_TREE_NODES) {
+      truncated = true;
+    }
     const {
       formIndex,
       key,
@@ -292,7 +310,7 @@ export function buildMenuTree(data: Data): MenuTree {
     const nextAncestors = new Set(ancestors);
     nextAncestors.add(formIndex);
 
-    const children = cycle
+    const children = cycle || truncated
       ? []
       : form.children
           .map((child, childIndex): MenuTreeNode | null => {
@@ -622,6 +640,7 @@ export function buildMenuTree(data: Data): MenuTree {
     expandableKeys,
     firstKeyByFormIndex,
     signature,
+    truncated,
   };
 }
 

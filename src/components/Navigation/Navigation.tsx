@@ -1,6 +1,7 @@
 import React from "react";
 import {
   ActionIcon,
+  Alert,
   AppShell,
   Group,
   ScrollArea,
@@ -271,6 +272,21 @@ export default function Navigation({
           </Group>
         </Group>
       </AppShell.Section>
+
+      {tree.truncated && (
+        <AppShell.Section className={s.treeHeader}>
+          <Alert
+            color="yellow"
+            variant="light"
+            icon={<IconAlertTriangle size={16} />}
+            title="Menu tree truncated"
+          >
+            This firmware's forms reference each other from too many paths to
+            fully expand. The tree below stops early to stay responsive; some
+            branches may be missing.
+          </Alert>
+        </AppShell.Section>
+      )}
 
       <AppShell.Section
         className={[
