@@ -27,6 +27,7 @@ import {
   findNodePath,
   type MenuTreeNode,
 } from "./menuTree";
+import { SEARCH_VIEW, TOP_LEVEL_MENU_VIEW } from "../../formNavigation";
 
 interface NavigationProps {
   data: Data;
@@ -281,12 +282,12 @@ export default function Navigation({
         className={[
           s.navElement,
           s.menu,
-          currentFormIndex === -1 ? s.selected : "",
+          currentFormIndex === TOP_LEVEL_MENU_VIEW ? s.selected : "",
         ]
           .filter(Boolean)
           .join(" ")}
         onClick={() => {
-          setCurrentFormIndex(-1);
+          setCurrentFormIndex(TOP_LEVEL_MENU_VIEW);
         }}
       >
         <IconSitemap size={17} />
@@ -341,12 +342,12 @@ export default function Navigation({
         className={[
           s.navElement,
           s.search,
-          currentFormIndex === -2 ? s.selected : "",
+          currentFormIndex === SEARCH_VIEW ? s.selected : "",
         ]
           .filter(Boolean)
           .join(" ")}
         onClick={() => {
-          setCurrentFormIndex(-2);
+          setCurrentFormIndex(SEARCH_VIEW);
         }}
       >
         <IconSearch size={17} />

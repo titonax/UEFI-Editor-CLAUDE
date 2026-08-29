@@ -129,6 +129,12 @@ function canonicalMenuRole(label: string) {
   return normalized;
 }
 
+// A group needs at least this many roots before a repeated major tab
+// (Advanced/Security/Boot) is treated as evidence of a *second* profile
+// restarting, rather than just an early, coincidental repeat within the
+// same menu (e.g. a single "Advanced" appearing twice).
+const MIN_ROOTS_BEFORE_SEQUENCE_RESTART = 3;
+
 function inferMenuProfiles(roots: MenuTreeNode[]): MenuProfile[] {
   if (roots.length === 0) {
     return [];
@@ -144,7 +150,7 @@ function inferMenuProfiles(roots: MenuTreeNode[]): MenuProfile[] {
     const startsAfterExit =
       previousRole === "exit" && (role === "main" || role === "sysinfo");
     const restartsKnownSequence =
-      current.length >= 3 &&
+      current.length >= MIN_ROOTS_BEFORE_SEQUENCE_RESTART &&
       seenRoles.has(role) &&
       ["advanced", "security", "boot"].includes(role);
     if (current.length > 0 && (startsAfterExit || restartsKnownSequence)) {

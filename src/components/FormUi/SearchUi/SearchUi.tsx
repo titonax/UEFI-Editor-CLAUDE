@@ -79,9 +79,9 @@ export default function SearchUi({
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
-          {found.map((entry, index) => (
+          {found.map((entry) => (
             <Table.Tr
-              key={index.toString() + entry.name + entry.formId + entry.type}
+              key={`${entry.formSetGuid ?? ""}:${entry.formId}:${entry.type}:${entry.name}`}
             >
               <Table.Td>{entry.name}</Table.Td>
               <Table.Td>{entry.type}</Table.Td>

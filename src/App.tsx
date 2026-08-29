@@ -14,6 +14,7 @@ import Footer from "./components/Footer/Footer";
 import { IconBrandGithub } from "@tabler/icons-react";
 import BiosImageUpload from "./components/BiosImageUpload/BiosImageUpload";
 import { parseData } from "./components/scripts/ifrParser";
+import { TOP_LEVEL_MENU_VIEW } from "./formNavigation";
 
 export default function App() {
   const [files, setFiles] = useImmer<Files>({
@@ -41,7 +42,9 @@ export default function App() {
     });
   };
 
-  const [currentFormIndex, setCurrentFormIndex] = React.useState(-1);
+  const [currentFormIndex, setCurrentFormIndex] = React.useState(
+    TOP_LEVEL_MENU_VIEW,
+  );
 
   return (
     <>

@@ -11,6 +11,7 @@ import RootsTable from "./RootsTable";
 import BranchSummary from "./BranchSummary";
 import TableRow from "./TableRow";
 import s from "./FormUi.module.css";
+import { SEARCH_VIEW, TOP_LEVEL_MENU_VIEW } from "../../formNavigation";
 
 interface FormUiProps {
   data: Data;
@@ -51,7 +52,7 @@ export default function FormUi({
     }
   }
 
-  if (currentFormIndex === -2) {
+  if (currentFormIndex === SEARCH_VIEW) {
     return (
       <SearchUi
         data={data}
@@ -62,7 +63,7 @@ export default function FormUi({
     );
   }
 
-  if (currentFormIndex === -1) {
+  if (currentFormIndex === TOP_LEVEL_MENU_VIEW) {
     return (
       <RootsTable
         data={data}
