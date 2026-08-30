@@ -1,4 +1,4 @@
-import { normalizedHexId } from "./hexId";
+import { findFormIndexByFormId } from "./hexId";
 import type {
   ConditionSource,
   Data,
@@ -169,26 +169,6 @@ function emptySourceCounts(): ConditionSourceCounts {
   };
 }
 
-function findReferencedForm(
-  data: Data,
-  formId: string,
-  formSetGuid?: string,
-) {
-  const normalized = normalizedHexId(formId);
-  const inFormSet = data.forms.findIndex(
-    (form) =>
-      (form.formSetGuid ?? "").toLowerCase() ===
-        (formSetGuid ?? "").toLowerCase() &&
-      normalizedHexId(form.formId) === normalized,
-  );
-
-  return inFormSet >= 0
-    ? inFormSet
-    : data.forms.findIndex(
-        (form) => normalizedHexId(form.formId) === normalized,
-      );
-}
-
 export function summarizeFormBranch(
   data: Data,
   rootFormIndex: number,
@@ -220,8 +200,8 @@ export function summarizeFormBranch(
       let targetIndex = -1;
 
       if (child.type === "Ref") {
-        targetIndex = findReferencedForm(
-          data,
+        targetIndex = findFormIndexByFormId(
+          data.forms,
           child.formId,
           child.targetFormSetGuid ?? form.formSetGuid,
         );

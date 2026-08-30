@@ -100,6 +100,13 @@ export type FormChildren =
 export interface RefPrompt extends FormChild {
   type: "Ref";
   formId: string;
+  // Absolute byte offset of the FormId field within the opcode itself, in
+  // the original HII binary - always Header(2) + QuestionHeader(11) bytes
+  // into the opcode regardless of the Ref1/Ref2/Ref3/Ref4 variant, since
+  // FormId always immediately follows QuestionHeader before any
+  // variant-specific tail (a FormSetGuid, an extra QuestionId, ...).
+  // Lets a future edit retarget this Ref by overwriting just these 2 bytes.
+  formIdOffset: string;
   targetFormSetGuid?: string;
   pageId: string | null;
 }

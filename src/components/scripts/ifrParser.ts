@@ -586,12 +586,21 @@ function handleConditionLine(
   } as Suppression);
 }
 
+// A Ref opcode's FormId field always sits right after its OpCode+Length
+// header (2 bytes) and its EFI_IFR_QUESTION_HEADER (Prompt/Help StringIds +
+// QuestionId + VarStoreId + VarStoreInfo + QuestionFlags = 11 bytes), before
+// any variant-specific tail (Ref2's DevicePath, Ref3/Ref4's QuestionId,
+// Ref4's FormSetGuid). Verified against a real dump: FormId always lands on
+// the opcode's last two bytes when there's no FormSetGuid tail.
+const REF_FORM_ID_RELATIVE_OFFSET = 13;
+
 function handleRefLine(
   state: ParserState,
   ref: RegExpExecArray,
   refFormId: RegExpExecArray,
   refFormSetGuid: RegExpExecArray | null,
   setupdataBin: string,
+  offset: string,
 ) {
   const formId = refFormId[1];
   const targetFormSetGuid = refFormSetGuid?.[1];
@@ -608,6 +617,9 @@ function handleRefLine(
       state.currentFormSetGuid,
     ),
     formId,
+    formIdOffset: decToHexString(
+      parseHexId(offset) + REF_FORM_ID_RELATIVE_OFFSET,
+    ),
     targetFormSetGuid,
     ...getAdditionalData(ref[8], setupdataBin, true),
   };
@@ -937,7 +949,7 @@ function parseSetupTxt(setupTxt: string, setupdataBin: string): ParserState {
     }
 
     if (ref && refFormId) {
-      handleRefLine(state, ref, refFormId, refFormSetGuid, setupdataBin);
+      handleRefLine(state, ref, refFormId, refFormSetGuid, setupdataBin, offset);
     }
 
     if (string) {

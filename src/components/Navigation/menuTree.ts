@@ -1,5 +1,5 @@
 import type { Data, VisibilityStatus } from "../scripts/types";
-import { normalizedHexId } from "../scripts/hexId";
+import { findFormIndexByFormId, normalizedHexId } from "../scripts/hexId";
 import {
   childVisibility,
   combineVisibility,
@@ -62,27 +62,6 @@ export interface MenuTree {
   firstKeyByFormIndex: Map<number, string>;
   signature: string;
   truncated: boolean;
-}
-
-function sameGuid(left?: string, right?: string) {
-  return (left ?? "").toLowerCase() === (right ?? "").toLowerCase();
-}
-
-function findFormIndex(data: Data, formId: string, formSetGuid?: string) {
-  const normalized = normalizedHexId(formId);
-  const inFormSet = data.forms.findIndex(
-    (form) =>
-      sameGuid(form.formSetGuid, formSetGuid) &&
-      normalizedHexId(form.formId) === normalized,
-  );
-
-  if (inFormSet >= 0) {
-    return inFormSet;
-  }
-
-  return data.forms.findIndex(
-    (form) => normalizedHexId(form.formId) === normalized,
-  );
 }
 
 function conditionDescriptions(
@@ -321,8 +300,8 @@ export function buildMenuTree(data: Data): MenuTree {
             const reference = child;
             const targetFormSetGuid =
               reference.targetFormSetGuid ?? form.formSetGuid;
-            const targetIndex = findFormIndex(
-              data,
+            const targetIndex = findFormIndexByFormId(
+              data.forms,
               reference.formId,
               targetFormSetGuid,
             );
@@ -451,7 +430,11 @@ export function buildMenuTree(data: Data): MenuTree {
 
   const roots = rootEntries
     .map((entry, menuIndex): MenuTreeNode | null => {
-      const formIndex = findFormIndex(data, entry.formId, entry.formSetGuid);
+      const formIndex = findFormIndexByFormId(
+        data.forms,
+        entry.formId,
+        entry.formSetGuid,
+      );
       const rootSource: RootSource =
         entry.source === "setupdata"
           ? "setupdata"
@@ -553,8 +536,8 @@ export function buildMenuTree(data: Data): MenuTree {
       if (child.type !== "Ref") {
         continue;
       }
-      const targetIndex = findFormIndex(
-        data,
+      const targetIndex = findFormIndexByFormId(
+        data.forms,
         child.formId,
         child.targetFormSetGuid ?? form.formSetGuid,
       );
@@ -572,7 +555,9 @@ export function buildMenuTree(data: Data): MenuTree {
       data.formSetRoots ??
       data.menu.filter((entry) => entry.source === "formset")
     )
-      .map((entry) => findFormIndex(data, entry.formId, entry.formSetGuid))
+      .map((entry) =>
+        findFormIndexByFormId(data.forms, entry.formId, entry.formSetGuid),
+      )
       .filter((formIndex) => formIndex >= 0),
   );
   const detachedCandidates = [

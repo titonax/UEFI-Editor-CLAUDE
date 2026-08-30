@@ -40,6 +40,7 @@ function makeRef(overrides: Partial<RefPrompt> = {}): RefPrompt {
     questionId: "0x0002",
     varStoreId: "0x0001",
     formId: "0x2",
+    formIdOffset: "0x0",
     pageId: null,
     accessLevel: null,
     failsafe: null,

@@ -66,6 +66,9 @@ describe("parseData", () => {
     }
     expect(ref.formId).toBe("0x2");
     expect(ref.targetFormSetGuid).toBe("12345678-1234-1234-1234-123456789ABC");
+    // The fixture's Ref opcode starts at 0x0000002E; FormId sits 13 bytes
+    // into the opcode (Header + QuestionHeader), at 0x2E + 0xD = 0x3B.
+    expect(ref.formIdOffset).toBe("0x3B");
 
     expect(form2.referencedIn).toEqual(["0x1"]);
 
