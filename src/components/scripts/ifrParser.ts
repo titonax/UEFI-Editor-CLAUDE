@@ -550,6 +550,10 @@ function handleFormLine(
     formSetTitle: state.currentFormSetTitle,
     referencedIn: [],
     children: [],
+    // Overwritten with the real value once this Form's own End line is
+    // reached (see handleEndLine) - every well-formed dump closes every
+    // Form it opens, checked at the end of parseSetupTxt.
+    endOffset: "",
   };
 
   if (hasScope(form[3])) {
@@ -621,6 +625,7 @@ function handleRefLine(
       parseHexId(offset) + REF_FORM_ID_RELATIVE_OFFSET,
     ),
     targetFormSetGuid,
+    sctOffset: offset,
     ...getAdditionalData(ref[8], setupdataBin, true),
   };
 
@@ -645,6 +650,7 @@ function handleStringLine(
   string: RegExpExecArray,
   setupdataBin: string,
   indentations: number,
+  offset: string,
 ) {
   const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
     string[10],
@@ -667,6 +673,7 @@ function handleStringLine(
     failsafe,
     optimal,
     offsets,
+    sctOffset: offset,
   };
 
   checkConditions(state.scopes, state.currentString);
@@ -681,6 +688,7 @@ function handleNumericLine(
   numeric: RegExpExecArray,
   setupdataBin: string,
   indentations: number,
+  offset: string,
 ) {
   const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
     numeric[12],
@@ -708,6 +716,7 @@ function handleNumericLine(
     failsafe,
     optimal,
     offsets,
+    sctOffset: offset,
   };
 
   checkConditions(state.scopes, state.currentNumeric);
@@ -722,6 +731,7 @@ function handleCheckBoxLine(
   checkBox: RegExpExecArray,
   setupdataBin: string,
   indentations: number,
+  offset: string,
 ) {
   const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
     checkBox[8],
@@ -746,6 +756,7 @@ function handleCheckBoxLine(
     failsafe,
     optimal,
     offsets,
+    sctOffset: offset,
   };
 
   checkConditions(state.scopes, state.currentCheckBox);
@@ -760,6 +771,7 @@ function handleOneOfLine(
   oneOf: RegExpExecArray,
   setupdataBin: string,
   indentations: number,
+  offset: string,
 ) {
   const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
     oneOf[12],
@@ -785,6 +797,7 @@ function handleOneOfLine(
     failsafe,
     optimal,
     offsets,
+    sctOffset: offset,
   };
 
   checkConditions(state.scopes, state.currentOneOf);
@@ -843,7 +856,9 @@ function handleEndLine(
   const scopeType = currentScope.type;
 
   if (scopeType === "Form") {
-    state.forms.push(requireCurrent(state.currentForm));
+    const form = requireCurrent(state.currentForm);
+    form.endOffset = offset;
+    state.forms.push(form);
   } else if (scopeType === "Numeric") {
     requireCurrent(state.currentForm).children.push(
       requireCurrent(state.currentNumeric),
@@ -953,19 +968,19 @@ function parseSetupTxt(setupTxt: string, setupdataBin: string): ParserState {
     }
 
     if (string) {
-      handleStringLine(state, string, setupdataBin, indentations);
+      handleStringLine(state, string, setupdataBin, indentations, offset);
     }
 
     if (numeric) {
-      handleNumericLine(state, numeric, setupdataBin, indentations);
+      handleNumericLine(state, numeric, setupdataBin, indentations, offset);
     }
 
     if (checkBox) {
-      handleCheckBoxLine(state, checkBox, setupdataBin, indentations);
+      handleCheckBoxLine(state, checkBox, setupdataBin, indentations, offset);
     }
 
     if (oneOf) {
-      handleOneOfLine(state, oneOf, setupdataBin, indentations);
+      handleOneOfLine(state, oneOf, setupdataBin, indentations, offset);
     }
 
     if (oneOfOption) {

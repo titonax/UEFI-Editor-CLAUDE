@@ -1,5 +1,14 @@
 import React from "react";
-import { Badge, Spoiler, Stack, TextInput, Tooltip } from "@mantine/core";
+import {
+  ActionIcon,
+  Badge,
+  Group,
+  Spoiler,
+  Stack,
+  TextInput,
+  Tooltip,
+} from "@mantine/core";
+import { IconChevronDown, IconChevronUp } from "@tabler/icons-react";
 import type { Updater } from "use-immer";
 import type { Data, FormChildren } from "../scripts/types";
 import { validateByteInput } from "../scripts/binaryPatcher";
@@ -8,6 +17,12 @@ import ConditionDetails from "./ConditionDetails";
 import { visibilityColors } from "./visibilityColors";
 import s from "./FormUi.module.css";
 
+export interface MoveControl {
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (direction: "up" | "down") => void;
+}
+
 interface TableRowProps {
   child: FormChildren;
   index: number;
@@ -15,6 +30,11 @@ interface TableRowProps {
   data: Data;
   setData: Updater<Data>;
   currentFormIndex: number;
+  // Present only on the first row of a "movable block" (see
+  // childOrdering.ts) - null for every other row, including the rest of a
+  // multi-child block, which move along with their block's leader instead
+  // of getting their own controls.
+  moveControl: MoveControl | null;
 }
 
 const TableRow = React.memo(
@@ -25,6 +45,7 @@ const TableRow = React.memo(
     data,
     setData,
     currentFormIndex,
+    moveControl,
   }: TableRowProps) {
     const type = child.type;
     const visibility = childVisibility(data, child);
@@ -88,15 +109,47 @@ const TableRow = React.memo(
 
     return (
       <tr className={s.memoRow}>
-        <td
-          className={type === "Ref" ? s.pointer : undefined}
-          onClick={() => {
-            if (type === "Ref") {
-              handleRefClick(child.formId, child.targetFormSetGuid);
-            }
-          }}
-        >
-          {child.name}
+        <td>
+          <Group gap={6} wrap="nowrap">
+            {moveControl && (
+              <Stack gap={0}>
+                <ActionIcon
+                  size="xs"
+                  variant="subtle"
+                  color="gray"
+                  disabled={!moveControl.canMoveUp}
+                  aria-label={`Move "${child.name}" up`}
+                  onClick={() => {
+                    moveControl.onMove("up");
+                  }}
+                >
+                  <IconChevronUp size={12} />
+                </ActionIcon>
+                <ActionIcon
+                  size="xs"
+                  variant="subtle"
+                  color="gray"
+                  disabled={!moveControl.canMoveDown}
+                  aria-label={`Move "${child.name}" down`}
+                  onClick={() => {
+                    moveControl.onMove("down");
+                  }}
+                >
+                  <IconChevronDown size={12} />
+                </ActionIcon>
+              </Stack>
+            )}
+            <span
+              className={type === "Ref" ? s.pointer : undefined}
+              onClick={() => {
+                if (type === "Ref") {
+                  handleRefClick(child.formId, child.targetFormSetGuid);
+                }
+              }}
+            >
+              {child.name}
+            </span>
+          </Group>
         </td>
         <td>{type}</td>
         <td>
@@ -204,6 +257,27 @@ const TableRow = React.memo(
     );
   },
   (oldProps: TableRowProps, newProps: TableRowProps) => {
+    // A reorder changes which child lives at this row's `index` without
+    // necessarily touching accessLevel/failsafe/optimal/suppression state
+    // below - skipping the re-render here would leave e.g. the accessLevel
+    // input's onChange handler closed over a stale `index`, silently
+    // writing its next edit to the wrong child.
+    if (oldProps.index !== newProps.index) {
+      return false;
+    }
+
+    const oldMove = oldProps.moveControl;
+    const newMove = newProps.moveControl;
+    if (
+      (oldMove === null) !== (newMove === null) ||
+      (oldMove &&
+        newMove &&
+        (oldMove.canMoveUp !== newMove.canMoveUp ||
+          oldMove.canMoveDown !== newMove.canMoveDown))
+    ) {
+      return false;
+    }
+
     const oldChild =
       oldProps.data.forms[oldProps.currentFormIndex].children[oldProps.index];
     const newChild =

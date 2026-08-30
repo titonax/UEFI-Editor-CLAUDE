@@ -26,11 +26,16 @@ describe("parseData", () => {
     if (!form1 || !form2) throw new Error("expected both forms to be parsed");
 
     expect(form1.children).toHaveLength(4);
+    // form1's own End line sits at 0x00000030 (see testFixtures.ts); form2
+    // has no children and closes immediately at 0x00000034.
+    expect(form1.endOffset).toBe("0x00000030");
+    expect(form2.endOffset).toBe("0x00000034");
 
     const checkBox = form1.children.find((child) => child.type === "CheckBox");
     if (!checkBox) {
       throw new Error("expected a CheckBox child");
     }
+    expect(checkBox.sctOffset).toBe("0x0000001A");
     expect(checkBox.name).toBe("Enable Feature");
     expect(checkBox.questionId).toBe("0x0001");
     expect(checkBox.varStoreName).toBe("Setup");
@@ -46,6 +51,7 @@ describe("parseData", () => {
     if (!numeric) {
       throw new Error("expected a Numeric child");
     }
+    expect(numeric.sctOffset).toBe("0x00000020");
     expect(numeric.min).toBe("0x00");
     expect(numeric.max).toBe("0x0A");
     expect(numeric.defaults).toEqual([{ defaultId: "0x0000", value: "0x05" }]);
@@ -64,6 +70,7 @@ describe("parseData", () => {
     if (!ref) {
       throw new Error("expected a Ref child");
     }
+    expect(ref.sctOffset).toBe("0x0000002E");
     expect(ref.formId).toBe("0x2");
     expect(ref.targetFormSetGuid).toBe("12345678-1234-1234-1234-123456789ABC");
     // The fixture's Ref opcode starts at 0x0000002E; FormId sits 13 bytes

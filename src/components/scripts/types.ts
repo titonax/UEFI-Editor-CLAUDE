@@ -67,6 +67,10 @@ export interface Form {
   formSetTitle?: string;
   referencedIn: string[];
   children: FormChildren[];
+  // Byte offset of this Form's own closing End opcode in the original HII
+  // binary. Bounds the last child's/block's byte extent when reordering
+  // children - see childOrdering.ts.
+  endOffset: string;
 }
 
 export interface Offsets {
@@ -88,6 +92,12 @@ export interface FormChild {
   offsets: Offsets | null;
   suppressIf?: string[];
   conditions?: string[];
+  // Byte offset of this opcode's own start (its OpCode+Length header) in the
+  // original HII binary. Pristine and never rewritten in place - reordering
+  // this Form's children uses it (and the enclosing condition's own offset,
+  // when `conditions` is set) to find each child's original bytes, without
+  // needing to track a separately-mutated "current position" anywhere.
+  sctOffset: string;
 }
 
 export type FormChildren =

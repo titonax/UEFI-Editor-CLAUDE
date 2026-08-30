@@ -4,6 +4,7 @@ import type { Updater } from "use-immer";
 import { useDebouncedState } from "@mantine/hooks";
 import type { Data } from "../scripts/types";
 import { sameHexId } from "../scripts/hexId";
+import { computeChildBlocks, swapAdjacentBlocks } from "../scripts/childOrdering";
 import SearchUi from "./SearchUi/SearchUi";
 import { summarizeFormBranch } from "../scripts/visibility";
 import { findNodePath, type MenuTree } from "../Navigation/menuTree";
@@ -102,6 +103,29 @@ export default function FormUi({
   );
   const pageStatus = pageNode.status;
 
+  const children = data.forms[currentFormIndex].children;
+  // Blocks group a child together with any sibling(s) sharing the same
+  // enclosing SuppressIf/GrayOutIf/DisableIf, since a condition wrapper has
+  // to move as a whole with whatever it hides - see childOrdering.ts. Only
+  // a block's first row gets the move controls; the rest of the block just
+  // comes along with it.
+  const blocks = computeChildBlocks(children);
+  const blockIndexByChildIndex = new Map<number, number>();
+  blocks.forEach((block, blockIndex) => {
+    blockIndexByChildIndex.set(block.startIndex, blockIndex);
+  });
+
+  function moveBlock(blockIndex: number, direction: "up" | "down") {
+    setData((draft) => {
+      draft.forms[currentFormIndex].children = swapAdjacentBlocks(
+        draft.forms[currentFormIndex].children,
+        computeChildBlocks(draft.forms[currentFormIndex].children),
+        blockIndex,
+        direction,
+      );
+    });
+  }
+
   return (
     <Stack gap={0}>
       <BranchSummary
@@ -124,17 +148,31 @@ export default function FormUi({
         </Table.Tr>
       </Table.Thead>
       <Table.Tbody className={s.striped}>
-        {data.forms[currentFormIndex].children.map((child, index) => (
-          <TableRow
-            key={`${child.type}:${child.questionId}`}
-            child={child}
-            index={index}
-            handleRefClick={handleRefClick}
-            data={data}
-            setData={setData}
-            currentFormIndex={currentFormIndex}
-          />
-        ))}
+        {children.map((child, index) => {
+          const blockIndex = blockIndexByChildIndex.get(index);
+          return (
+            <TableRow
+              key={`${child.type}:${child.questionId}`}
+              child={child}
+              index={index}
+              handleRefClick={handleRefClick}
+              data={data}
+              setData={setData}
+              currentFormIndex={currentFormIndex}
+              moveControl={
+                blockIndex === undefined
+                  ? null
+                  : {
+                      canMoveUp: blockIndex > 0,
+                      canMoveDown: blockIndex < blocks.length - 1,
+                      onMove: (direction) => {
+                        moveBlock(blockIndex, direction);
+                      },
+                    }
+              }
+            />
+          );
+        })}
       </Table.Tbody>
       </Table>
     </Stack>

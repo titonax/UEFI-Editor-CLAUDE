@@ -14,6 +14,7 @@ function makeForm(overrides: Partial<Form> = {}): Form {
     formId: "0x1",
     referencedIn: [],
     children: [],
+    endOffset: "0x0",
     ...overrides,
   };
 }

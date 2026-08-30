@@ -173,6 +173,7 @@ describe("downloadModifiedFiles", () => {
           type: "Form",
           formId: "0x1",
           referencedIn: [],
+          endOffset: "0x28",
           children: [
             {
               name: "Go to Advanced",
@@ -187,6 +188,7 @@ describe("downloadModifiedFiles", () => {
               failsafe: null,
               optimal: null,
               offsets: null,
+              sctOffset: "0x7",
             },
           ],
         },
@@ -195,6 +197,7 @@ describe("downloadModifiedFiles", () => {
           type: "Form",
           formId: "0x2",
           referencedIn: [],
+          endOffset: "0x28",
           children: [],
         },
       ],
@@ -401,5 +404,182 @@ describe("downloadModifiedFiles", () => {
         childEndToOuterEnd +
         afterOuterEnd,
     );
+  });
+
+  it("reorders a Form's children by physically rearranging their pristine bytes", async () => {
+    // Pristine layout: A at 0x0 (4 bytes), B at 0x4 (4 bytes), C at 0x8 (4
+    // bytes), the Form's own End at 0xC. The user reordered them in memory
+    // to [C, B, A] - this should show up as the same three 4-byte chunks
+    // physically rearranged into that order, nothing added or removed.
+    const aBytes = "AA".repeat(4);
+    const bBytes = "BB".repeat(4);
+    const cBytes = "CC".repeat(4);
+
+    const files = await buildFixtureFiles();
+    files.setupSctContainer.textContent = aBytes + bBytes + cBytes;
+
+    function makeItem(name: string, sctOffset: string) {
+      return {
+        name,
+        description: "",
+        type: "String" as const,
+        questionId: "0x1",
+        varStoreId: "0x1",
+        accessLevel: null,
+        failsafe: null,
+        optimal: null,
+        offsets: null,
+        sctOffset,
+      };
+    }
+
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [
+        {
+          name: "Page",
+          type: "Form",
+          formId: "0x1",
+          referencedIn: [],
+          endOffset: "0xC",
+          children: [
+            makeItem("C", "0x8"),
+            makeItem("B", "0x4"),
+            makeItem("A", "0x0"),
+          ],
+        },
+      ],
+      varStores: [],
+      version: "test",
+      hashes: {
+        setupTxt: "",
+        setupSct: "",
+        amitseSct: "",
+        setupdataBin: "",
+        offsetChecksum: "",
+      },
+      suppressions: [],
+    };
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const patchedBlob = (saveAsMock.mock.calls[0] as [Blob, string])[0];
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    const patchedHex = Array.from(patchedBytes, (byte) =>
+      byte.toString(16).toUpperCase().padStart(2, "0"),
+    ).join("");
+    expect(patchedHex).toBe(cBytes + bBytes + aBytes);
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain('Reordered "Page": C, B, A');
+  });
+
+  it("remaps a suppression carried inside a reordered block, so a same-download unsuppress still finds its End marker", async () => {
+    // Pristine layout (16 bytes): A at 0x0 (4 bytes, unconditioned), B at
+    // 0x4 (4 bytes, unconditioned), then a SuppressIf-wrapped block C
+    // opening at 0x8 (8 bytes: 2 filler, a 4-byte guarded CheckBox at 0xA,
+    // then the SuppressIf's own End marker "29 02" at 0xE). Form's own End
+    // at 0x10. The user reordered to [C, A, B] - C's whole conditioned
+    // block, End marker included, moves from 0x8 to 0x0.
+    const files = await buildFixtureFiles();
+    files.setupSctContainer.textContent =
+      "AAAAAAAA" + // A: 0x0-0x3
+      "BBBBBBBB" + // B: 0x4-0x7
+      "F0F1" + // C's filler: 0x8-0x9
+      "CCCCCCCC" + // C's guarded content: 0xA-0xD
+      "2902"; // C's own SuppressIf End marker: 0xE-0xF
+
+    function makeItem(
+      name: string,
+      sctOffset: string,
+      conditions?: string[],
+    ) {
+      return {
+        name,
+        description: "",
+        type: "String" as const,
+        questionId: "0x1",
+        varStoreId: "0x1",
+        accessLevel: null,
+        failsafe: null,
+        optimal: null,
+        offsets: null,
+        sctOffset,
+        conditions,
+      };
+    }
+
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [
+        {
+          name: "Page",
+          type: "Form",
+          formId: "0x1",
+          referencedIn: [],
+          endOffset: "0x10",
+          children: [
+            makeItem("C", "0xA", ["0x8"]),
+            makeItem("A", "0x0"),
+            makeItem("B", "0x4"),
+          ],
+        },
+      ],
+      varStores: [],
+      version: "test",
+      hashes: {
+        setupTxt: "",
+        setupSct: "",
+        amitseSct: "",
+        setupdataBin: "",
+        offsetChecksum: "",
+      },
+      suppressions: [
+        {
+          offset: "0x8",
+          start: "0xA",
+          end: "0xE",
+          kind: "SuppressIf",
+          active: false,
+        },
+      ],
+    };
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const patchedBlob = (saveAsMock.mock.calls[0] as [Blob, string])[0];
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    const patchedHex = Array.from(patchedBytes, (byte) =>
+      byte.toString(16).toUpperCase().padStart(2, "0"),
+    ).join("");
+
+    // C's block (filler + guarded content + End marker) physically moves to
+    // the front; the SuppressIf deactivation then finds its End marker at
+    // its remapped position (0x6, not the stale pristine 0xE) and moves it
+    // to the remapped start (0x2), unconditionally exposing the CC bytes.
+    expect(patchedHex).toBe(
+      "F0F1" + // filler, unmoved by the unsuppress
+        "2902" + // the End marker, relocated to the (remapped) start
+        "CCCCCCCC" + // the guarded content, now unconditionally reachable
+        "AAAAAAAA" + // A, shifted from 0x0 to 0x8
+        "BBBBBBBB", // B, shifted from 0x4 to 0xC
+    );
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain('Reordered "Page": C, A, B');
+    // suppression.offset (the condition opcode's own pristine offset, 0x8)
+    // gets remapped the same way start/end do: 0x8 was inside the moved
+    // block's old [0x8, 0x10) range, shifted by the block's own -8 delta.
+    expect(changelogText).toContain("Unsuppressed 0x0");
   });
 });

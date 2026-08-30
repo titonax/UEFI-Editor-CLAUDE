@@ -1,5 +1,11 @@
 import { saveAs } from "file-saver";
 import type { PopulatedFiles } from "../FileUploads/FileUploads";
+import {
+  computeChildBlocks,
+  computeReorderPieces,
+  remapOffsetIfMoved,
+  type ReorderPiece,
+} from "./childOrdering";
 import { findFormIndexByFormId, parseHexId, sameHexId } from "./hexId";
 import type { Data, Suppression } from "./types";
 
@@ -44,6 +50,28 @@ function moveEndOpcodeToStart(bytes: Uint8Array, start: number, end: number) {
   bytes.copyWithin(start + END_OPCODE.length, start, end);
   bytes[start] = END_OPCODE[0];
   bytes[start + 1] = END_OPCODE[1];
+}
+
+// Physically rearranges a Form's body bytes to match `pieces` (see
+// computeReorderPieces). Reads every piece from its pristine position into
+// a fresh staging buffer before writing anything back to `bytes`, since a
+// general permutation of variable-length pieces - unlike the single fixed
+// 2-byte shift moveEndOpcodeToStart does - can have pieces whose old and
+// new ranges overlap in ways a direct piece-by-piece copy could corrupt
+// (overwriting a piece's own bytes before another piece has read them).
+function applyReorderPieces(bytes: Uint8Array, pieces: ReorderPiece[]) {
+  const bodyStart = Math.min(...pieces.map((piece) => piece.newStart));
+  const bodyLength = pieces.reduce((sum, piece) => sum + piece.length, 0);
+  const staging = new Uint8Array(bodyLength);
+
+  for (const piece of pieces) {
+    staging.set(
+      bytes.subarray(piece.oldStart, piece.oldStart + piece.length),
+      piece.newStart - bodyStart,
+    );
+  }
+
+  bytes.set(staging, bodyStart);
 }
 
 export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
@@ -109,6 +137,42 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
   const suppressions = JSON.parse(
     JSON.stringify(data.suppressions),
   ) as Suppression[];
+
+  // Reordering a Form's children rewrites its whole body in one go (see
+  // computeReorderPieces/applyReorderPieces): every block's bytes come from
+  // its pristine, never-shifted position, so this must run after the Ref
+  // retarget loop above (which writes new FormId values at those same
+  // pristine positions - reorder then carries the already-correct bytes to
+  // their new spot) and before the SuppressIf-deactivation loop below
+  // (which needs suppressions' start/end to already reflect any block
+  // that physically moved, not their stale pristine positions).
+  for (const form of data.forms) {
+    const pieces = computeReorderPieces(form);
+    if (!pieces) {
+      continue;
+    }
+
+    applyReorderPieces(modifiedSetupSct, pieces);
+
+    for (const suppression of suppressions) {
+      suppression.offset = decToHexString(
+        remapOffsetIfMoved(parseHexId(suppression.offset), pieces),
+      );
+      suppression.start = decToHexString(
+        remapOffsetIfMoved(parseHexId(suppression.start), pieces),
+      );
+      suppression.end = decToHexString(
+        remapOffsetIfMoved(parseHexId(suppression.end), pieces),
+      );
+    }
+
+    const newOrder = computeChildBlocks(form.children)
+      .map((block) => form.children[block.startIndex].name || "item")
+      .join(", ");
+    setupSctChangeLog += `Reordered "${form.name}": ${newOrder}\n`;
+
+    wasSetupSctModified = true;
+  }
 
   for (const suppression of suppressions) {
     if ((suppression.kind ?? "SuppressIf") !== "SuppressIf") {
