@@ -99,14 +99,20 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
 
   return (
     <>
-      <AppShell.Navbar style={{ position: "relative" }}>
-        <Navigation
-          data={data}
-          tree={tree}
-          currentFormIndex={currentFormIndex}
-          setCurrentFormIndex={setCurrentFormIndex}
-        />
-        <NavbarResizeHandle width={navbarWidth} setWidth={setNavbarWidth} />
+      <AppShell.Navbar>
+        {/* AppShell.Navbar itself must keep Mantine's own `position: fixed` -
+            overriding it breaks AppShell's layout (Main ends up stacked
+            below the navbar instead of beside it). This wrapper supplies
+            the positioning context the resize handle anchors to instead. */}
+        <div className={s.navbarInner}>
+          <Navigation
+            data={data}
+            tree={tree}
+            currentFormIndex={currentFormIndex}
+            setCurrentFormIndex={setCurrentFormIndex}
+          />
+          <NavbarResizeHandle width={navbarWidth} setWidth={setNavbarWidth} />
+        </div>
       </AppShell.Navbar>
       <AppShell.Header>
         <Header

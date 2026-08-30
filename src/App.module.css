@@ -1,3 +1,17 @@
 .padding {
   padding: 3vw;
 }
+
+/* Mirrors AppShell.Navbar's own flex column layout, since Navigation's
+   AppShell.Section children now land inside this wrapper instead of
+   directly inside the navbar - their flex-grow only takes effect when
+   the immediate parent is itself a flex column. flex: 1 stretches this
+   wrapper to the navbar's full (fixed) height so the resize handle it
+   anchors can span top to bottom. */
+.navbarInner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
