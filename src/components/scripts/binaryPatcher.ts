@@ -1,6 +1,6 @@
 import { saveAs } from "file-saver";
 import type { PopulatedFiles } from "../FileUploads/FileUploads";
-import { parseHexId, sameHexId } from "./hexId";
+import { findFormIndexByFormId, parseHexId, sameHexId } from "./hexId";
 import type { Data, Suppression } from "./types";
 
 export function validateByteInput(value: string) {
@@ -55,6 +55,56 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
 
   const modifiedSetupSct = hexToBytes(files.setupSctContainer.textContent);
   let setupSctChangeLog = "";
+
+  // Retargeting a Ref overwrites its FormId field in place (2 bytes for 2
+  // bytes, nothing shifts), so this runs before the SuppressIf loop below,
+  // which does shift bytes (moveEndOpcodeToStart). A Ref opcode that
+  // happens to sit inside a range about to be deactivated still gets its
+  // new FormId carried along correctly by that later copyWithin, since it
+  // treats the whole guarded region uniformly - but only if the FormId
+  // byte is already the new value before the shift runs, not after.
+  for (const form of data.forms) {
+    for (const child of form.children) {
+      if (child.type !== "Ref") {
+        continue;
+      }
+
+      const formIdOffset = parseHexId(child.formIdOffset);
+      const oldFormId =
+        modifiedSetupSct[formIdOffset] |
+        (modifiedSetupSct[formIdOffset + 1] << 8);
+      const newFormId = parseHexId(child.formId);
+
+      if (newFormId !== oldFormId) {
+        modifiedSetupSct[formIdOffset] = newFormId & 0xff;
+        modifiedSetupSct[formIdOffset + 1] = (newFormId >> 8) & 0xff;
+
+        const oldFormIdHex = decToHexString(oldFormId);
+        const targetFormSetGuid = child.targetFormSetGuid ?? form.formSetGuid;
+        const oldTargetIndex = findFormIndexByFormId(
+          data.forms,
+          oldFormIdHex,
+          targetFormSetGuid,
+        );
+        const newTargetIndex = findFormIndexByFormId(
+          data.forms,
+          child.formId,
+          targetFormSetGuid,
+        );
+        if (oldTargetIndex < 0 || newTargetIndex < 0) {
+          throw new Error(
+            "Something went wrong. Please file a bug report on Github.",
+          );
+        }
+        const oldTarget = data.forms[oldTargetIndex];
+        const newTarget = data.forms[newTargetIndex];
+
+        setupSctChangeLog += `${child.name || "Ref"} in "${form.name}" | FormId ${oldFormIdHex} (${oldTarget.name}) -> ${child.formId} (${newTarget.name})\n`;
+
+        wasSetupSctModified = true;
+      }
+    }
+  }
 
   const suppressions = JSON.parse(
     JSON.stringify(data.suppressions),

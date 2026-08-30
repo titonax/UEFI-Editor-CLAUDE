@@ -53,7 +53,13 @@ describe("downloadModifiedFiles", () => {
     const beforeStart = "AA".repeat(26);
     const startToEndGap = "BB".repeat(4);
     const endMarker = "2902";
-    const afterEnd = "CC".repeat(5);
+    // Padded through byte 60 (0x3C) so the fixture's Ref FormId bytes (0x2,
+    // little-endian, at formIdOffset 0x3B - see testFixtures.ts) fall
+    // within this buffer and read as unchanged, instead of an out-of-range
+    // read that would look like a spurious Ref retarget. afterEnd starts at
+    // byte 32; bytes 59-60 need to be "02 00", so that's 27 filler bytes
+    // then the two FormId bytes.
+    const afterEnd = `${"CC".repeat(27)}0200`;
     files.setupSctContainer.textContent =
       beforeStart + startToEndGap + endMarker + afterEnd;
 
@@ -93,12 +99,151 @@ describe("downloadModifiedFiles", () => {
     const data = await parseData(files);
 
     // No "2902" bytes anywhere near the suppression's recorded end offset.
-    files.setupSctContainer.textContent = "00".repeat(40);
+    // Padded through byte 60 with the fixture's correct, unchanged Ref
+    // FormId bytes at 59-60 (see testFixtures.ts) so the Ref check finds
+    // nothing to retarget, leaving the missing end-marker as the only
+    // reason this should throw.
+    files.setupSctContainer.textContent = `${"00".repeat(59)}0200`;
     data.suppressions[0].active = false;
 
     expect(() => downloadModifiedFiles(data, files)).toThrow(
       /Something went wrong/,
     );
+  });
+
+  it("patches a Ref's FormId bytes when it's retargeted", async () => {
+    const files = await buildFixtureFiles();
+    const data = await parseData(files);
+
+    const ref = data.forms[0].children.find((child) => child.type === "Ref");
+    if (!ref) throw new Error("expected a Ref child");
+    expect(ref.formId).toBe("0x2");
+    expect(ref.formIdOffset).toBe("0x3B");
+
+    ref.formId = "0x1"; // the user retargeted this Ref to Form 0x1 instead
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const [patchedBlob, patchedName] = saveAsMock.mock.calls[0] as [
+      Blob,
+      string,
+    ];
+    expect(patchedName).toBe(files.setupSctContainer.file.name);
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    // formIdOffset 0x3B = byte 59, little-endian 0x0001.
+    expect([...patchedBytes.slice(0x3b, 0x3d)]).toEqual([0x01, 0x00]);
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain(
+      'Go to Advanced in "Main Page" | FormId 0x2 (Advanced Page) -> 0x1 (Main Page)',
+    );
+  });
+
+  it("carries a retargeted Ref's new FormId through a suppression shift it falls inside", async () => {
+    // The Ref's formIdOffset (byte 20) sits inside a SuppressIf's guarded
+    // range (start=10, end=30) that gets deactivated in the same download.
+    // Ref-patching must run before the shift so the new FormId - not the
+    // old one - is what the shift's copyWithin carries to its new position.
+    const beforeStart = "AA".repeat(10); // bytes 0-9
+    const startToFormId = "BB".repeat(10); // bytes 10-19
+    const oldFormIdBytes = "0100"; // bytes 20-21: old FormId 0x1, little-endian
+    const formIdToEnd = "CC".repeat(8); // bytes 22-29
+    const endMarker = "2902"; // bytes 30-31: the SuppressIf's own End opcode
+    const afterEnd = "DD".repeat(8); // bytes 32-39
+
+    const files = await buildFixtureFiles();
+    files.setupSctContainer.textContent =
+      beforeStart +
+      startToFormId +
+      oldFormIdBytes +
+      formIdToEnd +
+      endMarker +
+      afterEnd;
+
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [
+        {
+          name: "Main Page",
+          type: "Form",
+          formId: "0x1",
+          referencedIn: [],
+          children: [
+            {
+              name: "Go to Advanced",
+              description: "",
+              type: "Ref",
+              questionId: "0x0004",
+              varStoreId: "0x0001",
+              formId: "0x2", // retargeted from 0x1 to 0x2
+              formIdOffset: "0x14", // byte 20
+              pageId: null,
+              accessLevel: null,
+              failsafe: null,
+              optimal: null,
+              offsets: null,
+            },
+          ],
+        },
+        {
+          name: "Advanced Page",
+          type: "Form",
+          formId: "0x2",
+          referencedIn: [],
+          children: [],
+        },
+      ],
+      varStores: [],
+      version: "test",
+      hashes: {
+        setupTxt: "",
+        setupSct: "",
+        amitseSct: "",
+        setupdataBin: "",
+        offsetChecksum: "",
+      },
+      suppressions: [
+        {
+          offset: "0x0",
+          start: "0xA", // byte 10
+          end: "0x1E", // byte 30
+          kind: "SuppressIf",
+          active: false,
+        },
+      ],
+    };
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const patchedBlob = (saveAsMock.mock.calls[0] as [Blob, string])[0];
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    const patchedHex = Array.from(patchedBytes, (byte) =>
+      byte.toString(16).toUpperCase().padStart(2, "0"),
+    ).join("");
+
+    // The End opcode moves to where the suppression starts (byte 10). The
+    // Ref's new FormId (0x0002, already written in place at byte 20/21
+    // before the shift ran) is carried along by that shift like any other
+    // guarded byte, landing at byte 22/23 instead of being lost or left
+    // holding the pre-shift value.
+    expect(patchedHex).toBe(
+      beforeStart + endMarker + startToFormId + "0200" + formIdToEnd + afterEnd,
+    );
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain(
+      'Go to Advanced in "Main Page" | FormId 0x1 (Main Page) -> 0x2 (Advanced Page)',
+    );
+    expect(changelogText).toContain("Unsuppressed 0x0");
   });
 
   it("patches the AMITSE menu table's little-endian FormId bytes", async () => {

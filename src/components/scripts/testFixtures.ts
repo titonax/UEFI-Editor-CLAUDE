@@ -38,7 +38,16 @@ export async function buildFixtureFiles(): Promise<PopulatedFiles> {
     `0x00000034: End { 29 02 }`,
   ];
 
-  const setupSctBytes = new TextEncoder().encode("dummy-setup-sct-bytes");
+  const setupSctBytes = new Uint8Array(64);
+  setupSctBytes.set(new TextEncoder().encode("dummy-setup-sct-bytes"), 0);
+  // Not a real encoding of the opcodes in `lines` above - just long enough
+  // filler. But the Ref at 0x0000002E has FormId: 0x2, and binaryPatcher
+  // reads that Ref's actual FormId bytes at formIdOffset (opcode start +
+  // 0xD, i.e. 0x2E + 0xD = 0x3B) to detect a retarget. Keep those two bytes
+  // (little-endian 0x0002) consistent so an unmodified fixture doesn't look
+  // like the Ref was already changed.
+  setupSctBytes[0x3b] = 0x02;
+  setupSctBytes[0x3c] = 0x00;
   const setupSctHash = await sha256Hex(setupSctBytes);
 
   const setupTxt = [
