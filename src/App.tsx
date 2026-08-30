@@ -16,6 +16,7 @@ import BiosImageUpload from "./components/BiosImageUpload/BiosImageUpload";
 import { parseData } from "./components/scripts/ifrParser";
 import { TOP_LEVEL_MENU_VIEW } from "./formNavigation";
 import { buildMenuTree } from "./components/Navigation/menuTree";
+import { applyLoadedData } from "./loadedData";
 
 export default function App() {
   const [files, setFiles] = useImmer<Files>({
@@ -27,20 +28,12 @@ export default function App() {
 
   const [data, setData] = useImmer<Data | null>(null);
 
-  // Children only ever see setLoadedData once `data` is confirmed non-null
-  // (they're rendered inside the `data ?` branch below), so it's typed as
-  // Updater<Data> for them - no `{} as Data` placeholder and no casts here.
+  // Typed as Updater<Data> so children (rendered only once data is loaded)
+  // don't need a `Data | null` type themselves - no `{} as Data` placeholder
+  // and no casts. applyLoadedData still accepts the very first, initial
+  // assignment (a plain Data value while draft is still null).
   const setLoadedData: Updater<Data> = (recipe) => {
-    setData((draft) => {
-      if (draft === null) {
-        return;
-      }
-      if (typeof recipe === "function") {
-        recipe(draft);
-      } else {
-        return recipe;
-      }
-    });
+    setData((draft) => applyLoadedData(recipe, draft));
   };
 
   const [currentFormIndex, setCurrentFormIndex] = React.useState(
