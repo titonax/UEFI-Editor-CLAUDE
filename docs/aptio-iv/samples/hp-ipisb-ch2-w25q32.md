@@ -87,15 +87,32 @@ The upload UI now accepts multiple IFR TXT files and combines them internally wh
 
 ## Current compatibility state
 
-- Read/parse path: under validation.
+- Read/parse path: **validated end-to-end in the browser** (see below).
 - Aptio IV identification and extraction mapping: confirmed for this sample.
 - Multiple IFR and FormSet input: implemented.
 - Export/reinsertion: not implemented.
 - Firmware writing/flashing: deliberately disabled.
 
+## Browser validation (2026-08-30)
+
+Ran this exact image through the full "Full Aptio IV image" one-shot upload
+path in a real browser (recursive extraction -> parseData -> menu tree),
+using the actual CI-built WASM binaries, not a mock. Confirmed the app
+reaches the loaded menu tree: 78 forms, "AMI full profile" detected with
+Main/Advanced/PCI Subsystem Settings/CPU Configuration/... all present,
+matching the 78-form, 11-form-set count already recorded above.
+
+This surfaced a real bug in the browser-side state wiring (unrelated to
+extraction/parsing correctness): `App.tsx`'s `setLoadedData` wrapper
+discarded the very first data assignment when the app's `data` state was
+still `null`, so the initial parse silently never reached the UI - no
+error, extraction and parseData both completed correctly. Fixed in
+`src/loadedData.ts` (`applyLoadedData`). See the "Read/parse path" item
+above; this was the last blocker for item 1 in the "Next steps" list.
+
 ## Next steps
 
-1. Run the complete browser parser against all four Aptio IV equivalent inputs.
+1. ~~Run the complete browser parser against all four Aptio IV equivalent inputs.~~ Done (2026-08-30).
 2. Add a safe representation for ambiguous SetupData matches.
 3. Identify the additional discriminator needed by repeated CheckBox records.
 4. Validate the Aptio IV AMITSE menu table and menu editing offsets.

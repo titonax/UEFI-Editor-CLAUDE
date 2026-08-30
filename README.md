@@ -72,6 +72,10 @@ grayed out, or orphaned/broken (a `Ref` pointing at a form that doesn't
 exist). Click a condition badge for the full expression and which VarStore
 it reads.
 
+If a firmware's forms cross-reference each other from an unusually large
+number of paths, the menu tree stops expanding past a safety cap instead of
+hanging the tab; a yellow banner in the sidebar says so when it happens.
+
 ## Development
 
 ```bash
