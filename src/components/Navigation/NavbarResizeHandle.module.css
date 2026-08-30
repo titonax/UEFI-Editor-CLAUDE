@@ -1,0 +1,16 @@
+.handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  z-index: 1;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.handle:hover,
+.handle:active {
+  background: var(--mantine-color-blue-6);
+  opacity: 0.5;
+}

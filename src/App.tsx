@@ -9,6 +9,7 @@ import FileUploads, {
 } from "./components/FileUploads/FileUploads";
 import FormUi from "./components/FormUi/FormUi";
 import Navigation from "./components/Navigation/Navigation";
+import NavbarResizeHandle from "./components/Navigation/NavbarResizeHandle";
 import Header from "./components/Header/Header";
 import Footer from "./components/Footer/Footer";
 import { IconBrandGithub } from "@tabler/icons-react";
@@ -18,7 +19,12 @@ import { TOP_LEVEL_MENU_VIEW } from "./formNavigation";
 import { buildMenuTree } from "./components/Navigation/menuTree";
 import { applyLoadedData } from "./loadedData";
 
-export default function App() {
+interface AppProps {
+  navbarWidth: number;
+  setNavbarWidth: (width: number) => void;
+}
+
+export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
   const [files, setFiles] = useImmer<Files>({
     setupSctContainer: { isWrongFile: false },
     setupTxtContainer: { isWrongFile: false },
@@ -93,13 +99,14 @@ export default function App() {
 
   return (
     <>
-      <AppShell.Navbar>
+      <AppShell.Navbar style={{ position: "relative" }}>
         <Navigation
           data={data}
           tree={tree}
           currentFormIndex={currentFormIndex}
           setCurrentFormIndex={setCurrentFormIndex}
         />
+        <NavbarResizeHandle width={navbarWidth} setWidth={setNavbarWidth} />
       </AppShell.Navbar>
       <AppShell.Header>
         <Header

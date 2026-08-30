@@ -135,9 +135,10 @@
 }
 
 .nodeName {
-  max-width: 19rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* No max-width: the row (and .tree's min-width: max-content below) grows
+     to fit the longest label instead of ellipsis-truncating it, and the
+     ScrollArea scrolls horizontally for anything wider than the navbar. */
+  white-space: nowrap;
 }
 
 .formId {
