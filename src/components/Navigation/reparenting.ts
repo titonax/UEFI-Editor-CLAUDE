@@ -1,5 +1,5 @@
 import type { Data, RefPrompt } from "../scripts/types";
-import { findFormIndexByFormId } from "../scripts/hexId";
+import { findFormIndexByFormId, sameGuidOrBothUndefined } from "../scripts/hexId";
 
 export interface RefLocation {
   sourceFormIndex: number;
@@ -56,6 +56,30 @@ export function findIncomingRefs(
   });
 
   return locations;
+}
+
+// Builds the RefLocation for one already-known Ref (a specific child of a
+// specific Form), instead of searching for it - the tree already knows
+// exactly which Ref a given row came from (see sourceFormIndex/refChildIndex
+// on MenuTreeNode), so there's no need to re-derive it via findIncomingRefs.
+export function buildRefLocation(
+  data: Data,
+  sourceFormIndex: number,
+  childIndex: number,
+): RefLocation {
+  const form = data.forms[sourceFormIndex];
+  const ref = form.children[childIndex];
+  if (ref.type !== "Ref") {
+    throw new Error("Something went wrong. Please file a bug report on Github.");
+  }
+  const targetFormIndex = resolveRefTarget(data, sourceFormIndex, ref);
+  return {
+    sourceFormIndex,
+    childIndex,
+    ref,
+    targetFormIndex,
+    isSelfReference: sourceFormIndex === targetFormIndex,
+  };
 }
 
 // True if retargeting `location`'s Ref to `newTargetFormIndex` would make
@@ -132,4 +156,37 @@ export function evaluateMoveCandidate(
     return { allowed: false, reason: "would-create-cycle" };
   }
   return { allowed: true };
+}
+
+export interface MoveCandidate {
+  formIndex: number;
+  name: string;
+  formId: string;
+  result: MoveCandidateResult;
+}
+
+// Every Form this Ref could be retargeted at, restricted to the FormSet it
+// can actually reach without also rewriting a FormSetGuid field (a Ref1/Ref3
+// variant has no FormSetGuid bytes at all - it can only ever mean "this same
+// FormSet"; a Ref4 does carry one, but retargeting only overwrites FormId,
+// so its target has to stay in the FormSet that GUID already names). Each
+// candidate carries its own evaluateMoveCandidate verdict so the UI can grey
+// out the ones that would be a no-op or a cycle, with a reason, instead of
+// hiding them outright.
+export function listMoveCandidates(
+  data: Data,
+  location: RefLocation,
+): MoveCandidate[] {
+  const sourceForm = data.forms[location.sourceFormIndex];
+  const scopeGuid = location.ref.targetFormSetGuid ?? sourceForm.formSetGuid;
+
+  return data.forms
+    .map((form, formIndex) => ({ form, formIndex }))
+    .filter(({ form }) => sameGuidOrBothUndefined(form.formSetGuid, scopeGuid))
+    .map(({ form, formIndex }) => ({
+      formIndex,
+      name: form.name || form.formId,
+      formId: form.formId,
+      result: evaluateMoveCandidate(data, location, formIndex),
+    }));
 }

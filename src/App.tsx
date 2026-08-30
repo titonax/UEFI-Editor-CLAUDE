@@ -107,6 +107,7 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
         <div className={s.navbarInner}>
           <Navigation
             data={data}
+            setData={setLoadedData}
             tree={tree}
             currentFormIndex={currentFormIndex}
             setCurrentFormIndex={setCurrentFormIndex}

@@ -134,6 +134,21 @@
   cursor: default;
 }
 
+.moveIcon {
+  /* Sits right after the label instead of pinned to the row's far edge:
+     .tree scrolls horizontally for long labels, so an edge-pinned icon
+     would be scrolled out of view on most rows instead of right next to
+     the text the user is already looking at. */
+  flex: 0 0 auto;
+  margin-left: 0.3rem;
+  opacity: 0;
+}
+
+.treeRow:hover .moveIcon,
+.moveIcon:focus-visible {
+  opacity: 1;
+}
+
 .nodeName {
   /* No max-width: the row (and .tree's min-width: max-content below) grows
      to fit the longest label instead of ellipsis-truncating it, and the

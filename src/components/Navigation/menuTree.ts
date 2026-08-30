@@ -52,6 +52,14 @@ export interface MenuTreeNode {
   outgoingReferenceCount: number;
   parentageLabel: string;
   conditionSummary?: string;
+  // Identifies the exact Ref opcode this node was reached through - the
+  // parent Form's index and which of its children the Ref is - so a "move"
+  // action on this row can retarget that specific opcode (see
+  // reparenting.ts's buildRefLocation) without re-searching for it. Absent
+  // for root nodes (AMITSE/SetupData menu entries, edited via RootsTable
+  // instead) since those aren't a Ref at all.
+  sourceFormIndex?: number;
+  refChildIndex?: number;
 }
 
 export interface MenuTree {
@@ -234,6 +242,8 @@ interface BuildFormNodeOptions {
   rootSource?: RootSource;
   pageMask?: string;
   parentageLabel?: string;
+  sourceFormIndex?: number;
+  refChildIndex?: number;
 }
 
 // Ref cycles are already stopped by the ancestors check below, but a form
@@ -277,6 +287,8 @@ export function buildMenuTree(data: Data): MenuTree {
       rootSource,
       pageMask,
       parentageLabel = "No incoming IFR reference was found.",
+      sourceFormIndex,
+      refChildIndex,
     } = options;
     const form = data.forms[formIndex];
     const cycle = ancestors.has(formIndex);
@@ -343,6 +355,8 @@ export function buildMenuTree(data: Data): MenuTree {
                 conditionSummary:
                   nextConditionPath.join("; ") ||
                   "The Ref target does not exist in the parsed HII graph.",
+                sourceFormIndex: formIndex,
+                refChildIndex: childIndex,
               };
             }
 
@@ -373,6 +387,8 @@ export function buildMenuTree(data: Data): MenuTree {
                   ? "Detached descendant"
                   : "Reachable through Ref",
               parentageLabel: `Referenced by ${form.name || form.formId} through an IFR Ref opcode.`,
+              sourceFormIndex: formIndex,
+              refChildIndex: childIndex,
             });
           })
           .filter((node): node is MenuTreeNode => node !== null);
@@ -410,6 +426,8 @@ export function buildMenuTree(data: Data): MenuTree {
       parentageLabel,
       conditionSummary:
         conditionPath.length > 0 ? conditionPath.join("; ") : undefined,
+      sourceFormIndex,
+      refChildIndex,
     };
   }
 

@@ -90,6 +90,21 @@ describe("buildMenuTree", () => {
     expect(tree.roots[0].children[0].formName).toBe("Sub");
   });
 
+  it("tags a Ref child with the exact opcode it came from, but not a root", () => {
+    const forms = [
+      makeForm({ formId: "0x1", name: "Main", children: [makeRef({ formId: "0x2" })] }),
+      makeForm({ formId: "0x2", name: "Sub" }),
+    ];
+    const data = makeData({ forms, menu: [makeMenuRoot()] });
+
+    const tree = buildMenuTree(data);
+
+    expect(tree.roots[0].sourceFormIndex).toBeUndefined();
+    expect(tree.roots[0].refChildIndex).toBeUndefined();
+    expect(tree.roots[0].children[0].sourceFormIndex).toBe(0);
+    expect(tree.roots[0].children[0].refChildIndex).toBe(0);
+  });
+
   it("marks a Ref to a nonexistent form as missing/broken", () => {
     const forms = [
       makeForm({
@@ -105,6 +120,10 @@ describe("buildMenuTree", () => {
     expect(child.missing).toBe(true);
     expect(child.status).toBe("broken");
     expect(child.formIndex).toBeNull();
+    // Still a real Ref opcode - a "move" action should be able to fix a
+    // dangling reference just like it can retarget a working one.
+    expect(child.sourceFormIndex).toBe(0);
+    expect(child.refChildIndex).toBe(0);
   });
 
   it("detects a Ref cycle without recursing forever", () => {

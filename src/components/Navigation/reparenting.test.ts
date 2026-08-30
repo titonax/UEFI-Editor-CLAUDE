@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildRefLocation,
   evaluateMoveCandidate,
   findIncomingRefs,
+  listMoveCandidates,
   wouldCreateCycle,
 } from "./reparenting";
-import type { Data, Form, RefPrompt } from "../scripts/types";
+import type { Data, Form, RefPrompt, StringPrompt } from "../scripts/types";
 
 function makeRef(overrides: Partial<RefPrompt> = {}): RefPrompt {
   return {
@@ -197,5 +199,93 @@ describe("evaluateMoveCandidate", () => {
       allowed: false,
       reason: "target-not-found",
     });
+  });
+});
+
+describe("buildRefLocation", () => {
+  it("builds the same location findIncomingRefs would have found", () => {
+    const forms = [
+      makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
+      makeForm({ formId: "0x2" }),
+    ];
+    const data = makeData({ forms });
+
+    expect(buildRefLocation(data, 0, 0)).toEqual(findIncomingRefs(data, 1)[0]);
+  });
+
+  it("flags a self-referencing Ref", () => {
+    const forms = [
+      makeForm({
+        formId: "0x1",
+        children: [makeRef({ name: "Save Changes and Exit", formId: "0x1" })],
+      }),
+    ];
+    const data = makeData({ forms });
+
+    expect(buildRefLocation(data, 0, 0)).toMatchObject({
+      targetFormIndex: 0,
+      isSelfReference: true,
+    });
+  });
+
+  it("throws when the given child isn't a Ref", () => {
+    const notARef: StringPrompt = {
+      name: "A text field",
+      description: "",
+      type: "String",
+      questionId: "0x0001",
+      varStoreId: "0x0001",
+      accessLevel: null,
+      failsafe: null,
+      optimal: null,
+      offsets: null,
+    };
+    const forms = [makeForm({ formId: "0x1", children: [notARef] })];
+    const data = makeData({ forms });
+
+    expect(() => buildRefLocation(data, 0, 0)).toThrow(/Something went wrong/);
+  });
+});
+
+describe("listMoveCandidates", () => {
+  it("only lists forms in the same FormSet as the Ref's target", () => {
+    const forms = [
+      makeForm({
+        formId: "0x1",
+        formSetGuid: "AAAA",
+        children: [makeRef({ formId: "0x2" })],
+      }),
+      makeForm({ formId: "0x2", formSetGuid: "AAAA" }),
+      makeForm({ formId: "0x3", formSetGuid: "AAAA" }),
+      makeForm({ formId: "0x4", formSetGuid: "BBBB" }),
+    ];
+    const data = makeData({ forms });
+    const location = buildRefLocation(data, 0, 0);
+
+    const candidates = listMoveCandidates(data, location);
+
+    expect(candidates.map((candidate) => candidate.formId)).toEqual([
+      "0x1",
+      "0x2",
+      "0x3",
+    ]);
+  });
+
+  it("carries evaluateMoveCandidate's verdict for each candidate", () => {
+    const forms = [
+      makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
+      makeForm({ formId: "0x2" }),
+      makeForm({ formId: "0x3" }),
+    ];
+    const data = makeData({ forms });
+    const location = buildRefLocation(data, 0, 0);
+
+    const candidates = listMoveCandidates(data, location);
+
+    expect(candidates).toEqual([
+      { formIndex: 0, formId: "0x1", name: "A form", result: { allowed: false, reason: "would-create-cycle" } },
+      { formIndex: 1, formId: "0x2", name: "A form", result: { allowed: false, reason: "same-target" } },
+      { formIndex: 2, formId: "0x3", name: "A form", result: { allowed: true } },
+    ]);
   });
 });

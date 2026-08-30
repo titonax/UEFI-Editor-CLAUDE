@@ -22,7 +22,7 @@ export function normalizedHexId(value: string) {
   return Number.isNaN(parsed) ? value : String(parsed);
 }
 
-function sameGuidOrBothUndefined(left?: string, right?: string) {
+export function sameGuidOrBothUndefined(left?: string, right?: string) {
   return (left ?? "").toLowerCase() === (right ?? "").toLowerCase();
 }
 

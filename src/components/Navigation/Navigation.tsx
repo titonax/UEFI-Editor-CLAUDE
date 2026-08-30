@@ -8,10 +8,12 @@ import {
   Text,
   Tooltip,
 } from "@mantine/core";
+import type { Updater } from "use-immer";
 import {
   IconAlertTriangle,
   IconArrowsMaximize,
   IconArrowsMinimize,
+  IconArrowsRightLeft,
   IconChevronRight,
   IconFileDescription,
   IconFolder,
@@ -24,10 +26,12 @@ import {
 import s from "./Navigation.module.css";
 import type { Data } from "../scripts/types";
 import { findNodePath, type MenuTree, type MenuTreeNode } from "./menuTree";
+import MoveRefDialog, { type MoveRefTarget } from "./MoveRefDialog";
 import { SEARCH_VIEW, TOP_LEVEL_MENU_VIEW } from "../../formNavigation";
 
 interface NavigationProps {
   data: Data;
+  setData: Updater<Data>;
   currentFormIndex: number;
   setCurrentFormIndex: React.Dispatch<React.SetStateAction<number>>;
   tree: MenuTree;
@@ -35,10 +39,14 @@ interface NavigationProps {
 
 export default function Navigation({
   data,
+  setData,
   currentFormIndex,
   setCurrentFormIndex,
   tree,
 }: NavigationProps) {
+  const [moveTarget, setMoveTarget] = React.useState<MoveRefTarget | null>(
+    null,
+  );
   const [expanded, setExpanded] = React.useState(
     () => new Set(tree.roots.map((node) => node.key)),
   );
@@ -84,6 +92,16 @@ export default function Navigation({
     const hasChildren = node.children.length > 0;
     const opened = expanded.has(node.key);
     const active = node.formIndex === currentFormIndex;
+    // Only Ref-derived nodes (i.e. not the AMITSE/SetupData menu roots,
+    // which are edited via RootsTable instead) carry both of these. Reading
+    // them into a single, definitely-typed local here - rather than inside
+    // the button's onClick below - lets TypeScript actually narrow away the
+    // `undefined` case for good, instead of re-widening it the moment it's
+    // captured by a closure.
+    const moveRefTarget: MoveRefTarget | null =
+      node.sourceFormIndex !== undefined && node.refChildIndex !== undefined
+        ? { sourceFormIndex: node.sourceFormIndex, childIndex: node.refChildIndex }
+        : null;
     const isPrimaryNode =
       node.formIndex !== null &&
       tree.firstKeyByFormIndex.get(node.formIndex) === node.key;
@@ -216,6 +234,24 @@ export default function Navigation({
               <span className={s.uiStateLabel}>UI state</span>
             )}
           </button>
+
+          {moveRefTarget && (
+            <Tooltip label="Change where this link goes">
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                className={s.moveIcon}
+                aria-label={`Change where "${node.label}" links to`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMoveTarget(moveRefTarget);
+                }}
+              >
+                <IconArrowsRightLeft size={13} />
+              </ActionIcon>
+            </Tooltip>
+          )}
         </div>
 
         {hasChildren && opened && (
@@ -363,6 +399,20 @@ export default function Navigation({
         <IconSearch size={17} />
         <span>Search</span>
       </AppShell.Section>
+
+      {moveTarget && (
+        <MoveRefDialog
+          data={data}
+          setData={setData}
+          target={moveTarget}
+          onClose={() => {
+            setMoveTarget(null);
+          }}
+          onMoved={(newFormIndex) => {
+            setCurrentFormIndex(newFormIndex);
+          }}
+        />
+      )}
     </>
   );
 }
