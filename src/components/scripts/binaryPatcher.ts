@@ -1,7 +1,8 @@
 import { saveAs } from "file-saver";
 import type { PopulatedFiles } from "../FileUploads/FileUploads";
 import { findFormIndexByFormId, parseHexId, sameHexId } from "./hexId";
-import type { Data, Suppression } from "./types";
+import { isSoleOwnerOfCondition } from "./refMoving";
+import type { Data, Form, RefPrompt, Suppression } from "./types";
 
 export function validateByteInput(value: string) {
   return (
@@ -44,6 +45,190 @@ function moveEndOpcodeToStart(bytes: Uint8Array, start: number, end: number) {
   bytes.copyWithin(start + END_OPCODE.length, start, end);
   bytes[start] = END_OPCODE[0];
   bytes[start + 1] = END_OPCODE[1];
+}
+
+// An opcode's own Length byte (the low 7 bits of the second header byte)
+// always encodes its total size, header included - this is how the whole
+// IFR opcode stream is walked without a separate index. Reading it directly
+// from the pristine bytes means a Ref's exact byte extent never needs to be
+// tracked as its own parsed field.
+function opcodeLength(bytes: Uint8Array, offset: number) {
+  return bytes[offset + 1] & 0x7f;
+}
+
+export interface RefBlock {
+  // The pristine byte range that has to move as one unit for this Ref to
+  // relocate to a different Form: just the Ref opcode itself when it isn't
+  // wrapped in a condition, or - when it's the sole occupant of one - that
+  // whole SuppressIf/GrayOutIf/DisableIf too, so a hidden item keeps
+  // whatever hides it instead of arriving unconditionally visible.
+  start: number;
+  length: number;
+}
+
+// Computes a Ref's movable block. Throws if the Ref shares its outermost
+// condition with a sibling (see isSoleOwnerOfCondition) - the UI is
+// expected to keep that case from ever reaching a move in the first place,
+// so getting here means a data.json was hand-edited around that guard.
+function computeRefBlock(
+  data: Data,
+  form: Form,
+  ref: RefPrompt,
+  bytes: Uint8Array,
+): RefBlock {
+  const conditionOffset = ref.conditions?.[0];
+  if (conditionOffset !== undefined) {
+    if (!isSoleOwnerOfCondition(form, ref)) {
+      throw new Error(
+        "Something went wrong. Please file a bug report on Github.",
+      );
+    }
+    const suppression = data.suppressions.find(
+      (candidate) => candidate.offset === conditionOffset,
+    );
+    if (!suppression) {
+      throw new Error(
+        "Something went wrong. Please file a bug report on Github.",
+      );
+    }
+    const start = parseHexId(suppression.offset);
+    const end = parseHexId(suppression.end) + END_OPCODE.length;
+    return { start, length: end - start };
+  }
+
+  const start = parseHexId(ref.sctOffset);
+  return { start, length: opcodeLength(bytes, start) };
+}
+
+// Where a pristine Ref's block originally lived, before any moves: the
+// first Form (in physical/array order, which parseData always preserves -
+// only children ever move between Forms, Forms themselves never do) whose
+// own closing End sits after the block's start. Forms don't overlap, so
+// this is unambiguous.
+function findPristineOwnerFormIndex(data: Data, blockStart: number) {
+  return data.forms.findIndex(
+    (form) => parseHexId(form.endOffset) > blockStart,
+  );
+}
+
+export interface DetectedRefMove {
+  ref: RefPrompt;
+  block: RefBlock;
+  sourceFormIndex: number;
+  destinationFormIndex: number;
+}
+
+// A Ref has been moved (in the declarative `data` model, immediately on the
+// UI action - see relocating.ts's applyMoveToDraft) when the Form that
+// currently lists it isn't the Form its pristine block position belongs to.
+// Sorted by pristine block start so multiple simultaneous moves apply in a
+// stable, deterministic order (see applyRefMoves for why the order itself
+// doesn't affect the final byte layout).
+export function detectRefMoves(
+  data: Data,
+  bytes: Uint8Array,
+): DetectedRefMove[] {
+  const moves: DetectedRefMove[] = [];
+
+  data.forms.forEach((form, formIndex) => {
+    for (const child of form.children) {
+      if (child.type !== "Ref") {
+        continue;
+      }
+      const block = computeRefBlock(data, form, child, bytes);
+      const pristineOwner = findPristineOwnerFormIndex(data, block.start);
+      if (pristineOwner !== formIndex) {
+        moves.push({
+          ref: child,
+          block,
+          sourceFormIndex: pristineOwner,
+          destinationFormIndex: formIndex,
+        });
+      }
+    }
+  });
+
+  return moves.sort((left, right) => left.block.start - right.block.start);
+}
+
+interface AppliedMove {
+  sourceOffset: number;
+  sourceEnd: number;
+  destinationOffset: number;
+}
+
+// Where a pristine absolute offset ends up after one move: unchanged
+// outside the moved block and the gap it crossed, shifted by the block's
+// own length inside that gap, and relocated (preserving its position
+// relative to the block's own start) inside the moved block itself.
+function remapForMove(move: AppliedMove, offset: number) {
+  const length = move.sourceEnd - move.sourceOffset;
+  if (offset >= move.sourceOffset && offset < move.sourceEnd) {
+    const newBlockStart =
+      move.sourceOffset < move.destinationOffset
+        ? move.destinationOffset - length
+        : move.destinationOffset;
+    return newBlockStart + (offset - move.sourceOffset);
+  }
+  if (move.sourceOffset < move.destinationOffset) {
+    return offset >= move.sourceEnd && offset < move.destinationOffset
+      ? offset - length
+      : offset;
+  }
+  return offset >= move.destinationOffset && offset < move.sourceOffset
+    ? offset + length
+    : offset;
+}
+
+// Relocates [sourceOffset, sourceEnd) to right before destinationOffset, by
+// rotating the (much smaller) gap between them rather than reallocating the
+// whole buffer - the same in-place copyWithin technique moveEndOpcodeToStart
+// uses for its own, narrower 2-byte case.
+function applyMoveRotation(
+  bytes: Uint8Array,
+  sourceOffset: number,
+  sourceEnd: number,
+  destinationOffset: number,
+) {
+  const length = sourceEnd - sourceOffset;
+  const moved = bytes.slice(sourceOffset, sourceEnd);
+  if (sourceOffset < destinationOffset) {
+    bytes.copyWithin(sourceOffset, sourceEnd, destinationOffset);
+    bytes.set(moved, destinationOffset - length);
+  } else {
+    bytes.copyWithin(destinationOffset + length, destinationOffset, sourceOffset);
+    bytes.set(moved, destinationOffset);
+  }
+}
+
+// Physically applies every detected move to `bytes` in place, and returns a
+// function that remaps any pristine offset to where it ended up. Moves are
+// applied one at a time, each looking up its own source/destination through
+// the running remap built from every move already applied - so regardless
+// of `moves`' order, each move always operates on the buffer's actual
+// current state, and the composed remap always reflects every move so far.
+function applyRefMoves(
+  data: Data,
+  bytes: Uint8Array,
+  moves: DetectedRefMove[],
+) {
+  let remap = (offset: number) => offset;
+
+  for (const move of moves) {
+    const sourceOffset = remap(move.block.start);
+    const sourceEnd = sourceOffset + move.block.length;
+    const destinationOffset = remap(
+      parseHexId(data.forms[move.destinationFormIndex].endOffset),
+    );
+
+    applyMoveRotation(bytes, sourceOffset, sourceEnd, destinationOffset);
+
+    const applied: AppliedMove = { sourceOffset, sourceEnd, destinationOffset };
+    const previousRemap = remap;
+    remap = (offset) => remapForMove(applied, previousRemap(offset));
+  }
+
+  return remap;
 }
 
 export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
@@ -106,9 +291,43 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
     }
   }
 
+  // Moving a Ref to a different Form physically relocates its bytes (see
+  // detectRefMoves/applyRefMoves), so this must run after the Ref-retarget
+  // loop above (which writes new FormId values at pristine positions -
+  // relocating carries those already-correct bytes along) and before the
+  // SuppressIf-deactivation loop below (which needs suppressions'
+  // start/end already reflecting anything that physically moved, not its
+  // stale pristine position).
+  const refMoves = detectRefMoves(data, modifiedSetupSct);
+  const remapAfterMoves =
+    refMoves.length > 0
+      ? applyRefMoves(data, modifiedSetupSct, refMoves)
+      : (offset: number) => offset;
+
+  for (const move of refMoves) {
+    const sourceForm = data.forms[move.sourceFormIndex];
+    const destinationForm = data.forms[move.destinationFormIndex];
+    setupSctChangeLog += `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"\n`;
+    wasSetupSctModified = true;
+  }
+
   const suppressions = JSON.parse(
     JSON.stringify(data.suppressions),
   ) as Suppression[];
+
+  if (refMoves.length > 0) {
+    for (const suppression of suppressions) {
+      suppression.offset = decToHexString(
+        remapAfterMoves(parseHexId(suppression.offset)),
+      );
+      suppression.start = decToHexString(
+        remapAfterMoves(parseHexId(suppression.start)),
+      );
+      suppression.end = decToHexString(
+        remapAfterMoves(parseHexId(suppression.end)),
+      );
+    }
+  }
 
   for (const suppression of suppressions) {
     if ((suppression.kind ?? "SuppressIf") !== "SuppressIf") {

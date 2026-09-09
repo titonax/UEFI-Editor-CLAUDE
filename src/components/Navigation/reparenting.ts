@@ -16,7 +16,7 @@ export interface RefLocation {
   isSelfReference: boolean;
 }
 
-function resolveRefTarget(data: Data, sourceFormIndex: number, ref: RefPrompt) {
+export function resolveRefTarget(data: Data, sourceFormIndex: number, ref: RefPrompt) {
   const form = data.forms[sourceFormIndex];
   return findFormIndexByFormId(
     data.forms,

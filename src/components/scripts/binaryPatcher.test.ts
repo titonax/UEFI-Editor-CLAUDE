@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { downloadModifiedFiles, validateByteInput } from "./binaryPatcher";
 import { parseData } from "./ifrParser";
 import { buildFixtureFiles } from "./testFixtures";
-import type { Data } from "./types";
+import type { Data, RefPrompt } from "./types";
 
 const saveAsMock = vi.fn();
 vi.mock("file-saver", () => ({
@@ -173,6 +173,7 @@ describe("downloadModifiedFiles", () => {
           type: "Form",
           formId: "0x1",
           referencedIn: [],
+          endOffset: "0x28",
           children: [
             {
               name: "Go to Advanced",
@@ -187,6 +188,7 @@ describe("downloadModifiedFiles", () => {
               failsafe: null,
               optimal: null,
               offsets: null,
+              sctOffset: "0x7",
             },
           ],
         },
@@ -195,6 +197,7 @@ describe("downloadModifiedFiles", () => {
           type: "Form",
           formId: "0x2",
           referencedIn: [],
+          endOffset: "0x28",
           children: [],
         },
       ],
@@ -401,5 +404,340 @@ describe("downloadModifiedFiles", () => {
         childEndToOuterEnd +
         afterOuterEnd,
     );
+  });
+
+  // formId/formIdOffset are for the *retargeting* feature, unrelated to
+  // moving - but downloadModifiedFiles always runs that loop first, so
+  // every test below points formIdOffset at its own trailing "DD" padding
+  // and sets formId to match what's already there (0xDDDD), making that
+  // loop a guaranteed no-op instead of tripping over an unrelated FormId
+  // that doesn't resolve to a real Form.
+  function makeMovedRef(overrides: Partial<RefPrompt> = {}): RefPrompt {
+    return {
+      name: "Go to page",
+      description: "",
+      type: "Ref" as const,
+      questionId: "0x1",
+      varStoreId: "0x1",
+      formId: "0xDDDD",
+      formIdOffset: "0x0",
+      pageId: null,
+      accessLevel: null,
+      failsafe: null,
+      optimal: null,
+      offsets: null,
+      sctOffset: "0x2",
+      ...overrides,
+    };
+  }
+
+  it("moves a Ref's bytes forward to a later Form", async () => {
+    // Pristine layout (16 bytes): 2 bytes of Form A's own untouched lead-in,
+    // a 4-byte unconditioned Ref at 0x2 (header "0F 04" - opcode + length 4
+    // - then 2 content bytes "42 42"), Form A's own End boundary at 0x6,
+    // Form B's 4-byte body at 0x6, Form B's own End boundary at 0xA, then 6
+    // trailing bytes that belong to neither Form and must stay untouched.
+    const files = await buildFixtureFiles();
+    files.setupSctContainer.textContent =
+      "AAAA" + "0F044242" + "CCCCCCCC" + "DDDDDDDDDDDD";
+
+    const ref = makeMovedRef({ formIdOffset: "0xE" });
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [
+        {
+          name: "Form A",
+          type: "Form",
+          formId: "0x1",
+          referencedIn: [],
+          endOffset: "0x6",
+          children: [],
+        },
+        {
+          name: "Form B",
+          type: "Form",
+          formId: "0x2",
+          referencedIn: [],
+          endOffset: "0xA",
+          // The Ref now lives here even though its pristine sctOffset
+          // (0x2) falls inside Form A's range - that mismatch is exactly
+          // what detectRefMoves keys off of.
+          children: [ref],
+        },
+      ],
+      varStores: [],
+      version: "test",
+      hashes: {
+        setupTxt: "",
+        setupSct: "",
+        amitseSct: "",
+        setupdataBin: "",
+        offsetChecksum: "",
+      },
+      suppressions: [],
+    };
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const patchedBlob = (saveAsMock.mock.calls[0] as [Blob, string])[0];
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    const patchedHex = Array.from(patchedBytes, (byte) =>
+      byte.toString(16).toUpperCase().padStart(2, "0"),
+    ).join("");
+
+    // Form B's old body slides left into where the Ref used to be; the
+    // Ref's own bytes land right where Form B's boundary was, i.e. as its
+    // new last child. Nothing before 0x2 or after 0xA moves.
+    expect(patchedHex).toBe(
+      "AAAA" + "CCCCCCCC" + "0F044242" + "DDDDDDDDDDDD",
+    );
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain(
+      'Moved Go to page from "Form A" to "Form B"',
+    );
+  });
+
+  it("moves a Ref's bytes backward to an earlier Form", async () => {
+    // Pristine layout (12 bytes): Form A's 2-byte body at 0x0, Form A's own
+    // End boundary at 0x2, Form B's 6-byte body at 0x2 (2 bytes of filler
+    // that pristinely precede a 4-byte unconditioned Ref at 0x4), Form B's
+    // own End boundary at 0x8, then 4 trailing bytes belonging to neither.
+    // The Ref moves from B back into A.
+    const files = await buildFixtureFiles();
+    files.setupSctContainer.textContent =
+      "1111" + "EEEE" + "0F044242" + "CCCCCCCC" + "DDDD";
+
+    const ref = makeMovedRef({ sctOffset: "0x4", formIdOffset: "0xC" });
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [
+        {
+          name: "Form A",
+          type: "Form",
+          formId: "0x1",
+          referencedIn: [],
+          endOffset: "0x2",
+          // Pristine home of nothing in particular here - the Ref moved
+          // INTO this Form from Form B.
+          children: [ref],
+        },
+        {
+          name: "Form B",
+          type: "Form",
+          formId: "0x2",
+          referencedIn: [],
+          endOffset: "0x8",
+          children: [],
+        },
+      ],
+      varStores: [],
+      version: "test",
+      hashes: {
+        setupTxt: "",
+        setupSct: "",
+        amitseSct: "",
+        setupdataBin: "",
+        offsetChecksum: "",
+      },
+      suppressions: [],
+    };
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const patchedBlob = (saveAsMock.mock.calls[0] as [Blob, string])[0];
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    const patchedHex = Array.from(patchedBytes, (byte) =>
+      byte.toString(16).toUpperCase().padStart(2, "0"),
+    ).join("");
+
+    // The Ref's bytes land right at Form A's old boundary (0x2); the
+    // 2-byte filler that pristinely sat between that boundary and the Ref
+    // slides right by the Ref's length (4) to make room, ending up
+    // immediately after it. Nothing at or after 0x8 moves.
+    expect(patchedHex).toBe(
+      "1111" + "0F044242" + "EEEE" + "CCCCCCCC" + "DDDD",
+    );
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain(
+      'Moved Go to page from "Form B" to "Form A"',
+    );
+  });
+
+  it("moves a hidden Ref together with its whole condition wrapper", async () => {
+    // Pristine layout (18 bytes): Form A body is a SuppressIf-wrapped Ref -
+    // 2 filler bytes, then the 4-byte Ref at 0x2, then the SuppressIf's own
+    // End marker "29 02" at 0x6. Form A's own End boundary at 0x8. Form B's
+    // 4-byte body at 0x8, own End boundary at 0xC, then 6 trailing bytes.
+    const files = await buildFixtureFiles();
+    files.setupSctContainer.textContent =
+      "FFFF" + "0F044242" + "2902" + "CCCCCCCC" + "DDDDDDDDDDDD";
+
+    const ref = makeMovedRef({ conditions: ["0x0"], formIdOffset: "0x10" });
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [
+        {
+          name: "Form A",
+          type: "Form",
+          formId: "0x1",
+          referencedIn: [],
+          endOffset: "0x8",
+          children: [],
+        },
+        {
+          name: "Form B",
+          type: "Form",
+          formId: "0x2",
+          referencedIn: [],
+          endOffset: "0xC",
+          children: [ref],
+        },
+      ],
+      varStores: [],
+      version: "test",
+      hashes: {
+        setupTxt: "",
+        setupSct: "",
+        amitseSct: "",
+        setupdataBin: "",
+        offsetChecksum: "",
+      },
+      suppressions: [
+        {
+          // The SuppressIf's own opcode starts right before the filler +
+          // Ref, at 0x0 - so the movable block is [0x0, 0x8), the filler
+          // AND the Ref AND the End marker together, not just the Ref.
+          offset: "0x0",
+          start: "0x2",
+          end: "0x6",
+          kind: "SuppressIf",
+          active: true,
+        },
+      ],
+    };
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const patchedBlob = (saveAsMock.mock.calls[0] as [Blob, string])[0];
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    const patchedHex = Array.from(patchedBytes, (byte) =>
+      byte.toString(16).toUpperCase().padStart(2, "0"),
+    ).join("");
+
+    // The whole 8-byte wrapper (filler + Ref + End marker) moves as one
+    // unit; Form B's old body slides left to fill the gap it left behind.
+    expect(patchedHex).toBe(
+      "CCCCCCCC" + "FFFF" + "0F044242" + "2902" + "DDDDDDDDDDDD",
+    );
+
+    // The suppression stays active in this test (only its bytes moved), so
+    // there's no "Unsuppressed" line - just confirm the move itself, and
+    // that the suppression's own offsets were remapped rather than left
+    // pointing at Form B's now-unrelated content.
+    expect(changeLogHasNoUnsuppress(await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text())).toBe(true);
+  });
+
+  function changeLogHasNoUnsuppress(text: string) {
+    return !text.includes("Unsuppressed");
+  }
+
+  it("remaps an unrelated suppression caught in the gap a move shifts, so a same-download unsuppress still finds its End marker", async () => {
+    // Pristine layout (18 bytes): Form A has an unconditioned 4-byte Ref at
+    // 0x0, then an unrelated SuppressIf's 2-byte guarded content at 0x4
+    // (its own End marker "29 02" immediately after, at 0x6), Form A's own
+    // End boundary at 0x8 - Form A's whole body is exactly Ref + guarded
+    // content + End marker. Form B's 4-byte body at 0x8, own End boundary
+    // at 0xC, then 6 trailing bytes. The Ref moves from A to B, shifting
+    // the unrelated suppression left by the Ref's length (4) on its way
+    // past it.
+    const files = await buildFixtureFiles();
+    files.setupSctContainer.textContent =
+      "0F044242" + "EEEE" + "2902" + "CCCCCCCC" + "DDDDDDDDDDDD";
+
+    const ref = makeMovedRef({ sctOffset: "0x0", formIdOffset: "0x10" });
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [
+        {
+          name: "Form A",
+          type: "Form",
+          formId: "0x1",
+          referencedIn: [],
+          endOffset: "0x8",
+          children: [],
+        },
+        {
+          name: "Form B",
+          type: "Form",
+          formId: "0x2",
+          referencedIn: [],
+          endOffset: "0xC",
+          children: [ref],
+        },
+      ],
+      varStores: [],
+      version: "test",
+      hashes: {
+        setupTxt: "",
+        setupSct: "",
+        amitseSct: "",
+        setupdataBin: "",
+        offsetChecksum: "",
+      },
+      suppressions: [
+        {
+          // Modeled with a 0-length SuppressIf opcode/True-expression for
+          // simplicity (offset === start) - only start/end are actually
+          // read to locate bytes; offset only feeds the changelog line.
+          offset: "0x4",
+          start: "0x4",
+          end: "0x6",
+          kind: "SuppressIf",
+          active: false,
+        },
+      ],
+    };
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const patchedBlob = (saveAsMock.mock.calls[0] as [Blob, string])[0];
+    const patchedBytes = new Uint8Array(await patchedBlob.arrayBuffer());
+    const patchedHex = Array.from(patchedBytes, (byte) =>
+      byte.toString(16).toUpperCase().padStart(2, "0"),
+    ).join("");
+
+    // After the move: EEEE + the End marker shift left by 4, to 0x0-0x3;
+    // Form B's old body follows at 0x4-0x7; the Ref lands at 0x8-0xB (its
+    // new last-child position). The deactivation then finds the End
+    // marker at its remapped position (0x2, not the stale 0x6) and moves
+    // it to the remapped start (0x0), exposing EEEE unconditionally.
+    expect(patchedHex).toBe(
+      "2902" + "EEEE" + "CCCCCCCC" + "0F044242" + "DDDDDDDDDDDD",
+    );
+
+    const changelogText = await (
+      saveAsMock.mock.calls[1] as [Blob, string]
+    )[0].text();
+    expect(changelogText).toContain("Unsuppressed 0x0");
   });
 });

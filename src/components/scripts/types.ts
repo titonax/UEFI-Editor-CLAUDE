@@ -67,6 +67,10 @@ export interface Form {
   formSetTitle?: string;
   referencedIn: string[];
   children: FormChildren[];
+  // Byte offset of this Form's own closing End opcode in the original HII
+  // binary. A moved Ref gets spliced in right before this position - see
+  // detectRefMoves/applyRefMoves in binaryPatcher.ts.
+  endOffset: string;
 }
 
 export interface Offsets {
@@ -88,6 +92,12 @@ export interface FormChild {
   offsets: Offsets | null;
   suppressIf?: string[];
   conditions?: string[];
+  // Byte offset of this opcode's own start (its OpCode+Length header) in
+  // the original HII binary. Pristine and never rewritten in place - moving
+  // a Ref to a different Form (see binaryPatcher.ts) uses it, together with
+  // the enclosing condition's own offset when `conditions` is set, to find
+  // the exact pristine bytes to relocate.
+  sctOffset: string;
 }
 
 export type FormChildren =

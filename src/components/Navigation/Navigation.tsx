@@ -18,6 +18,7 @@ import {
   IconFileDescription,
   IconFolder,
   IconFolderOpen,
+  IconFolderSymlink,
   IconListTree,
   IconRefresh,
   IconSearch,
@@ -27,6 +28,7 @@ import s from "./Navigation.module.css";
 import type { Data } from "../scripts/types";
 import { findNodePath, type MenuTree, type MenuTreeNode } from "./menuTree";
 import MoveRefDialog, { type MoveRefTarget } from "./MoveRefDialog";
+import RelocateRefDialog from "./RelocateRefDialog";
 import { SEARCH_VIEW, TOP_LEVEL_MENU_VIEW } from "../../formNavigation";
 
 interface NavigationProps {
@@ -47,6 +49,8 @@ export default function Navigation({
   const [moveTarget, setMoveTarget] = React.useState<MoveRefTarget | null>(
     null,
   );
+  const [relocateTarget, setRelocateTarget] =
+    React.useState<MoveRefTarget | null>(null);
   const [expanded, setExpanded] = React.useState(
     () => new Set(tree.roots.map((node) => node.key)),
   );
@@ -252,6 +256,24 @@ export default function Navigation({
               </ActionIcon>
             </Tooltip>
           )}
+
+          {moveRefTarget && (
+            <Tooltip label="Move to a different page">
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                className={s.moveIcon}
+                aria-label={`Move "${node.label}" to a different page`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setRelocateTarget(moveRefTarget);
+                }}
+              >
+                <IconFolderSymlink size={13} />
+              </ActionIcon>
+            </Tooltip>
+          )}
         </div>
 
         {hasChildren && opened && (
@@ -407,6 +429,20 @@ export default function Navigation({
           target={moveTarget}
           onClose={() => {
             setMoveTarget(null);
+          }}
+          onMoved={(newFormIndex) => {
+            setCurrentFormIndex(newFormIndex);
+          }}
+        />
+      )}
+
+      {relocateTarget && (
+        <RelocateRefDialog
+          data={data}
+          setData={setData}
+          target={relocateTarget}
+          onClose={() => {
+            setRelocateTarget(null);
           }}
           onMoved={(newFormIndex) => {
             setCurrentFormIndex(newFormIndex);

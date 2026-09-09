@@ -28,6 +28,7 @@ function makeCheckBox(overrides: Partial<CheckBoxPrompt> = {}): CheckBoxPrompt {
     failsafe: null,
     optimal: null,
     offsets: null,
+    sctOffset: "0x0",
     ...overrides,
   };
 }
@@ -46,6 +47,7 @@ function makeRef(overrides: Partial<RefPrompt> = {}): RefPrompt {
     failsafe: null,
     optimal: null,
     offsets: null,
+    sctOffset: "0x0",
     ...overrides,
   };
 }
@@ -57,6 +59,7 @@ function makeForm(overrides: Partial<Form> = {}): Form {
     formId: "0x1",
     referencedIn: [],
     children: [],
+    endOffset: "0x0",
     ...overrides,
   };
 }
