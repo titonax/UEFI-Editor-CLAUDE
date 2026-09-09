@@ -33,7 +33,6 @@ describe("calculateJsonChecksum", () => {
         formId: "0x1",
         referencedIn: [],
         children: [],
-        endOffset: "0x0",
       },
     ];
     const first = await calculateJsonChecksum(menu, forms, []);
@@ -50,7 +49,6 @@ describe("calculateJsonChecksum", () => {
         formId: "0x1",
         referencedIn: [],
         children: [],
-        endOffset: "0x0",
       },
     ];
     const before = await calculateJsonChecksum(
