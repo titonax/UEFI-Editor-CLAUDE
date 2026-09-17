@@ -1,4 +1,5 @@
 import { findFormIndexByFormId } from "./hexId";
+import { describeControlFlags, hiddenBySetupData } from "./setupDataFlags";
 import type {
   ConditionSource,
   Data,
@@ -9,7 +10,7 @@ import type {
 
 export interface VisibilityInfo {
   status: VisibilityStatus;
-  gate: "none" | "suppression" | "availability";
+  gate: "none" | "suppression" | "setupdata" | "availability";
   label: string;
   explanation: string;
   conditions: Suppression[];
@@ -92,6 +93,21 @@ export function childVisibility(
     };
   }
 
+  // SetupData's own Show/Hide switch (see setupDataFlags.ts): reported
+  // after the IFR gates, which the firmware evaluates first anyway.
+  if (hiddenBySetupData(child.accessLevel)) {
+    return {
+      status: "hidden",
+      gate: "setupdata",
+      label: "Hidden by SetupData flags",
+      explanation: `${describeControlFlags(child.accessLevel)} This is the SetupData-level hide, not an IFR condition; it is evidence-based and not yet confirmed on hardware.`,
+      conditions,
+      hardwareDependent,
+      accessDependent,
+      uiStateDependent,
+    };
+  }
+
   const availabilityConditions = effectiveConditions.filter((condition) => {
     const kind = condition.kind ?? "SuppressIf";
     return kind === "GrayOutIf" || kind === "DisableIf";
@@ -118,7 +134,7 @@ export function childVisibility(
     explanation:
       child.accessLevel === null
         ? "No active SuppressIf, GrayOutIf, or DisableIf gate affects this item."
-        : `No active IFR condition is known. AMI SetupData AccessLevel is 0x${child.accessLevel}; that policy byte is reported separately and is not treated as proof of live visibility.`,
+        : `No active IFR condition is known. ${describeControlFlags(child.accessLevel)}`,
     conditions,
     hardwareDependent: false,
     accessDependent: false,

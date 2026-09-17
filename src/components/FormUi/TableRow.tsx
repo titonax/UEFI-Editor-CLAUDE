@@ -4,6 +4,7 @@ import type { Updater } from "use-immer";
 import type { Data, FormChildren } from "../scripts/types";
 import { validateByteInput } from "../scripts/binaryPatcher";
 import { childVisibility } from "../scripts/visibility";
+import { describeControlFlags } from "../scripts/setupDataFlags";
 import ConditionDetails from "./ConditionDetails";
 import { visibilityColors } from "./visibilityColors";
 import s from "./FormUi.module.css";
@@ -108,19 +109,21 @@ const TableRow = React.memo(
         </td>
         <td className={s.width}>
           {child.accessLevel !== null && (
-            <TextInput
-              value={child.accessLevel}
-              onChange={(ev) => {
-                const value = ev.target.value.toUpperCase();
+            <Tooltip label={describeControlFlags(child.accessLevel)} multiline w={320}>
+              <TextInput
+                value={child.accessLevel}
+                onChange={(ev) => {
+                  const value = ev.target.value.toUpperCase();
 
-                if (validateByteInput(value)) {
-                  setData((draft) => {
-                    draft.forms[currentFormIndex].children[index].accessLevel =
-                      value;
-                  });
-                }
-              }}
-            />
+                  if (validateByteInput(value)) {
+                    setData((draft) => {
+                      draft.forms[currentFormIndex].children[index].accessLevel =
+                        value;
+                    });
+                  }
+                }}
+              />
+            </Tooltip>
           )}
         </td>
         <td className={s.width}>
