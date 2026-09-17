@@ -32,10 +32,26 @@ const pendingEdit = {
 };
 
 describe("parseDataFile", () => {
-  it("round-trips a data.json the app itself exported", async () => {
+  it("round-trips a data.json the app itself exported, minus the rebuilt evidence", async () => {
     const data = await fixtureData();
 
-    expect(parseDataFile(JSON.stringify(data))).toEqual(data);
+    expect(parseDataFile(JSON.stringify(data))).toEqual({
+      ...data,
+      singleFormSetNavigation: undefined,
+    });
+  });
+
+  it("accepts an IFR hub menu root but never the imported tab inventory", async () => {
+    const json = await fixtureJson();
+    json.menu = [
+      { name: "Setup", formId: "0x1", offset: null, formSetGuid: "A", source: "ifr-hub" },
+    ];
+    json.singleFormSetNavigation = { status: "detected", pages: [] };
+
+    const parsed = parseDataFile(JSON.stringify(json));
+
+    expect(parsed.menu[0].source).toBe("ifr-hub");
+    expect(parsed.singleFormSetNavigation).toBeUndefined();
   });
 
   it("keeps pending root visibility plans but never the detected report", async () => {

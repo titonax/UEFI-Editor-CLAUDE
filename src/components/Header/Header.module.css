@@ -1,11 +1,50 @@
 .root {
-  padding: 0 1rem;
-  font-size: 2rem;
   display: flex;
   align-items: center;
-  justify-content: right;
   height: 100%;
 }
+
+.fileArea {
+  display: flex;
+  flex: 0 0 var(--app-shell-navbar-width);
+  align-items: center;
+  gap: 0.55rem;
+  width: var(--app-shell-navbar-width);
+  min-width: 0;
+  height: 100%;
+  padding: 0.45rem 0.8rem;
+  border-inline-end: 1px solid var(--app-shell-border-color);
+}
+
+.fileText {
+  min-width: 0;
+}
+
+.fileLabel {
+  color: var(--mantine-color-dark-2);
+  font-size: var(--mantine-font-size-xs);
+  line-height: 1.15;
+}
+
+.fileName {
+  color: var(--mantine-color-dark-0);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.breadcrumbs {
+  justify-content: flex-end;
+  min-width: 0;
+  margin-left: auto;
+  padding: 0 1rem;
+  overflow: hidden;
+  font-size: 2rem;
+  white-space: nowrap;
+}
+
 .pointer {
   cursor: pointer;
   text-decoration: underline dotted;

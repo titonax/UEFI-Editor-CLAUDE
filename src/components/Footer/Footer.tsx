@@ -8,6 +8,7 @@ import type { PopulatedFiles } from "../FileUploads/fileModel";
 import { assertAmiRootVisibilityEditsMatch } from "../scripts/amiRootVisibilityEditing";
 import { downloadModifiedFiles, validateByteInput } from "../scripts/binaryPatcher";
 import { parseDataFile } from "../scripts/dataValidation";
+import { refreshSingleFormSetNavigation } from "../scripts/singleFormSetNavigation";
 import { calculateJsonChecksum } from "../scripts/hashing";
 import { version } from "../scripts/ifrParser";
 import type { Data, Suppression } from "../scripts/types";
@@ -62,6 +63,13 @@ export default function Footer({
                       assertAmiRootVisibilityEditsMatch(
                         jsonData.rootVisibilityEdits,
                         jsonData.rootVisibility,
+                      );
+                      // Same for the single-FormSet tab inventory: rebuilt
+                      // from the imported graph with the open firmware's
+                      // AMITSE evidence, never taken from the file.
+                      refreshSingleFormSetNavigation(
+                        jsonData,
+                        data.singleFormSetNavigation,
                       );
                       setData(jsonData);
                     } else {

@@ -9,6 +9,10 @@ import { calculateJsonChecksum, hashFile } from "./hashing";
 import { parseHexId, sameGuidOrBothUndefined, sameHexId } from "./hexId";
 import { decToHexString } from "./binaryPatcher";
 import { getAdditionalData, indexSetupData, type SetupDataIndex } from "./setupData";
+import {
+  inspectSingleFormSetNavigation,
+  singleFormSetHubMenu,
+} from "./singleFormSetNavigation";
 import type {
   CheckBoxPrompt,
   ConditionKind,
@@ -26,7 +30,7 @@ import type {
   VarStores,
 } from "./types";
 
-export const version = "0.4.0";
+export const version = "0.5.0";
 const wantedIFRExtractorVersions = ["1.6.1"];
 
 function hasScope(hexString: string) {
@@ -1012,12 +1016,23 @@ export async function parseData(files: PopulatedFiles) {
       };
     },
   );
+  // A single FormSet whose entry Form fans out into the tabs is its own
+  // menu: the hub is the only root and its direct Refs are the tabs, so the
+  // AMITSE table and SetupData page list only serve as corroboration there.
+  const singleFormSetNavigation = inspectSingleFormSetNavigation(
+    formSetRoots,
+    forms,
+    discoveredMenu,
+  );
+  const hubMenu = singleFormSetHubMenu(singleFormSetNavigation);
   const menu =
-    setupDataMenu.length > 0
-      ? setupDataMenu
-      : discoveredMenu.length > 0
-        ? discoveredMenu
-        : formSetRoots;
+    hubMenu.length > 0
+      ? hubMenu
+      : setupDataMenu.length > 0
+        ? setupDataMenu
+        : discoveredMenu.length > 0
+          ? discoveredMenu
+          : formSetRoots;
 
   for (const form of forms) {
     const referenceKey = formReferenceKey(form.formId, form.formSetGuid);
@@ -1040,6 +1055,7 @@ export async function parseData(files: PopulatedFiles) {
     rootVisibility: files.firmwareSource
       ? inspectAmiRootVisibility(formSetRoots, files.firmwareSource.artifacts.provenance)
       : undefined,
+    singleFormSetNavigation,
     version,
     hashes: {
       setupTxt: setupTxtHash,

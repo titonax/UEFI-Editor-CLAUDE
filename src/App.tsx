@@ -154,6 +154,10 @@ export default function App({
       <AppShell.Header>
         <Header
           tree={tree}
+          fileName={
+            loadedFiles.firmwareSource?.fileName ??
+            loadedFiles.setupSctContainer.file.name
+          }
           currentFormIndex={currentFormIndex}
           setCurrentFormIndex={setCurrentFormIndex}
         />
@@ -171,6 +175,7 @@ export default function App({
           data={data}
           tree={tree}
           setData={setLoadedData}
+          originalSetupSct={loadedFiles.setupSctContainer.textContent}
           currentFormIndex={currentFormIndex}
           setCurrentFormIndex={setCurrentFormIndex}
         />

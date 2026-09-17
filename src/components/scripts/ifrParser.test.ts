@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { calculateJsonChecksum, sha256Hex } from "./hashing";
 import { parseData, version } from "./ifrParser";
-import { buildFixtureFiles } from "./testFixtures";
+import { FIXTURE_FORM_SET_GUID, buildFixtureFiles } from "./testFixtures";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 
 describe("parseData", () => {
@@ -112,6 +112,52 @@ describe("parseData", () => {
       data.suppressions,
     );
     expect(data.hashes.offsetChecksum).toBe(recomputedChecksum);
+  });
+
+  it("makes a single-FormSet entry with a tab fan-out the IFR navigation hub", async () => {
+    const guid = FIXTURE_FORM_SET_GUID;
+    const files = await buildFixtureFiles({
+      // AMITSE registers Main (0x2) twice and Security (0x4), which only
+      // Main reaches; the hub itself is never registered.
+      amitseSct: "1234123456789abc0200" + "1234123456789ABC0200" + "1234123456789ABC0400",
+      lines: [
+        `0x00000010: FormSet Guid: ${guid}, Title: "Setup", Help: "Root help"`,
+        `0x00000012: VarStore Guid: 87654321-4321-4321-4321-CBA987654321, VarStoreId: 0x0001, Size: 0x0010, Name: "Setup" {`,
+        `0x00000014: Form FormId: 0x1, Title: "Setup" { 01 86 }`,
+        `0x00000016: \tRef Prompt: "Main", Help: "", QuestionFlags: 0x00, QuestionId: 0x0001, VarStoreId: 0x0001, VarStoreInfo: 0x0000, FormId: 0x2 { 09 06 }`,
+        `0x00000018: \tRef Prompt: "Advanced", Help: "", QuestionFlags: 0x00, QuestionId: 0x0002, VarStoreId: 0x0001, VarStoreInfo: 0x0000, FormId: 0x3 { 09 06 }`,
+        `0x0000001A: End { 29 02 }`,
+        `0x0000001C: Form FormId: 0x2, Title: "Main" { 01 86 }`,
+        `0x0000001E: \tRef Prompt: "Security", Help: "", QuestionFlags: 0x00, QuestionId: 0x0003, VarStoreId: 0x0001, VarStoreInfo: 0x0000, FormId: 0x4 { 09 06 }`,
+        `0x00000020: End { 29 02 }`,
+        `0x00000022: Form FormId: 0x3, Title: "Advanced" { 01 86 }`,
+        `0x00000024: End { 29 02 }`,
+        `0x00000026: Form FormId: 0x4, Title: "Security" { 01 86 }`,
+        `0x00000028: End { 29 02 }`,
+      ],
+    });
+
+    const data = await parseData(files);
+
+    expect(data.menu).toEqual([
+      { name: "Setup", formId: "0x1", offset: null, formSetGuid: guid, source: "ifr-hub" },
+    ]);
+    expect(data.singleFormSetNavigation).toMatchObject({
+      status: "detected",
+      confidence: "ifr-only",
+      hubFormId: "0x1",
+      hubName: "Setup",
+    });
+    expect(
+      data.singleFormSetNavigation?.pages.map((page) => [page.formId, page.role, page.registrationOffsets]),
+    ).toEqual([
+      ["0x1", "hub", []],
+      ["0x2", "direct-tab", ["0x8", "0x12"]],
+      ["0x3", "direct-tab", []],
+      ["0x4", "descendant", ["0x1C"]],
+    ]);
+    // The Ref's own opcode offset, exactly as the dump prints it.
+    expect(data.singleFormSetNavigation?.pages[1].ifrReferenceOffset).toBe("0x00000016");
   });
 
   it("matches the AMITSE executable menu table regardless of hex casing", async () => {

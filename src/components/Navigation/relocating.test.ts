@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { analyzeMoveDestinations, applyMoveToDraft } from "./relocating";
 import { buildRefLocation } from "./reparenting";
+import {
+  inspectSingleFormSetNavigation,
+  singleFormSetHubMenu,
+} from "../scripts/singleFormSetNavigation";
 import { buildMoveFixture, MOVE_FIXTURE_GUID_A } from "../scripts/testFixtures";
 import type { RefPrompt } from "../scripts/types";
 
@@ -149,6 +153,28 @@ describe("analyzeMoveDestinations", () => {
 });
 
 describe("applyMoveToDraft", () => {
+  it("refreshes the single-FormSet tab inventory when a hub Ref leaves the hub", () => {
+    const { data } = buildMoveFixture();
+    const ref = data.forms[0].children[0] as RefPrompt;
+    data.forms[0].children.push({ ...ref, questionId: "0x0002", formId: "0x2" });
+    data.forms[2].formSetGuid = data.forms[0].formSetGuid;
+    data.forms[2].formSetTitle = data.forms[0].formSetTitle;
+    data.formSetRoots = [
+      { name: "Main", formId: "0x1", offset: null, formSetGuid: data.forms[0].formSetGuid, source: "formset" },
+    ];
+    data.singleFormSetNavigation = inspectSingleFormSetNavigation(data.formSetRoots, data.forms, []);
+    data.menu = singleFormSetHubMenu(data.singleFormSetNavigation);
+    expect(data.singleFormSetNavigation.status).toBe("detected");
+
+    applyMoveToDraft(data, 0, 0, 2);
+
+    expect(data.singleFormSetNavigation.pages.map((page) => [page.formId, page.role])).toEqual([
+      ["0x1", "hub"],
+      ["0x2", "direct-tab"],
+    ]);
+    expect(data.menu[0]).toMatchObject({ source: "ifr-hub", formId: "0x1" });
+  });
+
   it("splices the Ref out of its source and appends it to the destination", () => {
     const { data } = buildMoveFixture();
     const ref = data.forms[0].children[0] as RefPrompt;

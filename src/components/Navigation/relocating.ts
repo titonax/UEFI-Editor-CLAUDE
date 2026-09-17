@@ -5,6 +5,7 @@ import {
   type HiiFormsPackage,
 } from "../scripts/hiiPackages";
 import { isSoleOwnerOfCondition, movableBlockStart } from "../scripts/refMoving";
+import { refreshSingleFormSetNavigation } from "../scripts/singleFormSetNavigation";
 import type { Data } from "../scripts/types";
 import { resolveRefTarget, wouldCreateCycle, type RefLocation } from "./reparenting";
 
@@ -168,4 +169,6 @@ export function applyMoveToDraft(
 ) {
   const [moved] = draft.forms[sourceFormIndex].children.splice(childIndex, 1);
   draft.forms[destinationFormIndex].children.push(moved);
+  // In a single-FormSet hub layout the tab inventory is the graph itself.
+  refreshSingleFormSetNavigation(draft);
 }

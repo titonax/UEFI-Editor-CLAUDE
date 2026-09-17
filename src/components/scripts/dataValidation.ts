@@ -78,7 +78,8 @@ function isMenu(value: unknown): value is Menu {
         (entry.source === undefined ||
           entry.source === "amitse" ||
           entry.source === "setupdata" ||
-          entry.source === "formset") &&
+          entry.source === "formset" ||
+          entry.source === "ifr-hub") &&
         isOptionalString(entry.pageMask) &&
         isOptionalString(entry.pageInfoOffset),
     )

@@ -47,6 +47,7 @@
 }
 
 .treeRow {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 100%;
@@ -138,15 +139,27 @@
   cursor: default;
 }
 
+/* Pinned to the visible right edge of a horizontally scrolled tree, so the
+   action never drifts out of view behind a long label. */
 .moveAction {
+  position: sticky;
+  right: 0.25rem;
+  z-index: 3;
   flex: 0 0 auto;
   margin-left: auto;
-  opacity: 0.35;
+  border: 1px solid rgba(51, 154, 240, 0.22);
+  background: var(--mantine-color-dark-8);
+  box-shadow: -0.35rem 0 0.55rem var(--mantine-color-dark-9);
+  opacity: 0.72;
 }
 
 .treeRow:hover .moveAction,
 .moveAction:focus-visible {
   opacity: 1;
+}
+
+.treeRow:hover .moveAction {
+  background: var(--mantine-color-dark-6);
 }
 
 .nodeName {

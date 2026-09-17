@@ -66,6 +66,44 @@ function makeMenuRoot(overrides: Partial<Menu[number]> = {}): Menu[number] {
 }
 
 describe("buildMenuTree", () => {
+  it("keeps a single-FormSet hub as the root and exposes its tabs as movable Refs", () => {
+    const guid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
+    const data = makeData({
+      menu: [{ name: "Setup", formId: "0x1", formSetGuid: guid, offset: null, source: "ifr-hub" }],
+      forms: [
+        makeForm({
+          name: "Setup",
+          formSetGuid: guid,
+          children: [makeRef({ name: "Main", formId: "0x2" })],
+        }),
+        makeForm({ name: "Main", formId: "0x2", formSetGuid: guid, referencedIn: ["0x1"] }),
+      ],
+    });
+
+    const tree = buildMenuTree(data);
+
+    expect(tree.roots).toHaveLength(1);
+    expect(tree.roots[0]).toMatchObject({
+      formId: "0x1",
+      rootSource: "ifr-navigation",
+      reachabilityLabel: "Single-FormSet IFR navigation hub",
+    });
+    expect(tree.roots[0].parentageLabel).toContain("proven as the navigation hub by 1 direct IFR Ref");
+    expect(tree.roots[0].children[0]).toMatchObject({
+      formId: "0x2",
+      sourceFormIndex: 0,
+      refChildIndex: 0,
+      profileLabel: "Single-FormSet IFR navigation",
+    });
+    expect(tree.profiles).toHaveLength(1);
+    expect(tree.profiles[0]).toMatchObject({
+      id: "single-formset-ifr-navigation",
+      label: "Single-FormSet IFR navigation",
+      assessment: "unresolved",
+      confidence: "high",
+    });
+  });
+
   it("builds a single root with no children", () => {
     const forms = [makeForm({ formId: "0x1", name: "Main" })];
     const data = makeData({ forms, menu: [makeMenuRoot()] });

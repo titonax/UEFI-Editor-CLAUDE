@@ -40,7 +40,11 @@ byte values are. This editor:
    opcode's binary offset so edits can later be applied as byte patches.
 2. Builds a GUID-aware `FormSet → Form → Ref target` graph. Duplicate
    FormIds across FormSets, detached graphs, cycles and broken references
-   are represented as such instead of being collapsed or guessed away.
+   are represented as such instead of being collapsed or guessed away. A
+   single-FormSet layout whose entry Form fans out into the tabs is
+   recognised as an IFR navigation hub, with its direct Refs listed as the
+   current tabs in firmware order and AMITSE registration kept as
+   corroboration only.
 3. Cross-references conditions against known Setup/hardware/access/UI
    VarStore names to explain *why* something is hidden, not just *that* it
    is. `SuppressIf` hiding is kept separate from `GrayOutIf`/`DisableIf`
@@ -111,6 +115,16 @@ direct, non-scoped `Ref` moves, together with the hide condition it is the
 sole occupant of, and the Setup HII never changes size. Like every other
 edit, the bytes only move when you export.
 
+When a single-FormSet navigation hub is detected, the top-level view lists
+every page with its role: the hub, a current direct tab, an AMITSE-registered
+descendant, or a registered-only page. "Visible as a tab" is structural there:
+the **Visible tab · hide/move** control relocates a tab's hub Ref under another
+existing Form (demoting it), and **Not a tab · promote/move** returns a
+descendant's existing Ref to the hub (promoting it). Both open the same move
+dialog with the same checks; AMITSE registration by itself never promotes a
+page, and no FormSet or menu is ever created. See
+[`docs/ami/single-formset-ifr-navigation.md`](docs/ami/single-formset-ifr-navigation.md).
+
 When a multi-FormSet root vector is detected in the Setup PE32, the top-level
 view shows each root's original, code-corroborated state next to a
 desired-state button that alternates between `Visible (01)` and
@@ -119,6 +133,9 @@ change. These plans are saved in `data.json` and reflected in the tree, but
 exporting extracted UEFI files is blocked while one is pending: the root byte
 lives inside the Setup PE32, which only the (not yet available) full-image
 reconstruction path can rewrite.
+
+The header names the loaded firmware (the image, or the Setup file in
+four-file mode) next to the breadcrumb of the page you are on.
 
 `data.json` round-trips the whole session, pending plans included. A
 re-uploaded file is validated against the loaded firmware's hashes, its

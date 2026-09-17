@@ -14,6 +14,10 @@ export interface Data {
   // Pending, reversible desired-state plans for individual roots (see
   // amiRootVisibilityEditing.ts). Never applied to extracted-file exports.
   rootVisibilityEdits?: AmiRootVisibilityEdit[];
+  // Present for every parse: whether the HII holds one FormSet whose entry
+  // Form is the IFR navigation hub (see singleFormSetNavigation.ts). Like
+  // rootVisibility it is evidence, rebuilt on import and after each move.
+  singleFormSetNavigation?: AmiSingleFormSetNavigationReport;
   version: string;
   hashes: {
     setupTxt: string;
@@ -69,6 +73,45 @@ export interface AmiRootVisibilityEdit {
   description: string;
 }
 
+export type AmiSingleFormSetNavigationStatus =
+  | "detected"
+  | "not-applicable"
+  | "unresolved"
+  | "ambiguous";
+
+// hub: the FormSet entry Form itself. direct-tab: a Form named by one of
+// the hub's direct Refs (a current top-level tab). descendant: reachable
+// from the hub through other Forms and registered in AMITSE. registered-only:
+// registered in AMITSE but not reachable from the hub at all.
+export type AmiSingleFormSetPageRole =
+  | "hub"
+  | "direct-tab"
+  | "descendant"
+  | "registered-only";
+
+export interface AmiSingleFormSetPage {
+  name: string;
+  formId: string;
+  formSetGuid: string;
+  role: AmiSingleFormSetPageRole;
+  registeredInAmitse: boolean;
+  registrationOffsets: string[];
+  // The hub's direct Ref opcode naming this page, for a direct tab.
+  ifrReferenceOffset?: string;
+  parentFormIds: string[];
+}
+
+export interface AmiSingleFormSetNavigationReport {
+  status: AmiSingleFormSetNavigationStatus;
+  mechanism: "single-formset-ifr-hub";
+  confidence: "corroborated" | "ifr-only" | "unresolved";
+  reason: string;
+  formSetGuid?: string;
+  hubFormId?: string;
+  hubName?: string;
+  pages: AmiSingleFormSetPage[];
+}
+
 export interface Suppression {
   offset: string;
   active: boolean;
@@ -106,7 +149,7 @@ export type Menu = {
   formId: string;
   offset: string | null;
   formSetGuid?: string;
-  source?: "amitse" | "setupdata" | "formset";
+  source?: "amitse" | "setupdata" | "formset" | "ifr-hub";
   pageMask?: string;
   pageInfoOffset?: string;
 }[];

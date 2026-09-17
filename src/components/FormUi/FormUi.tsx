@@ -9,6 +9,10 @@ import { summarizeFormBranch } from "../scripts/visibility";
 import { findNodePath, type MenuTree } from "../Navigation/menuTree";
 import RootsTable from "./RootsTable";
 import RootVisibilityAnalysis from "./RootVisibilityAnalysis";
+import SingleFormSetNavigation from "./SingleFormSetNavigation";
+import MenuMoveDialog from "../Navigation/MenuMoveDialog";
+import type { MenuTreeNode } from "../Navigation/menuTree";
+import { sameGuidOrBothUndefined } from "../scripts/hexId";
 import BranchSummary from "./BranchSummary";
 import TableRow from "./TableRow";
 import s from "./FormUi.module.css";
@@ -17,19 +21,29 @@ import { SEARCH_VIEW, TOP_LEVEL_MENU_VIEW } from "../../formNavigation";
 interface FormUiProps {
   data: Data;
   setData: Updater<Data>;
+  // The pristine Setup HII as hex, for the tab inventory's move dialog.
+  originalSetupSct: string;
   currentFormIndex: number;
   setCurrentFormIndex: React.Dispatch<React.SetStateAction<number>>;
   tree: MenuTree;
 }
 
+interface TabPlacementMove {
+  node: MenuTreeNode;
+  intent: "demote-tab" | "promote-tab";
+  initialDestinationFormIndex?: number;
+}
+
 export default function FormUi({
   data,
   setData,
+  originalSetupSct,
   currentFormIndex,
   setCurrentFormIndex,
   tree,
 }: FormUiProps) {
   const [search, setSearch] = useDebouncedState("", 200);
+  const [tabMove, setTabMove] = React.useState<TabPlacementMove | null>(null);
 
   // Computed unconditionally so the useMemo below stays a fixed hook call
   // regardless of which view (search / top-level menu / a specific form)
@@ -84,9 +98,46 @@ export default function FormUi({
   }
 
   if (currentFormIndex === TOP_LEVEL_MENU_VIEW) {
+    const navigation = data.singleFormSetNavigation;
+    const hubFormIndex =
+      navigation?.status === "detected" && navigation.hubFormId !== undefined
+        ? data.forms.findIndex(
+            (form) =>
+              sameHexId(form.formId, navigation.hubFormId ?? "") &&
+              sameGuidOrBothUndefined(form.formSetGuid, navigation.formSetGuid),
+          )
+        : -1;
     return (
       <Stack>
+        {tabMove && (
+          <MenuMoveDialog
+            data={data}
+            tree={tree}
+            node={tabMove.node}
+            opened
+            originalSetupSct={originalSetupSct}
+            setData={setData}
+            intent={tabMove.intent}
+            initialDestinationFormIndex={tabMove.initialDestinationFormIndex}
+            onClose={() => {
+              setTabMove(null);
+            }}
+          />
+        )}
         <RootVisibilityAnalysis data={data} setData={setData} />
+        <SingleFormSetNavigation
+          data={data}
+          tree={tree}
+          onMovePage={(page, node) => {
+            setTabMove({
+              node,
+              intent: page.role === "direct-tab" ? "demote-tab" : "promote-tab",
+              // A promotion offers the hub straight away when it is known.
+              initialDestinationFormIndex:
+                page.role === "descendant" && hubFormIndex >= 0 ? hubFormIndex : undefined,
+            });
+          }}
+        />
         <RootsTable
           data={data}
           setData={setData}

@@ -14,12 +14,14 @@ async function sha256Hex(bytes: Uint8Array) {
 // two options, and a Ref pointing at Form 2 - enough to exercise the scope
 // stack, suppression bookkeeping, and cross-form reference tracking that
 // parseData() relies on.
-export async function buildFixtureFiles(
-  overrides: { setupdataBin?: string; amitseSct?: string } = {},
-): Promise<PopulatedFiles> {
-  const formSetGuid = "12345678-1234-1234-1234-123456789ABC";
+export const FIXTURE_FORM_SET_GUID = "12345678-1234-1234-1234-123456789ABC";
 
-  const lines = [
+export async function buildFixtureFiles(
+  overrides: { setupdataBin?: string; amitseSct?: string; lines?: string[] } = {},
+): Promise<PopulatedFiles> {
+  const formSetGuid = FIXTURE_FORM_SET_GUID;
+
+  const lines = overrides.lines ?? [
     `0x00000010: FormSet Guid: ${formSetGuid}, Title: "Main Setup", Help: "Root help"`,
     `0x00000012: VarStore Guid: 87654321-4321-4321-4321-CBA987654321, VarStoreId: 0x0001, Size: 0x0010, Name: "Setup" {`,
     `0x00000014: Form FormId: 0x1, Title: "Main Page" { 01 86 }`,

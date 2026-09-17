@@ -24,10 +24,14 @@ function Harness({
   initial,
   setupSct,
   onClose,
+  intent,
+  initialDestinationFormIndex,
 }: {
   initial: Data;
   setupSct: string;
   onClose: () => void;
+  intent?: "move" | "demote-tab" | "promote-tab";
+  initialDestinationFormIndex?: number;
 }) {
   const [data, setData] = useImmer(initial);
   // Mirrors Navigation: the dialog is unmounted on close, and it only ever
@@ -45,6 +49,8 @@ function Harness({
           opened
           originalSetupSct={setupSct}
           setData={setData}
+          intent={intent}
+          initialDestinationFormIndex={initialDestinationFormIndex}
           onClose={() => {
             setOpen(false);
             onClose();
@@ -110,6 +116,41 @@ describe("MenuMoveDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Move menu" }));
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.getByTestId("children").textContent).toBe("0,0,1");
+  });
+
+  it("preselects a safe destination for a tab promotion and words the action accordingly", () => {
+    const { bytes, data } = buildMoveFixture({ explicitTargetGuid: true });
+    render(
+      <Harness
+        initial={data}
+        setupSct={toHex(bytes)}
+        onClose={vi.fn()}
+        intent="promote-tab"
+        initialDestinationFormIndex={2}
+      />,
+    );
+
+    expect(screen.getByText("Promote or relocate HII menu")).toBeInTheDocument();
+    expect(screen.getByText("Top-level tab promotion")).toBeInTheDocument();
+    expect(screen.getByText("Validated destination")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply placement" })).toBeEnabled();
+  });
+
+  it("keeps the action disabled when the preselected destination is not safe", () => {
+    const { bytes, data } = buildMoveFixture({ explicitTargetGuid: true });
+    render(
+      <Harness
+        initial={data}
+        setupSct={toHex(bytes)}
+        onClose={vi.fn()}
+        intent="demote-tab"
+        initialDestinationFormIndex={1}
+      />,
+    );
+
+    expect(screen.getByText("Hide or relocate top-level tab")).toBeInTheDocument();
+    expect(screen.getByText("Top-level tab removal")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove from top level" })).toBeDisabled();
   });
 
   it("counts destinations that would need REF3 conversion", () => {
