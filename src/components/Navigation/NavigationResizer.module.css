@@ -1,0 +1,39 @@
+.handle {
+  position: absolute;
+  z-index: 200;
+  top: 0;
+  right: -6px;
+  bottom: 0;
+  width: 12px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.handle::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  background: var(--app-shell-border-color);
+  transition:
+    width 100ms ease,
+    background-color 100ms ease;
+  content: "";
+}
+
+.handle:hover::after,
+.handle:focus-visible::after,
+.dragging::after {
+  width: 3px;
+  background: var(--mantine-color-blue-5);
+}
+
+.handle:focus-visible {
+  outline: 2px solid var(--mantine-color-blue-5);
+  outline-offset: -3px;
+}

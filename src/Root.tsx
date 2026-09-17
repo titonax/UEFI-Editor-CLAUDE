@@ -2,7 +2,14 @@ import { useEffect, useState } from "react";
 import { AppShell, MantineProvider, createTheme } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
 import App from "./App.tsx";
-import { loadNavbarWidth, saveNavbarWidth } from "./navbarWidth";
+import {
+  MIN_NAVIGATION_WIDTH,
+  clampNavigationWidth,
+  defaultNavigationWidth,
+  maxNavigationWidth,
+  persistNavigationWidth,
+  readStoredNavigationWidth,
+} from "./components/Navigation/navigationWidth";
 
 const theme = createTheme({
   colors: {
@@ -22,18 +29,42 @@ const theme = createTheme({
 });
 
 export default function Root() {
-  const [navbarWidth, setNavbarWidth] = useState(loadNavbarWidth);
+  // The tree's width is clamped against the live viewport: a stored width
+  // from a wide monitor is narrowed on a laptop, and shrinking the window
+  // never lets the tree squeeze the content pane below its minimum.
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const [navigationWidth, setNavigationWidth] = useState(() =>
+    readStoredNavigationWidth(window.innerWidth),
+  );
 
   useEffect(() => {
-    saveNavbarWidth(navbarWidth);
-  }, [navbarWidth]);
+    const handleResize = () => {
+      const nextViewportWidth = window.innerWidth;
+      setViewportWidth(nextViewportWidth);
+      setNavigationWidth((current) =>
+        clampNavigationWidth(current, nextViewportWidth),
+      );
+    };
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    persistNavigationWidth(navigationWidth);
+  }, [navigationWidth]);
+
+  const changeNavigationWidth = (width: number) => {
+    setNavigationWidth(clampNavigationWidth(width, viewportWidth));
+  };
 
   return (
     <MantineProvider theme={theme} defaultColorScheme="dark">
       <Notifications position="top-right" />
       <AppShell
         navbar={{
-          width: navbarWidth,
+          width: navigationWidth,
           breakpoint: 0,
         }}
         header={{
@@ -44,7 +75,15 @@ export default function Root() {
         }}
         transitionDuration={0}
       >
-        <App navbarWidth={navbarWidth} setNavbarWidth={setNavbarWidth} />
+        <App
+          navigationWidth={navigationWidth}
+          navigationMinWidth={MIN_NAVIGATION_WIDTH}
+          navigationMaxWidth={maxNavigationWidth(viewportWidth)}
+          onNavigationWidthChange={changeNavigationWidth}
+          onNavigationWidthReset={() => {
+            changeNavigationWidth(defaultNavigationWidth(viewportWidth));
+          }}
+        />
       </AppShell>
     </MantineProvider>
   );

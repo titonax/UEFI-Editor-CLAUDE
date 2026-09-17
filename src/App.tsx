@@ -7,7 +7,7 @@ import FileUploads from "./components/FileUploads/FileUploads";
 import type { Files, PopulatedFiles } from "./components/FileUploads/fileModel";
 import FormUi from "./components/FormUi/FormUi";
 import Navigation from "./components/Navigation/Navigation";
-import NavbarResizeHandle from "./components/Navigation/NavbarResizeHandle";
+import NavigationResizer from "./components/Navigation/NavigationResizer";
 import Header from "./components/Header/Header";
 import Footer from "./components/Footer/Footer";
 import { IconBrandGithub } from "@tabler/icons-react";
@@ -18,11 +18,20 @@ import { buildMenuTree } from "./components/Navigation/menuTree";
 import { applyLoadedData } from "./loadedData";
 
 interface AppProps {
-  navbarWidth: number;
-  setNavbarWidth: (width: number) => void;
+  navigationWidth: number;
+  navigationMinWidth: number;
+  navigationMaxWidth: number;
+  onNavigationWidthChange: (width: number) => void;
+  onNavigationWidthReset: () => void;
 }
 
-export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
+export default function App({
+  navigationWidth,
+  navigationMinWidth,
+  navigationMaxWidth,
+  onNavigationWidthChange,
+  onNavigationWidthReset,
+}: AppProps) {
   const [files, setFiles] = useImmer<Files>({
     setupSctContainer: { isWrongFile: false },
     setupTxtContainer: { isWrongFile: false },
@@ -124,21 +133,23 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
   return (
     <>
       <AppShell.Navbar>
-        {/* AppShell.Navbar itself must keep Mantine's own `position: fixed` -
-            overriding it breaks AppShell's layout (Main ends up stacked
-            below the navbar instead of beside it). This wrapper supplies
-            the positioning context the resize handle anchors to instead. */}
-        <div className={s.navbarInner}>
-          <Navigation
-            data={data}
-            setData={setLoadedData}
-            tree={tree}
-            currentFormIndex={currentFormIndex}
-            setCurrentFormIndex={setCurrentFormIndex}
-            originalSetupSct={loadedFiles.setupSctContainer.textContent}
-          />
-          <NavbarResizeHandle width={navbarWidth} setWidth={setNavbarWidth} />
-        </div>
+        <Navigation
+          data={data}
+          setData={setLoadedData}
+          tree={tree}
+          currentFormIndex={currentFormIndex}
+          setCurrentFormIndex={setCurrentFormIndex}
+          originalSetupSct={loadedFiles.setupSctContainer.textContent}
+        />
+        {/* The navbar is AppShell's own fixed-position element, so the
+            absolutely positioned handle spans exactly its right edge. */}
+        <NavigationResizer
+          width={navigationWidth}
+          minWidth={navigationMinWidth}
+          maxWidth={navigationMaxWidth}
+          onChange={onNavigationWidthChange}
+          onReset={onNavigationWidthReset}
+        />
       </AppShell.Navbar>
       <AppShell.Header>
         <Header
