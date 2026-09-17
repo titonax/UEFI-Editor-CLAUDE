@@ -87,8 +87,12 @@ export async function inspectAptioIvImage(
     setupFfs.length === 0 &&
     amitseFfs.length === 0 &&
     hasAmiNvramMarkers;
+  // AMITSE, not just Setup, can also be hidden behind encapsulation (see
+  // firmwareSections.ts): a deep scan is needed whenever either is missing
+  // from this shallow byte-signature pass, not only when Setup is.
   const deepScanRequired =
-    firmwareVolumes.length !== 0 && setupFfs.length === 0;
+    firmwareVolumes.length !== 0 &&
+    (setupFfs.length === 0 || amitseFfs.length === 0);
   const intelDescriptor =
     bytes.length >= 0x14 &&
     bytesToHex(bytes.slice(0x10, 0x14)) === intelDescriptorSignature;

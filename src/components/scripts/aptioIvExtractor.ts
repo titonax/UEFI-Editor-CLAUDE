@@ -5,6 +5,11 @@ import {
   PreopenDirectory,
   WASI,
 } from "@bjorn3/browser_wasi_shim";
+import {
+  encapsulatedFirmwareSection,
+  readFirmwareSection,
+  type FirmwareSection,
+} from "./firmwareSections";
 
 const setupGuid = "899407D7-99FE-43D8-9A21-79EC328CAC21";
 const amitseGuid = "B1DA0ADF-4F77-4070-A88E-BFFE1C60529A";
@@ -188,6 +193,17 @@ function findFile(bytes: Uint8Array, wantedGuid: string, depth: number) {
   return null;
 }
 
+// Decodes an encapsulation section's payload (Compression Section or
+// GUID-Defined Section - see firmwareSections.ts) into the plain bytes it
+// wraps, decompressing when the section itself says it's compressed.
+async function decodeEncapsulation(bytes: Uint8Array, section: FirmwareSection) {
+  const encapsulated = encapsulatedFirmwareSection(bytes, section);
+  if (!encapsulated) return null;
+  return encapsulated.compression === "none"
+    ? encapsulated.bytes
+    : firmwareDecompress(encapsulated.bytes, encapsulated.compression);
+}
+
 async function nestedBuffers(bytes: Uint8Array) {
   const nested: Uint8Array[] = [];
   for (const volumeStart of findVolumes(bytes)) {
@@ -197,24 +213,14 @@ async function nestedBuffers(bytes: Uint8Array) {
       if (bytes.slice(fileStart, fileStart + 24).every((byte) => byte === 0xff)) break;
       const size = u24(bytes, fileStart + 20);
       if (size < 24 || fileStart + size > volumeEnd) break;
-      let section = fileStart + 24;
+      let sectionStart = fileStart + 24;
       const fileEnd = fileStart + size;
-      while (section + 4 <= fileEnd) {
-        const sectionSize = u24(bytes, section);
-        const type = bytes[section + 3];
-        if (sectionSize < 4 || section + sectionSize > fileEnd) break;
-        if (type === 0x01 && sectionSize >= 9) {
-          const compressionType = bytes[section + 8];
-          const body = bytes.slice(section + 9, section + sectionSize);
-          if (compressionType === 0) nested.push(body);
-          if (compressionType === 1) {
-            nested.push(await firmwareDecompress(body, "standard"));
-          }
-          if (compressionType === 2) {
-            nested.push(await firmwareDecompress(body, "lzma"));
-          }
-        }
-        section = align(section + sectionSize, 4);
+      while (sectionStart + 4 <= fileEnd) {
+        const section = readFirmwareSection(bytes, sectionStart, fileEnd);
+        if (!section) break;
+        const child = await decodeEncapsulation(bytes, section);
+        if (child) nested.push(child);
+        sectionStart = align(section.end, 4);
       }
       fileStart = volumeStart + align(fileStart - volumeStart + size, 8);
     }
@@ -234,106 +240,70 @@ async function locateFirmwareFile(bytes: Uint8Array, wantedGuid: string) {
   return null;
 }
 
-async function locateHii(file: LocatedFile): Promise<Uint8Array | null> {
-  let section = file.bodyStart;
-  while (section + 4 <= file.end) {
-    const size = u24(file.bytes, section);
-    const type = file.bytes[section + 3];
-    if (size < 4 || section + size > file.end) break;
-    if (type === 0x01 && size >= 9) {
-      const compressionType = file.bytes[section + 8];
-      const body = file.bytes.slice(section + 9, section + size);
-      const nested =
-        compressionType === 0
-          ? body
-          : await firmwareDecompress(
-              body,
-              compressionType === 2 ? "lzma" : "standard",
-            );
-      const nestedFile = { bytes: nested, bodyStart: 0, end: nested.length, depth: file.depth };
-      const result = await locateHii(nestedFile);
-      if (result) return result;
-    }
-    if (type === 0x18 && size >= 20 && guid(file.bytes, section + 4) === hiiGuid) {
-      return file.bytes.slice(section + 20, section + size);
-    }
-    section = align(section + size, 4);
-  }
-  return null;
-}
+// A Setup/AMITSE FFS file's wanted section (the HII body, a freeform
+// SetupData/AMITSE blob, or the PE32 executable itself) is not always at
+// the top level: it's commonly hidden behind one or more layers of
+// encapsulation (Compression or GUID-Defined) that must be opened first.
+// This walks a file/nested-buffer's own section list looking for a section
+// `locatePayload` recognizes, recursing into every encapsulation section it
+// can open along the way. Real firmware has been seen nesting these eight
+// deep (see docs/ami/sample-corpus.md), so recursion is bounded rather than
+// unlimited.
+type SectionPayloadLocator = (bytes: Uint8Array, section: FirmwareSection) => number | null;
 
-async function locateFreeformSection(
+async function locateSectionPayload(
   file: LocatedFile,
-  wantedGuid: string,
+  locatePayload: SectionPayloadLocator,
+  recursionDepth = 0,
 ): Promise<Uint8Array | null> {
-  let section = file.bodyStart;
-  while (section + 4 <= file.end) {
-    const size = u24(file.bytes, section);
-    const type = file.bytes[section + 3];
-    if (size < 4 || section + size > file.end) break;
-    if (type === 0x01 && size >= 9) {
-      const compressionType = file.bytes[section + 8];
-      const body = file.bytes.slice(section + 9, section + size);
-      const nested =
-        compressionType === 0
-          ? body
-          : await firmwareDecompress(
-              body,
-              compressionType === 2 ? "lzma" : "standard",
-            );
-      const result = await locateFreeformSection(
-        {
-          bytes: nested,
-          bodyStart: 0,
-          end: nested.length,
-          depth: file.depth,
-        },
-        wantedGuid,
-      );
+  let sectionStart = file.bodyStart;
+  while (sectionStart + 4 <= file.end) {
+    const section = readFirmwareSection(file.bytes, sectionStart, file.end);
+    if (!section) break;
+    const payloadStart = locatePayload(file.bytes, section);
+    if (payloadStart !== null && payloadStart <= section.end) {
+      return file.bytes.slice(payloadStart, section.end);
+    }
+    if (recursionDepth < 16) {
+      const nested = await decodeEncapsulation(file.bytes, section);
+      const result = nested
+        ? await locateSectionPayload(
+            { bytes: nested, bodyStart: 0, end: nested.length, depth: file.depth },
+            locatePayload,
+            recursionDepth + 1,
+          )
+        : null;
       if (result) return result;
     }
-    if (
-      type === 0x18 &&
-      size >= 20 &&
-      guid(file.bytes, section + 4) === wantedGuid
-    ) {
-      return file.bytes.slice(section + 20, section + size);
-    }
-    section = align(section + size, 4);
+    sectionStart = align(section.end, 4);
   }
   return null;
 }
 
-async function locatePe32(file: LocatedFile): Promise<Uint8Array | null> {
-  let section = file.bodyStart;
-  while (section + 4 <= file.end) {
-    const size = u24(file.bytes, section);
-    const type = file.bytes[section + 3];
-    if (size < 4 || section + size > file.end) break;
-    if (type === 0x01 && size >= 9) {
-      const compressionType = file.bytes[section + 8];
-      const body = file.bytes.slice(section + 9, section + size);
-      const nested =
-        compressionType === 0
-          ? body
-          : await firmwareDecompress(
-              body,
-              compressionType === 2 ? "lzma" : "standard",
-            );
-      const result = await locatePe32({
-        bytes: nested,
-        bodyStart: 0,
-        end: nested.length,
-        depth: file.depth,
-      });
-      if (result) return result;
-    }
-    if (type === 0x10) {
-      return file.bytes.slice(section + 4, section + size);
-    }
-    section = align(section + size, 4);
-  }
-  return null;
+function locateHii(file: LocatedFile) {
+  return locateSectionPayload(file, (bytes, section) =>
+    section.type === 0x18 &&
+    section.size >= section.headerSize + 16 &&
+    guid(bytes, section.start + section.headerSize) === hiiGuid
+      ? section.start + section.headerSize + 16
+      : null,
+  );
+}
+
+function locateFreeformSection(file: LocatedFile, wantedGuid: string) {
+  return locateSectionPayload(file, (bytes, section) =>
+    section.type === 0x18 &&
+    section.size >= section.headerSize + 16 &&
+    guid(bytes, section.start + section.headerSize) === wantedGuid
+      ? section.start + section.headerSize + 16
+      : null,
+  );
+}
+
+function locatePe32(file: LocatedFile) {
+  return locateSectionPayload(file, (_bytes, section) =>
+    section.type === 0x10 ? section.start + section.headerSize : null,
+  );
 }
 
 async function runIfrExtractor(hii: Uint8Array) {
@@ -370,15 +340,26 @@ export async function extractAptioIvArtifacts(file: File): Promise<AptioIvArtifa
   if (!setup) {
     throw new Error("Setup FFS was not found after recursive decompression.");
   }
-  const hii = await locateHii(setup);
-  if (!hii) throw new Error("The Setup HII package was not found.");
+  // Some images store the Setup module's IFR data as a freeform HII body
+  // (the common case); others wrap it as a PE32 executable instead, which
+  // IFRExtractor can also parse directly (see docs/ami/sample-corpus.md's
+  // image2.bin regression, "Setup FFS -> PE32").
+  const hii = (await locateHii(setup)) ?? (await locatePe32(setup));
+  if (!hii) {
+    throw new Error("Neither a Setup HII package nor a Setup PE32 section was found.");
+  }
   const amitseFile = await locateFirmwareFile(image, amitseGuid);
-  const [amitse, setupData] = amitseFile
-    ? await Promise.all([
-        locatePe32(amitseFile),
-        locateFreeformSection(amitseFile, setupDataGuid),
-      ])
-    : [null, null];
+  const amitse = amitseFile ? await locatePe32(amitseFile) : null;
+  // SetupData is usually a freeform section inside the AMITSE FFS file, but
+  // some images give it its own FFS file under the same GUID instead - try
+  // that first and fall back to the AMITSE file.
+  const setupDataFile = await locateFirmwareFile(image, setupDataGuid);
+  let setupData = setupDataFile
+    ? await locateFreeformSection(setupDataFile, setupDataGuid)
+    : null;
+  if (!setupData && amitseFile) {
+    setupData = await locateFreeformSection(amitseFile, setupDataGuid);
+  }
   const ifrText = await runIfrExtractor(hii);
   const formPackageCount = (ifrText.match(/FormSet Guid:/g) ?? []).length;
   return {
