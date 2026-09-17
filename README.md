@@ -118,7 +118,10 @@ edit, the bytes only move when you export.
 
 When a single-FormSet navigation hub is detected, the top-level view lists
 every page with its role: the hub, a current direct tab, an AMITSE-registered
-descendant, or a registered-only page. "Visible as a tab" is structural there:
+descendant, or a registered-only page, together with the effective IFR state of
+its Ref: a vendor layout often keeps AMI reference tabs under an always-true
+`SuppressIf`, and those count as direct tabs that are hidden. "Visible as a
+tab" is structural there:
 the **Visible tab · hide/move** control relocates a tab's hub Ref under another
 existing Form (demoting it), and **Not a tab · promote/move** returns a
 descendant's existing Ref to the hub (promoting it). Both open the same move

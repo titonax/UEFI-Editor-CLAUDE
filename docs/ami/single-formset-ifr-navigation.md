@@ -64,6 +64,19 @@ registration offset. Pages are then labelled hub, direct tab, reachable
 descendant, or registered-only. A missing or duplicate direct target makes the
 result ambiguous, which disables the stronger classification.
 
+## Effective state
+
+Being a direct hub Ref is a structural fact; whether the tab shows is still
+decided by that Ref's own conditions. The Intel NUC 10 firmware
+(`FNCML357.0067`) keeps 13 direct Refs in its `Setup` hub: the eight Intel
+pages (Main, Advanced, Cooling, Performance, Security, Power, Boot, Save &
+Exit) plus five AMI reference pages, four of which sit under a constant-true
+`SuppressIf`. The inventory therefore reports 13 direct tabs, 9 shown and 4
+hidden by IFR, with the tree's verdict next to each page. AMITSE registration
+is absent in that image (its table does not use the FormSet GUID + FormId
+pattern), so the report is `ifr-only`. SetupData page metadata is not
+evaluated.
+
 ## Editing boundary
 
 This layout needs no new FormSet and no guessed visibility byte. A page is

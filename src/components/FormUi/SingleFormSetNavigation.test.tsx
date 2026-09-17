@@ -142,6 +142,37 @@ describe("SingleFormSetNavigation", () => {
     expect(securityNode).toMatchObject({ sourceFormIndex: 1, refChildIndex: 0 });
   });
 
+  it("reports the effective IFR state of each direct tab, not just its role", () => {
+    const data = hubData();
+    // Boot's hub Ref sits under an always-true SuppressIf, like the AMI
+    // reference pages a vendor layout keeps around but never shows.
+    const bootRef = data.forms[0].children[1];
+    bootRef.conditions = ["0x44960"];
+    bootRef.suppressIf = ["0x44960"];
+    data.suppressions.push({
+      offset: "0x44960",
+      active: true,
+      start: "0x44962",
+      end: "0x44971",
+      kind: "SuppressIf",
+      constant: true,
+      source: "constant",
+      expression: "True",
+      varStoreNames: [],
+    });
+    render(
+      <MantineProvider>
+        <SingleFormSetNavigation data={data} tree={buildMenuTree(data)} onMovePage={vi.fn()} />
+      </MantineProvider>,
+    );
+
+    expect(screen.getByText("2 current tabs")).toBeInTheDocument();
+    expect(screen.getByText("1 shown by IFR")).toBeInTheDocument();
+    expect(screen.getByText("1 hidden by IFR")).toBeInTheDocument();
+    expect(screen.getByText("Always hidden")).toBeInTheDocument();
+    expect(screen.getAllByText("No visibility gate").length).toBeGreaterThan(0);
+  });
+
   it("explains an ambiguous or unresolved layout instead of a table", () => {
     const data = hubData();
     data.singleFormSetNavigation = {
