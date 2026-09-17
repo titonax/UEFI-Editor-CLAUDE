@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildRefLocation,
-  evaluateMoveCandidate,
-  findIncomingRefs,
-  listMoveCandidates,
-  wouldCreateCycle,
-} from "./reparenting";
+import { buildRefLocation, resolveRefTarget, wouldCreateCycle } from "./reparenting";
 import type { Data, Form, RefPrompt, StringPrompt } from "../scripts/types";
 
 function makeRef(overrides: Partial<RefPrompt> = {}): RefPrompt {
@@ -58,73 +52,36 @@ function makeData(overrides: Partial<Data> = {}): Data {
   };
 }
 
-describe("findIncomingRefs", () => {
-  it("finds a single Ref pointing at the target form", () => {
+describe("resolveRefTarget", () => {
+  it("prefers a Form in the Ref's own FormSet over a same-id Form elsewhere", () => {
     const forms = [
-      makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
-      makeForm({ formId: "0x2" }),
+      makeForm({ formId: "0x1", formSetGuid: "AAAA", children: [makeRef({ formId: "0x2" })] }),
+      makeForm({ formId: "0x2", formSetGuid: "BBBB" }),
+      makeForm({ formId: "0x2", formSetGuid: "AAAA" }),
     ];
     const data = makeData({ forms });
 
-    const refs = findIncomingRefs(data, 1);
-
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toMatchObject({
-      sourceFormIndex: 0,
-      childIndex: 0,
-      targetFormIndex: 1,
-      isSelfReference: false,
-    });
+    expect(resolveRefTarget(data, 0, forms[0].children[0] as RefPrompt)).toBe(2);
   });
 
-  it("finds every Ref when a form is reached from multiple distinct parents", () => {
-    const forms = [
-      makeForm({ formId: "0x1", children: [makeRef({ formId: "0x3" })] }),
-      makeForm({ formId: "0x2", children: [makeRef({ formId: "0x3" })] }),
-      makeForm({ formId: "0x3" }),
-    ];
-    const data = makeData({ forms });
-
-    const refs = findIncomingRefs(data, 2);
-
-    expect(refs).toHaveLength(2);
-    expect(refs.map((location) => location.sourceFormIndex).sort()).toEqual([0, 1]);
-    expect(refs.every((location) => !location.isSelfReference)).toBe(true);
-  });
-
-  it("flags a Ref that points back at its own containing form", () => {
-    // Checked against a real firmware image: every Form there with more
-    // than one incoming Ref turned out to be exactly this pattern - action
-    // buttons ("Save Changes and Exit", "Discard Changes", "Restore
-    // Defaults", ...) implemented as Refs pointing back at their own Form,
-    // not genuine navigation from other pages.
+  it("follows an explicit target FormSet", () => {
     const forms = [
       makeForm({
         formId: "0x1",
-        children: [
-          makeRef({ name: "Save Changes and Exit", formId: "0x1" }),
-          makeRef({ name: "Discard Changes", formId: "0x1" }),
-        ],
+        formSetGuid: "AAAA",
+        children: [makeRef({ formId: "0x2", targetFormSetGuid: "BBBB" })],
       }),
+      makeForm({ formId: "0x2", formSetGuid: "AAAA" }),
+      makeForm({ formId: "0x2", formSetGuid: "BBBB" }),
     ];
     const data = makeData({ forms });
 
-    const refs = findIncomingRefs(data, 0);
-
-    expect(refs).toHaveLength(2);
-    expect(refs.every((location) => location.isSelfReference)).toBe(true);
-  });
-
-  it("returns an empty list for a form nothing points at", () => {
-    const forms = [makeForm({ formId: "0x1" })];
-    const data = makeData({ forms });
-
-    expect(findIncomingRefs(data, 0)).toEqual([]);
+    expect(resolveRefTarget(data, 0, forms[0].children[0] as RefPrompt)).toBe(2);
   });
 });
 
 describe("wouldCreateCycle", () => {
-  it("is true when retargeting a Ref to point back at its own containing form", () => {
+  it("is true when the new target is the Ref's own containing form", () => {
     const data = makeData({
       forms: [makeForm({ formId: "0x1" }), makeForm({ formId: "0x2" })],
     });
@@ -133,9 +90,8 @@ describe("wouldCreateCycle", () => {
   });
 
   it("is true when the new target can already reach back to the source through existing Refs", () => {
-    // 0 -> 1 -> 2. Retargeting some other Ref in form 0 to point at form 2
-    // would make form 0 reachable again once you follow 2's own path back
-    // through 1 to 0 - a cycle, even though 2 doesn't Ref 0 directly.
+    // 0 -> 1 -> 2 -> 0. A Ref in form 0 pointing at form 2 closes the loop
+    // even though 2 doesn't Ref 0 directly.
     const forms = [
       makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
       makeForm({ formId: "0x2", children: [makeRef({ formId: "0x3" })] }),
@@ -169,50 +125,28 @@ describe("wouldCreateCycle", () => {
   });
 });
 
-describe("evaluateMoveCandidate", () => {
-  const forms = [
-    makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
-    makeForm({ formId: "0x2" }),
-    makeForm({ formId: "0x3" }),
-  ];
-  const data = makeData({ forms });
-  const location = findIncomingRefs(data, 1)[0];
-
-  it("allows a move to an unrelated form", () => {
-    expect(evaluateMoveCandidate(data, location, 2)).toEqual({ allowed: true });
-  });
-
-  it("blocks a no-op move to the current target", () => {
-    expect(evaluateMoveCandidate(data, location, 1)).toEqual({
-      allowed: false,
-      reason: "same-target",
-    });
-  });
-
-  it("blocks a move that would create a cycle", () => {
-    expect(evaluateMoveCandidate(data, location, 0)).toEqual({
-      allowed: false,
-      reason: "would-create-cycle",
-    });
-  });
-
-  it("blocks a move to a form index that doesn't exist", () => {
-    expect(evaluateMoveCandidate(data, location, 99)).toEqual({
-      allowed: false,
-      reason: "target-not-found",
-    });
-  });
-});
-
 describe("buildRefLocation", () => {
-  it("builds the same location findIncomingRefs would have found", () => {
+  it("describes the Ref at the given position", () => {
     const forms = [
       makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
       makeForm({ formId: "0x2" }),
     ];
     const data = makeData({ forms });
 
-    expect(buildRefLocation(data, 0, 0)).toEqual(findIncomingRefs(data, 1)[0]);
+    expect(buildRefLocation(data, 0, 0)).toEqual({
+      sourceFormIndex: 0,
+      childIndex: 0,
+      ref: forms[0].children[0],
+      targetFormIndex: 1,
+      isSelfReference: false,
+    });
+  });
+
+  it("reports a dangling target as -1", () => {
+    const forms = [makeForm({ formId: "0x1", children: [makeRef({ formId: "0xDEAD" })] })];
+    const data = makeData({ forms });
+
+    expect(buildRefLocation(data, 0, 0).targetFormIndex).toBe(-1);
   });
 
   it("flags a self-referencing Ref", () => {
@@ -247,48 +181,5 @@ describe("buildRefLocation", () => {
     const data = makeData({ forms });
 
     expect(() => buildRefLocation(data, 0, 0)).toThrow(/Something went wrong/);
-  });
-});
-
-describe("listMoveCandidates", () => {
-  it("only lists forms in the same FormSet as the Ref's target", () => {
-    const forms = [
-      makeForm({
-        formId: "0x1",
-        formSetGuid: "AAAA",
-        children: [makeRef({ formId: "0x2" })],
-      }),
-      makeForm({ formId: "0x2", formSetGuid: "AAAA" }),
-      makeForm({ formId: "0x3", formSetGuid: "AAAA" }),
-      makeForm({ formId: "0x4", formSetGuid: "BBBB" }),
-    ];
-    const data = makeData({ forms });
-    const location = buildRefLocation(data, 0, 0);
-
-    const candidates = listMoveCandidates(data, location);
-
-    expect(candidates.map((candidate) => candidate.formId)).toEqual([
-      "0x1",
-      "0x2",
-      "0x3",
-    ]);
-  });
-
-  it("carries evaluateMoveCandidate's verdict for each candidate", () => {
-    const forms = [
-      makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
-      makeForm({ formId: "0x2" }),
-      makeForm({ formId: "0x3" }),
-    ];
-    const data = makeData({ forms });
-    const location = buildRefLocation(data, 0, 0);
-
-    const candidates = listMoveCandidates(data, location);
-
-    expect(candidates).toEqual([
-      { formIndex: 0, formId: "0x1", name: "A form", result: { allowed: false, reason: "would-create-cycle" } },
-      { formIndex: 1, formId: "0x2", name: "A form", result: { allowed: false, reason: "same-target" } },
-      { formIndex: 2, formId: "0x3", name: "A form", result: { allowed: true } },
-    ]);
   });
 });

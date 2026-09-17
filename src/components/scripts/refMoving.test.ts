@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isSoleOwnerOfCondition } from "./refMoving";
-import type { CheckBoxPrompt, Form, RefPrompt } from "./types";
+import { isSoleOwnerOfCondition, movableBlockStart } from "./refMoving";
+import type { CheckBoxPrompt, Data, Form, RefPrompt } from "./types";
 
 function makeRef(overrides: Partial<RefPrompt> = {}): RefPrompt {
   return {
@@ -51,6 +51,25 @@ function makeForm(overrides: Partial<Form> = {}): Form {
   };
 }
 
+function makeData(overrides: Partial<Data> = {}): Data {
+  return {
+    firmwareFamily: "aptio-v",
+    menu: [],
+    varStores: [],
+    forms: [],
+    suppressions: [],
+    version: "test",
+    hashes: {
+      setupTxt: "",
+      setupSct: "",
+      amitseSct: "",
+      setupdataBin: "",
+      offsetChecksum: "",
+    },
+    ...overrides,
+  };
+}
+
 describe("isSoleOwnerOfCondition", () => {
   it("is true for a Ref with no condition at all", () => {
     const ref = makeRef();
@@ -84,5 +103,50 @@ describe("isSoleOwnerOfCondition", () => {
     const form = makeForm({ children: [ref, sibling] });
 
     expect(isSoleOwnerOfCondition(form, ref)).toBe(false);
+  });
+});
+
+describe("movableBlockStart", () => {
+  it("starts at the Ref opcode itself when nothing wraps it", () => {
+    const ref = makeRef({ sctOffset: "0x40" });
+    const form = makeForm({ children: [ref] });
+
+    expect(movableBlockStart(makeData(), form, ref)).toBe(0x40);
+  });
+
+  it("starts at the outermost condition when the Ref is its sole occupant", () => {
+    const ref = makeRef({ sctOffset: "0x44", conditions: ["0x3C"] });
+    const form = makeForm({ children: [ref] });
+    const data = makeData({
+      suppressions: [
+        { offset: "0x3C", active: true, start: "0x3C", end: "0x53" },
+      ],
+    });
+
+    expect(movableBlockStart(data, form, ref)).toBe(0x3c);
+  });
+
+  it("refuses a Ref that shares its condition with a sibling", () => {
+    const ref = makeRef({ sctOffset: "0x44", conditions: ["0x3C"] });
+    const sibling = makeCheckBox({ sctOffset: "0x53", conditions: ["0x3C"] });
+    const form = makeForm({ children: [ref, sibling] });
+    const data = makeData({
+      suppressions: [
+        { offset: "0x3C", active: true, start: "0x3C", end: "0x60" },
+      ],
+    });
+
+    expect(() => movableBlockStart(data, form, ref)).toThrow(
+      "Something went wrong. Please file a bug report on Github.",
+    );
+  });
+
+  it("refuses a Ref whose condition is missing from the suppressions list", () => {
+    const ref = makeRef({ sctOffset: "0x44", conditions: ["0x3C"] });
+    const form = makeForm({ children: [ref] });
+
+    expect(() => movableBlockStart(makeData(), form, ref)).toThrow(
+      "Something went wrong. Please file a bug report on Github.",
+    );
   });
 });

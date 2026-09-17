@@ -13,12 +13,11 @@ import {
   IconAlertTriangle,
   IconArrowsMaximize,
   IconArrowsMinimize,
-  IconArrowsRightLeft,
+  IconArrowsMove,
   IconChevronRight,
   IconFileDescription,
   IconFolder,
   IconFolderOpen,
-  IconFolderSymlink,
   IconListTree,
   IconRefresh,
   IconSearch,
@@ -27,8 +26,7 @@ import {
 import s from "./Navigation.module.css";
 import type { Data } from "../scripts/types";
 import { findNodePath, type MenuTree, type MenuTreeNode } from "./menuTree";
-import MoveRefDialog, { type MoveRefTarget } from "./MoveRefDialog";
-import RelocateRefDialog from "./RelocateRefDialog";
+import MenuMoveDialog from "./MenuMoveDialog";
 import { SEARCH_VIEW, TOP_LEVEL_MENU_VIEW } from "../../formNavigation";
 
 interface NavigationProps {
@@ -37,6 +35,9 @@ interface NavigationProps {
   currentFormIndex: number;
   setCurrentFormIndex: React.Dispatch<React.SetStateAction<number>>;
   tree: MenuTree;
+  // The pristine Setup HII as uppercase hex: a move is only offered where
+  // the original bytes prove it can be done as a fixed-size relocation.
+  originalSetupSct: string;
 }
 
 export default function Navigation({
@@ -45,12 +46,9 @@ export default function Navigation({
   currentFormIndex,
   setCurrentFormIndex,
   tree,
+  originalSetupSct,
 }: NavigationProps) {
-  const [moveTarget, setMoveTarget] = React.useState<MoveRefTarget | null>(
-    null,
-  );
-  const [relocateTarget, setRelocateTarget] =
-    React.useState<MoveRefTarget | null>(null);
+  const [moveNode, setMoveNode] = React.useState<MenuTreeNode | null>(null);
   const [expanded, setExpanded] = React.useState(
     () => new Set(tree.roots.map((node) => node.key)),
   );
@@ -97,15 +95,9 @@ export default function Navigation({
     const opened = expanded.has(node.key);
     const active = node.formIndex === currentFormIndex;
     // Only Ref-derived nodes (i.e. not the AMITSE/SetupData menu roots,
-    // which are edited via RootsTable instead) carry both of these. Reading
-    // them into a single, definitely-typed local here - rather than inside
-    // the button's onClick below - lets TypeScript actually narrow away the
-    // `undefined` case for good, instead of re-widening it the moment it's
-    // captured by a closure.
-    const moveRefTarget: MoveRefTarget | null =
-      node.sourceFormIndex !== undefined && node.refChildIndex !== undefined
-        ? { sourceFormIndex: node.sourceFormIndex, childIndex: node.refChildIndex }
-        : null;
+    // which are edited via RootsTable instead) carry both of these.
+    const movable =
+      node.sourceFormIndex !== undefined && node.refChildIndex !== undefined;
     const isPrimaryNode =
       node.formIndex !== null &&
       tree.firstKeyByFormIndex.get(node.formIndex) === node.key;
@@ -249,38 +241,21 @@ export default function Navigation({
             )}
           </button>
 
-          {moveRefTarget && (
-            <Tooltip label="Change where this link goes">
+          {movable && (
+            <Tooltip label="Move this menu to another Form">
               <ActionIcon
+                className={s.moveAction}
                 size="sm"
                 variant="subtle"
-                color="gray"
-                className={s.moveIcon}
-                aria-label={`Change where "${node.label}" links to`}
+                color="blue"
+                aria-label={`Move ${node.label}`}
+                disabled={node.missing}
                 onClick={(event) => {
                   event.stopPropagation();
-                  setMoveTarget(moveRefTarget);
+                  setMoveNode(node);
                 }}
               >
-                <IconArrowsRightLeft size={13} />
-              </ActionIcon>
-            </Tooltip>
-          )}
-
-          {moveRefTarget && (
-            <Tooltip label="Move to a different page">
-              <ActionIcon
-                size="sm"
-                variant="subtle"
-                color="gray"
-                className={s.moveIcon}
-                aria-label={`Move "${node.label}" to a different page`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setRelocateTarget(moveRefTarget);
-                }}
-              >
-                <IconFolderSymlink size={13} />
+                <IconArrowsMove size={14} />
               </ActionIcon>
             </Tooltip>
           )}
@@ -432,30 +407,16 @@ export default function Navigation({
         <span>Search</span>
       </AppShell.Section>
 
-      {moveTarget && (
-        <MoveRefDialog
+      {moveNode && (
+        <MenuMoveDialog
           data={data}
+          tree={tree}
+          node={moveNode}
+          opened
+          originalSetupSct={originalSetupSct}
           setData={setData}
-          target={moveTarget}
           onClose={() => {
-            setMoveTarget(null);
-          }}
-          onMoved={(newFormIndex) => {
-            setCurrentFormIndex(newFormIndex);
-          }}
-        />
-      )}
-
-      {relocateTarget && (
-        <RelocateRefDialog
-          data={data}
-          setData={setData}
-          target={relocateTarget}
-          onClose={() => {
-            setRelocateTarget(null);
-          }}
-          onMoved={(newFormIndex) => {
-            setCurrentFormIndex(newFormIndex);
+            setMoveNode(null);
           }}
         />
       )}

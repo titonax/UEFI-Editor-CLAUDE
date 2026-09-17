@@ -162,6 +162,11 @@ function scanPackageList(bytes: Uint8Array, listOffset: number): PackageListScan
   return { packages, wellFormed, length: listLength };
 }
 
+// The package whose opcode stream contains `offset`, if any.
+export function packageContaining(packages: HiiFormsPackage[], offset: number) {
+  return packages.find((pkg) => offset >= pkg.payloadOffset && offset < pkg.end);
+}
+
 // Finds every Forms Package in a Setup HII buffer: the package list the
 // buffer itself is (the usual freeform HII body), a bare Forms Package at
 // offset 0, and then any well-formed package lists or bare FormSet-led

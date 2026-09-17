@@ -138,18 +138,14 @@
   cursor: default;
 }
 
-.moveIcon {
-  /* Sits right after the label instead of pinned to the row's far edge:
-     .tree scrolls horizontally for long labels, so an edge-pinned icon
-     would be scrolled out of view on most rows instead of right next to
-     the text the user is already looking at. */
+.moveAction {
   flex: 0 0 auto;
-  margin-left: 0.3rem;
-  opacity: 0;
+  margin-left: auto;
+  opacity: 0.35;
 }
 
-.treeRow:hover .moveIcon,
-.moveIcon:focus-visible {
+.treeRow:hover .moveAction,
+.moveAction:focus-visible {
   opacity: 1;
 }
 

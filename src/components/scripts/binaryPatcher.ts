@@ -1,7 +1,12 @@
 import { saveAs } from "file-saver";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 import { findFormIndexByFormId, parseHexId, sameHexId } from "./hexId";
-import { isSoleOwnerOfCondition } from "./refMoving";
+import {
+  packageContaining,
+  scanHiiFormsPackages,
+  type HiiFormsPackage,
+} from "./hiiPackages";
+import { movableBlockStart } from "./refMoving";
 import type { Data, Form, RefPrompt, Suppression } from "./types";
 
 export function validateByteInput(value: string) {
@@ -66,23 +71,17 @@ export interface RefBlock {
   length: number;
 }
 
-// Computes a Ref's movable block. Throws if the Ref shares its outermost
-// condition with a sibling (see isSoleOwnerOfCondition) - the UI is
-// expected to keep that case from ever reaching a move in the first place,
-// so getting here means a data.json was hand-edited around that guard.
+// Computes a Ref's movable block (see movableBlockStart for the guard
+// against a shared condition wrapper).
 function computeRefBlock(
   data: Data,
   form: Form,
   ref: RefPrompt,
   bytes: Uint8Array,
 ): RefBlock {
+  const start = movableBlockStart(data, form, ref);
   const conditionOffset = ref.conditions?.[0];
   if (conditionOffset !== undefined) {
-    if (!isSoleOwnerOfCondition(form, ref)) {
-      throw new Error(
-        "Something went wrong. Please file a bug report on Github.",
-      );
-    }
     const suppression = data.suppressions.find(
       (candidate) => candidate.offset === conditionOffset,
     );
@@ -91,12 +90,9 @@ function computeRefBlock(
         "Something went wrong. Please file a bug report on Github.",
       );
     }
-    const start = parseHexId(suppression.offset);
     const end = parseHexId(suppression.end) + END_OPCODE.length;
     return { start, length: end - start };
   }
-
-  const start = parseHexId(ref.sctOffset);
   return { start, length: opcodeLength(bytes, start) };
 }
 
@@ -231,6 +227,101 @@ function applyRefMoves(
   return remap;
 }
 
+interface ContainerLengthPatch {
+  offset: number;
+  width: 3 | 4;
+  delta: number;
+}
+
+function readLength(bytes: Uint8Array, offset: number, width: 3 | 4) {
+  return width === 3
+    ? bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16)
+    : (bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24)) >>>
+        0;
+}
+
+function writeLength(bytes: Uint8Array, offset: number, width: 3 | 4, value: number) {
+  for (let index = 0; index < width; index++) {
+    bytes[offset + index] = (value >>> (index * 8)) & 0xff;
+  }
+}
+
+// A Ref that moves out of one Forms Package into another leaves the total
+// byte count unchanged but not each package's own 24-bit length header -
+// nor, when the two packages sit in different HII package lists, those
+// lists' 32-bit lengths. Deltas are summed per header so several moves
+// touching the same package net out into one patch. Throws for a move
+// between packages of different provenance (one inside a list, one bare),
+// which analyzeMoveDestinations never offers.
+function planContainerLengthPatches(
+  data: Data,
+  packages: HiiFormsPackage[],
+  moves: DetectedRefMove[],
+) {
+  const patches = new Map<number, ContainerLengthPatch>();
+  const crossPackageMoves = new Set<DetectedRefMove>();
+  const add = (offset: number, width: 3 | 4, delta: number) => {
+    const existing = patches.get(offset);
+    if (existing) {
+      existing.delta += delta;
+    } else {
+      patches.set(offset, { offset, width, delta });
+    }
+  };
+
+  for (const move of moves) {
+    const source = packageContaining(packages, move.block.start);
+    const destination = packageContaining(
+      packages,
+      parseHexId(data.forms[move.destinationFormIndex].endOffset),
+    );
+    if (!source || !destination) {
+      throw new Error("Something went wrong. Please file a bug report on Github.");
+    }
+    if (source === destination) {
+      continue;
+    }
+    if ((source.packageListOffset === null) !== (destination.packageListOffset === null)) {
+      throw new Error("Something went wrong. Please file a bug report on Github.");
+    }
+    crossPackageMoves.add(move);
+    add(source.offset, 3, -move.block.length);
+    add(destination.offset, 3, move.block.length);
+    if (
+      source.packageListOffset !== null &&
+      destination.packageListOffset !== null &&
+      source.packageListOffset !== destination.packageListOffset
+    ) {
+      add(source.packageListOffset + 16, 4, -move.block.length);
+      add(destination.packageListOffset + 16, 4, move.block.length);
+    }
+  }
+
+  return { patches: [...patches.values()], crossPackageMoves };
+}
+
+// Applied after the moves themselves, at each header's remapped position
+// (a package header can sit inside the gap a move shifted).
+function applyContainerLengthPatches(
+  bytes: Uint8Array,
+  patches: ContainerLengthPatch[],
+  remap: (offset: number) => number,
+) {
+  for (const patch of patches) {
+    const offset = remap(patch.offset);
+    const next = readLength(bytes, offset, patch.width) + patch.delta;
+    const minimum = patch.width === 3 ? 4 : 20;
+    const maximum = patch.width === 3 ? 0xffffff : 0xffffffff;
+    if (next < minimum || next > maximum) {
+      throw new Error("Something went wrong. Please file a bug report on Github.");
+    }
+    writeLength(bytes, offset, patch.width, next);
+  }
+}
+
 export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
   // A root byte lives in the Setup PE32 inside the image, not in any of
   // the four extracted files, so a pending plan can't be honored here and
@@ -309,15 +400,24 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
   // start/end already reflecting anything that physically moved, not its
   // stale pristine position).
   const refMoves = detectRefMoves(data, modifiedSetupSct);
+  // Package boundaries are read before anything moves (the retargets above
+  // only overwrote bytes in place, so the layout is still pristine).
+  const { patches, crossPackageMoves } =
+    refMoves.length > 0
+      ? planContainerLengthPatches(data, scanHiiFormsPackages(modifiedSetupSct), refMoves)
+      : { patches: [], crossPackageMoves: new Set<DetectedRefMove>() };
   const remapAfterMoves =
     refMoves.length > 0
       ? applyRefMoves(data, modifiedSetupSct, refMoves)
       : (offset: number) => offset;
+  applyContainerLengthPatches(modifiedSetupSct, patches, remapAfterMoves);
 
   for (const move of refMoves) {
     const sourceForm = data.forms[move.sourceFormIndex];
     const destinationForm = data.forms[move.destinationFormIndex];
-    setupSctChangeLog += `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"\n`;
+    setupSctChangeLog += `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"${
+      crossPackageMoves.has(move) ? " across HII Forms Packages" : ""
+    }\n`;
     wasSetupSctModified = true;
   }
 

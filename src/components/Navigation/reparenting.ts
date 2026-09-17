@@ -1,5 +1,5 @@
 import type { Data, RefPrompt } from "../scripts/types";
-import { findFormIndexByFormId, sameGuidOrBothUndefined } from "../scripts/hexId";
+import { findFormIndexByFormId } from "../scripts/hexId";
 
 export interface RefLocation {
   sourceFormIndex: number;
@@ -11,8 +11,7 @@ export interface RefLocation {
   // one incoming Ref turned out to be exactly this - action buttons ("Save
   // Changes and Exit", "Discard Changes", "Restore Defaults", ...)
   // implemented as Refs that point back at their own Form, not genuine
-  // navigation from other pages. These aren't "this Form's parent" in any
-  // useful sense and should be excluded from reparent-target pickers.
+  // navigation from other pages.
   isSelfReference: boolean;
 }
 
@@ -25,43 +24,9 @@ export function resolveRefTarget(data: Data, sourceFormIndex: number, ref: RefPr
   );
 }
 
-// Every Ref opcode anywhere in the data that currently resolves to
-// `targetFormIndex`. A Form can in principle appear under several distinct
-// parents (nothing here rules that out), so "moving a Form" always means
-// moving one specific Ref location, never "the Form's parent" as if it had
-// exactly one - see isSelfReference for the far more common real-world
-// reason a Form has multiple incoming Refs.
-export function findIncomingRefs(
-  data: Data,
-  targetFormIndex: number,
-): RefLocation[] {
-  const locations: RefLocation[] = [];
-
-  data.forms.forEach((form, sourceFormIndex) => {
-    form.children.forEach((child, childIndex) => {
-      if (child.type !== "Ref") {
-        return;
-      }
-      const resolvedIndex = resolveRefTarget(data, sourceFormIndex, child);
-      if (resolvedIndex === targetFormIndex) {
-        locations.push({
-          sourceFormIndex,
-          childIndex,
-          ref: child,
-          targetFormIndex: resolvedIndex,
-          isSelfReference: sourceFormIndex === resolvedIndex,
-        });
-      }
-    });
-  });
-
-  return locations;
-}
-
 // Builds the RefLocation for one already-known Ref (a specific child of a
-// specific Form), instead of searching for it - the tree already knows
-// exactly which Ref a given row came from (see sourceFormIndex/refChildIndex
-// on MenuTreeNode), so there's no need to re-derive it via findIncomingRefs.
+// specific Form) - the tree already knows exactly which Ref a given row
+// came from (see sourceFormIndex/refChildIndex on MenuTreeNode).
 export function buildRefLocation(
   data: Data,
   sourceFormIndex: number,
@@ -82,12 +47,12 @@ export function buildRefLocation(
   };
 }
 
-// True if retargeting `location`'s Ref to `newTargetFormIndex` would make
-// the Ref's own containing Form reachable from its new target - i.e. it
-// would introduce a cycle. buildMenuTree already tolerates cycles without
-// infinite recursion (ancestor tracking stops it), but a reparent that
-// creates one on the spot is never what was actually asked for, so it's
-// rejected up front instead of silently produced.
+// True if a Ref living in `location`'s Form pointing at `newTargetFormIndex`
+// would make that Form reachable from its own target - i.e. it would
+// introduce a cycle. buildMenuTree already tolerates cycles without
+// infinite recursion (ancestor tracking stops it), but a move that creates
+// one on the spot is never what was actually asked for, so it's rejected
+// up front instead of silently produced.
 export function wouldCreateCycle(
   data: Data,
   location: Pick<RefLocation, "sourceFormIndex">,
@@ -124,69 +89,4 @@ export function wouldCreateCycle(
   }
 
   return false;
-}
-
-export type MoveBlockReason =
-  | "same-target"
-  | "would-create-cycle"
-  | "target-not-found";
-
-export interface MoveCandidateResult {
-  allowed: boolean;
-  reason?: MoveBlockReason;
-}
-
-// Whether `location`'s Ref could be safely retargeted to point at
-// `newTargetFormIndex` instead. This only ever checks graph-shape
-// constraints (does the target exist, would it create a cycle) - it does
-// not yet know anything about byte-level feasibility (that's a separate,
-// later concern once this becomes an actual binary patch).
-export function evaluateMoveCandidate(
-  data: Data,
-  location: RefLocation,
-  newTargetFormIndex: number,
-): MoveCandidateResult {
-  if (newTargetFormIndex < 0 || newTargetFormIndex >= data.forms.length) {
-    return { allowed: false, reason: "target-not-found" };
-  }
-  if (newTargetFormIndex === location.targetFormIndex) {
-    return { allowed: false, reason: "same-target" };
-  }
-  if (wouldCreateCycle(data, location, newTargetFormIndex)) {
-    return { allowed: false, reason: "would-create-cycle" };
-  }
-  return { allowed: true };
-}
-
-export interface MoveCandidate {
-  formIndex: number;
-  name: string;
-  formId: string;
-  result: MoveCandidateResult;
-}
-
-// Every Form this Ref could be retargeted at, restricted to the FormSet it
-// can actually reach without also rewriting a FormSetGuid field (a Ref1/Ref3
-// variant has no FormSetGuid bytes at all - it can only ever mean "this same
-// FormSet"; a Ref4 does carry one, but retargeting only overwrites FormId,
-// so its target has to stay in the FormSet that GUID already names). Each
-// candidate carries its own evaluateMoveCandidate verdict so the UI can grey
-// out the ones that would be a no-op or a cycle, with a reason, instead of
-// hiding them outright.
-export function listMoveCandidates(
-  data: Data,
-  location: RefLocation,
-): MoveCandidate[] {
-  const sourceForm = data.forms[location.sourceFormIndex];
-  const scopeGuid = location.ref.targetFormSetGuid ?? sourceForm.formSetGuid;
-
-  return data.forms
-    .map((form, formIndex) => ({ form, formIndex }))
-    .filter(({ form }) => sameGuidOrBothUndefined(form.formSetGuid, scopeGuid))
-    .map(({ form, formIndex }) => ({
-      formIndex,
-      name: form.name || form.formId,
-      formId: form.formId,
-      result: evaluateMoveCandidate(data, location, formIndex),
-    }));
 }

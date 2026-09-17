@@ -56,6 +56,9 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
     data,
   ]);
 
+  // `data` only ever exists once all four files were loaded and parsed.
+  const loadedFiles = files as PopulatedFiles;
+
   if (!data || !tree) {
     return (
       <Stack className={s.padding} gap="xl">
@@ -132,6 +135,7 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
             tree={tree}
             currentFormIndex={currentFormIndex}
             setCurrentFormIndex={setCurrentFormIndex}
+            originalSetupSct={loadedFiles.setupSctContainer.textContent}
           />
           <NavbarResizeHandle width={navbarWidth} setWidth={setNavbarWidth} />
         </div>
@@ -146,7 +150,7 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
       <AppShell.Footer>
         <Footer
           currentFormIndex={currentFormIndex}
-          files={files as PopulatedFiles}
+          files={loadedFiles}
           data={data}
           setData={setLoadedData}
         />
