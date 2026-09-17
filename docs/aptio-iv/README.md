@@ -18,10 +18,12 @@ The four-file input remains available as an expert diagnostic mode.
 
 ## Current status
 
-- The inherited Aptio V behavior is unchanged.
-- Full-image structural detection and extracted-file parsing are implemented experimentally.
-- Full-image decompression, reconstruction and export are not implemented yet.
-- Parser and patching changes will be based on reproducible firmware samples.
+- The inherited Aptio V (four-file) behavior is unchanged.
+- The full-image preflight is implemented and runs read-only in the browser: flash layout and firmware volume detection, recursive LZMA/Tiano decompression, extraction of the Setup, AMITSE and SetupData modules, and IFRExtractor-RS via WebAssembly. Every extracted buffer keeps its provenance (source buffer, encapsulation path, owning FFS file).
+- The Aptio IV/V generation is reported as evidence; shared structures alone never resolve it, and an unresolved image stays marked as such.
+- The AMITSE multi-FormSet root visibility vector is detected in the Setup PE32; changes to it are recorded as reversible pending plans and included in `data.json`.
+- Reconstruction and full-image export are not implemented: exporting extracted UEFI files stays disabled for full-image sessions, and pending root-visibility plans cannot be applied yet. The blockers are listed by `assessFirmwareReconstruction()` and shown in the preflight report.
+- Parser and patching changes are based on reproducible firmware samples.
 - Modified output must never be flashed before independent validation and a recovery path are available.
 
 ## Sample intake

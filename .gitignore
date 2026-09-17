@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# WebAssembly decompressors and IFRExtractor are built on CI by
+# .github/workflows/deploy.yaml; a locally built copy is never committed.
+public/*.wasm

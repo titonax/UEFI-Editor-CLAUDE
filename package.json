@@ -1,5 +1,6 @@
 {
   "name": "uefi-editor",
+  "description": "Browser-based AMI Aptio IV/V HII and IFR editor",
   "private": true,
   "version": "0.0.0",
   "type": "module",

@@ -6,8 +6,9 @@ import {
   readableExpressionLine,
 } from "./expressionFormatter";
 import { calculateJsonChecksum, hashFile } from "./hashing";
-import { parseHexId, sameHexId } from "./hexId";
+import { parseHexId, sameGuidOrBothUndefined, sameHexId } from "./hexId";
 import { decToHexString } from "./binaryPatcher";
+import { getAdditionalData, indexSetupData, type SetupDataIndex } from "./setupData";
 import type {
   CheckBoxPrompt,
   ConditionKind,
@@ -17,7 +18,6 @@ import type {
   Forms,
   Menu,
   NumericPrompt,
-  Offsets,
   OneOfPrompt,
   RefPrompt,
   Scopes,
@@ -161,100 +161,6 @@ function checkConditions(scopes: Scopes, formChild: FormChildren) {
       formChild.suppressIf = suppressions;
     }
   }
-}
-
-// The AMI SetupData "question metadata" record for a HII question is
-// anchored by that question's own VarOffset/QuestionId byte pairs (passed
-// in as `bytes`, taken from byteArray[2..3]/[4..5]/[6..7]). Relative to
-// where that anchor pattern starts in SetupData, the record also carries a
-// page id, the AMI access-level byte, and further along the failsafe and
-// optimal default bytes. These gaps were reverse-engineered from firmware
-// images (there is no public spec for this layout); they are expressed as
-// named lengths so the regex and the resulting byte offsets can never
-// drift out of sync with each other.
-const ANCHOR_PAIR_HEX_CHARS = 4; // two hex bytes, e.g. byteArray[6] + byteArray[7]
-const PAGE_ID_HEX_CHARS = 4;
-const ACCESS_LEVEL_HEX_CHARS = 2;
-const FAILSAFE_HEX_CHARS = 2;
-
-const GAP_ANCHOR67_TO_PAGE_ID = 20;
-const GAP_PAGE_ID_TO_ACCESS_LEVEL = 4;
-const GAP_ACCESS_LEVEL_TO_ANCHOR45 = 6;
-const GAP_ANCHOR45_TO_ANCHOR23 = 52;
-const GAP_ANCHOR23_TO_FAILSAFE = 4;
-
-const PAGE_ID_OFFSET = ANCHOR_PAIR_HEX_CHARS + GAP_ANCHOR67_TO_PAGE_ID;
-const ACCESS_LEVEL_OFFSET =
-  PAGE_ID_OFFSET + PAGE_ID_HEX_CHARS + GAP_PAGE_ID_TO_ACCESS_LEVEL;
-const ANCHOR45_OFFSET =
-  ACCESS_LEVEL_OFFSET + ACCESS_LEVEL_HEX_CHARS + GAP_ACCESS_LEVEL_TO_ANCHOR45;
-const ANCHOR23_OFFSET =
-  ANCHOR45_OFFSET + ANCHOR_PAIR_HEX_CHARS + GAP_ANCHOR45_TO_ANCHOR23;
-const FAILSAFE_OFFSET =
-  ANCHOR23_OFFSET + ANCHOR_PAIR_HEX_CHARS + GAP_ANCHOR23_TO_FAILSAFE;
-const OPTIMAL_OFFSET = FAILSAFE_OFFSET + FAILSAFE_HEX_CHARS;
-
-function getAdditionalData(
-  bytes: string,
-  hexSetupdataBin: string,
-  isRef: boolean,
-): {
-  pageId: string | null;
-  accessLevel: string | null;
-  failsafe: string | null;
-  optimal: string | null;
-  offsets: Offsets | null;
-} {
-  const byteArray = bytes.split(" ");
-  const regex = new RegExp(
-    byteArray[6] +
-      byteArray[7] +
-      `.{${String(GAP_ANCHOR67_TO_PAGE_ID)}}(....).{${String(
-        GAP_PAGE_ID_TO_ACCESS_LEVEL,
-      )}}(..).{${String(GAP_ACCESS_LEVEL_TO_ANCHOR45)}}` +
-      byteArray[4] +
-      byteArray[5] +
-      `.{${String(GAP_ANCHOR45_TO_ANCHOR23)}}` +
-      byteArray[2] +
-      byteArray[3] +
-      `.{${String(GAP_ANCHOR23_TO_FAILSAFE)}}(..)(..)`,
-    "gi",
-  );
-
-  const matches = [...hexSetupdataBin.matchAll(regex)].filter(
-    (element) => element.index % 2 === 0,
-  );
-
-  if (matches.length === 1) {
-    const match = matches[0];
-    const index = match.index;
-
-    const offsets: Offsets = {
-      accessLevel: decToHexString((index + ACCESS_LEVEL_OFFSET) / 2),
-      failsafe: decToHexString((index + FAILSAFE_OFFSET) / 2),
-      optimal: decToHexString((index + OPTIMAL_OFFSET) / 2),
-    };
-
-    if (isRef) {
-      offsets.pageId = decToHexString((index + PAGE_ID_OFFSET) / 2);
-    }
-
-    return {
-      pageId: match[1],
-      accessLevel: match[2],
-      failsafe: match[3],
-      optimal: match[4],
-      offsets,
-    };
-  }
-
-  return {
-    pageId: null,
-    accessLevel: null,
-    failsafe: null,
-    optimal: null,
-    offsets: null,
-  };
 }
 
 function determineCondition(
@@ -603,7 +509,7 @@ function handleRefLine(
   ref: RegExpExecArray,
   refFormId: RegExpExecArray,
   refFormSetGuid: RegExpExecArray | null,
-  setupdataBin: string,
+  setupData: SetupDataIndex,
   offset: string,
 ) {
   const formId = refFormId[1];
@@ -626,7 +532,7 @@ function handleRefLine(
     ),
     targetFormSetGuid,
     sctOffset: offset,
-    ...getAdditionalData(ref[8], setupdataBin, true),
+    ...getAdditionalData(ref[8], setupData, true),
   };
 
   checkConditions(state.scopes, currentRef);
@@ -648,13 +554,13 @@ function handleRefLine(
 function handleStringLine(
   state: ParserState,
   string: RegExpExecArray,
-  setupdataBin: string,
+  setupData: SetupDataIndex,
   indentations: number,
   offset: string,
 ) {
   const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
     string[10],
-    setupdataBin,
+    setupData,
     false,
   );
 
@@ -686,13 +592,13 @@ function handleStringLine(
 function handleNumericLine(
   state: ParserState,
   numeric: RegExpExecArray,
-  setupdataBin: string,
+  setupData: SetupDataIndex,
   indentations: number,
   offset: string,
 ) {
   const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
     numeric[12],
-    setupdataBin,
+    setupData,
     false,
   );
 
@@ -729,13 +635,13 @@ function handleNumericLine(
 function handleCheckBoxLine(
   state: ParserState,
   checkBox: RegExpExecArray,
-  setupdataBin: string,
+  setupData: SetupDataIndex,
   indentations: number,
   offset: string,
 ) {
   const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
     checkBox[8],
-    setupdataBin,
+    setupData,
     false,
   );
 
@@ -769,13 +675,13 @@ function handleCheckBoxLine(
 function handleOneOfLine(
   state: ParserState,
   oneOf: RegExpExecArray,
-  setupdataBin: string,
+  setupData: SetupDataIndex,
   indentations: number,
   offset: string,
 ) {
   const { accessLevel, failsafe, optimal, offsets } = getAdditionalData(
     oneOf[12],
-    setupdataBin,
+    setupData,
     false,
   );
 
@@ -892,6 +798,7 @@ function handleEndLine(
 
 function parseSetupTxt(setupTxt: string, setupdataBin: string): ParserState {
   const state = createParserState();
+  const setupData = indexSetupData(setupdataBin);
   const setupTxtArray = setupTxt.split("\n");
 
   for (const [index, line] of setupTxtArray.entries()) {
@@ -964,23 +871,23 @@ function parseSetupTxt(setupTxt: string, setupdataBin: string): ParserState {
     }
 
     if (ref && refFormId) {
-      handleRefLine(state, ref, refFormId, refFormSetGuid, setupdataBin, offset);
+      handleRefLine(state, ref, refFormId, refFormSetGuid, setupData, offset);
     }
 
     if (string) {
-      handleStringLine(state, string, setupdataBin, indentations, offset);
+      handleStringLine(state, string, setupData, indentations, offset);
     }
 
     if (numeric) {
-      handleNumericLine(state, numeric, setupdataBin, indentations, offset);
+      handleNumericLine(state, numeric, setupData, indentations, offset);
     }
 
     if (checkBox) {
-      handleCheckBoxLine(state, checkBox, setupdataBin, indentations, offset);
+      handleCheckBoxLine(state, checkBox, setupData, indentations, offset);
     }
 
     if (oneOf) {
-      handleOneOfLine(state, oneOf, setupdataBin, indentations, offset);
+      handleOneOfLine(state, oneOf, setupData, indentations, offset);
     }
 
     if (oneOfOption) {
@@ -1063,27 +970,35 @@ export async function parseData(files: PopulatedFiles) {
       (match) => ({ match, formSetId }),
     ),
   );
-  const discoveredMenu: Menu = matches
-    .map(({ match, formSetId }) => {
-      const hexEntry = decToHexString(
-        parseInt(match[1].slice(2) + match[1].slice(0, 2), 16),
-      );
-      const formSet = formSetMetadata.get(formSetId);
-      const matchedForm =
-        forms.find(
+  // An AMITSE table entry names a FormSet and a FormId; only a Form with
+  // that FormId inside that very FormSet counts. A same-numbered Form in
+  // another FormSet is a different page, and inventing an entry from the
+  // FormSet's title alone would claim a root that no Form backs.
+  const discoveredMenu: Menu = matches.flatMap(({ match, formSetId }) => {
+    const hexEntry = decToHexString(
+      parseInt(match[1].slice(2) + match[1].slice(0, 2), 16),
+    );
+    const formSet = formSetMetadata.get(formSetId);
+    const matchedForm = formSet
+      ? forms.find(
           (form) =>
-            form.formSetGuid === formSet?.guid &&
+            sameGuidOrBothUndefined(form.formSetGuid, formSet.guid) &&
             sameHexId(form.formId, hexEntry),
-        ) ?? forms.find((form) => sameHexId(form.formId, hexEntry));
-      return {
-        name: matchedForm?.name ?? formSet?.title ?? "",
+        )
+      : undefined;
+    if (!formSet || !matchedForm) {
+      return [];
+    }
+    return [
+      {
+        name: matchedForm.name,
         formId: hexEntry,
         offset: decToHexString((match.index + formSetId.length) / 2),
-        formSetGuid: formSet?.guid,
+        formSetGuid: formSet.guid,
         source: "amitse" as const,
-      };
-    })
-    .filter((x) => x.name);
+      },
+    ];
+  });
   const setupDataMenu = discoverSetupDataMenu(formSetRoots, setupdataBin).map(
     (entry) => {
       const executableEntry = discoveredMenu.find(
