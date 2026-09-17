@@ -10,7 +10,7 @@ describe("parseData", () => {
     const data = await parseData(files);
 
     expect(data.version).toBe(version);
-    expect(data.firmwareFamily).toBe("aptio-v");
+    expect(data.firmwareFamily).toBe("ami-aptio");
     expect(data.varStores).toEqual([
       {
         varStoreId: "0x0001",

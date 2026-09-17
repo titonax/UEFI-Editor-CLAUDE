@@ -187,6 +187,9 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
         firmwareSource: {
           fileName: file?.name ?? "firmware.bin",
           artifacts,
+          generation: report
+            ? reconcileAmiGeneration(report, profile).generation
+            : "unresolved",
         },
       });
     } catch (reason: unknown) {

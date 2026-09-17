@@ -131,16 +131,22 @@ export function detectRefMoves(
       if (child.type !== "Ref") {
         continue;
       }
-      const block = computeRefBlock(data, form, child, bytes);
-      const pristineOwner = findPristineOwnerFormIndex(data, block.start);
-      if (pristineOwner !== formIndex) {
-        moves.push({
-          ref: child,
-          block,
-          sourceFormIndex: pristineOwner,
-          destinationFormIndex: formIndex,
-        });
+      // Decide "moved or not" from the Ref opcode's own pristine offset
+      // before touching its block: the block requires a sole-owner
+      // condition wrapper, which a Ref that never moved is free to share.
+      const pristineOwner = findPristineOwnerFormIndex(
+        data,
+        parseHexId(child.sctOffset),
+      );
+      if (pristineOwner === formIndex) {
+        continue;
       }
+      moves.push({
+        ref: child,
+        block: computeRefBlock(data, form, child, bytes),
+        sourceFormIndex: pristineOwner,
+        destinationFormIndex: formIndex,
+      });
     }
   });
 

@@ -1042,9 +1042,10 @@ export async function parseData(files: PopulatedFiles) {
   }
 
   const dataJson: Data = {
-    firmwareFamily: setupdataBin.startsWith("24535046")
-      ? "aptio-iv"
-      : "aptio-v",
+    // Four extracted files carry no evidence of the Aptio generation (a
+    // "$SPF" SetupData profile is shared by IV and V boards alike); a
+    // complete-image session overrides this from its preflight.
+    firmwareFamily: "ami-aptio",
     menu,
     formSetRoots,
     forms,

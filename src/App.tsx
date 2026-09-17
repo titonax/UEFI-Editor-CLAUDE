@@ -85,10 +85,12 @@ export default function App({
             // then kick off a second, redundant parseData() in parallel
             // with this one, racing to overwrite whichever data lands last.
             const parsed = await parseData(extractedFiles);
-            // A modified Setup module can't be reinserted into the image
-            // it came from yet, so exporting extracted files from a
-            // complete-image session stays disabled (see Footer).
-            parsed.firmwareFamily = "aptio-iv";
+            // The preflight is the only place the generation is assessed
+            // from real evidence; the four-file parse has none.
+            const generation =
+              extractedFiles.firmwareSource?.generation ?? "unresolved";
+            parsed.firmwareFamily =
+              generation === "unresolved" ? "ami-aptio" : generation;
             setFiles(extractedFiles);
             setLoadedData(parsed);
           }}

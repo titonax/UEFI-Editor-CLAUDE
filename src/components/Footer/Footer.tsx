@@ -128,15 +128,19 @@ export default function Footer({
             size="xs"
             variant="default"
             leftSection={<IconDownload />}
+            // Extracted-file patches are what the user reinserts with
+            // UEFITool themselves, whatever the generation; only a complete
+            // image lacks that path, since the modified Setup module cannot
+            // be put back into the image it came from yet.
             disabled={
-              data.firmwareFamily === "aptio-iv" ||
+              files.firmwareSource !== undefined ||
               (data.rootVisibilityEdits?.length ?? 0) > 0
             }
             title={
               (data.rootVisibilityEdits?.length ?? 0) > 0
                 ? "Root visibility changes require the verified full-image reconstruction path"
-                : data.firmwareFamily === "aptio-iv"
-                  ? "Aptio IV export is disabled until safe reinsertion is implemented"
+                : files.firmwareSource !== undefined
+                  ? "Exporting extracted files from a complete image is disabled until safe reinsertion is implemented; keep your edits with data.json"
                   : undefined
             }
             onClick={() => {

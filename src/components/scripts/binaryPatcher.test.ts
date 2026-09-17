@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { downloadModifiedFiles, validateByteInput } from "./binaryPatcher";
+import { decToHexString, downloadModifiedFiles, validateByteInput } from "./binaryPatcher";
 import { parseData } from "./ifrParser";
 import { buildFixtureFiles, buildMoveFixture } from "./testFixtures";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
-import type { Data } from "./types";
+import type { Data, RefPrompt } from "./types";
 
 const saveAsMock = vi.fn();
 vi.mock("file-saver", () => ({
@@ -234,6 +234,32 @@ describe("downloadModifiedFiles", () => {
     expect(await changelogText()).toContain(
       `Unsuppressed 0x${shiftedSuppressIf.toString(16).toUpperCase()}`,
     );
+  });
+
+  it("leaves an unmoved Ref that shares its hide condition with a sibling alone", () => {
+    // Nothing moved: the export must not even look at the block such a Ref
+    // would need, since a shared wrapper is only a problem when moving.
+    const { bytes, data, offsets } = buildMoveFixture({ hiddenRef: true });
+    const ref = data.forms[0].children[0] as RefPrompt;
+    data.forms[0].children.push({
+      name: "Sibling",
+      description: "",
+      type: "CheckBox",
+      questionId: "0x0009",
+      varStoreId: "0x0001",
+      varOffset: "0x0000",
+      flags: "0x00",
+      accessLevel: null,
+      failsafe: null,
+      optimal: null,
+      offsets: null,
+      sctOffset: decToHexString(required(offsets.suppressEnd) + 2),
+      conditions: ref.conditions,
+      suppressIf: ref.suppressIf,
+    });
+
+    saveAsMock.mockClear();
+    expect(downloadModifiedFiles(data, moveFixtureFiles(bytes))).toEqual({ status: "no-changes" });
   });
 
   it("refuses a cross-package move between packages of different provenance", () => {

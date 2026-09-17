@@ -243,17 +243,29 @@ interface LocatedFile extends FirmwareFileReference {
 // Every buffer decoded so far, keyed by id, plus a cache so the same
 // section is never decompressed twice (the BFS below and the per-file
 // payload search can both reach it).
+// Decodes one encapsulated payload. The browser build runs the WebAssembly
+// decompressors; tests and tooling can inject their own.
+export type FirmwareDecompressor = (
+  input: Uint8Array,
+  mode: "lzma" | "standard",
+) => Promise<Uint8Array>;
+
 interface ExtractionGraph {
   nodes: Map<number, FirmwareBufferNode>;
   decodedSections: Map<string, number>;
   nextId: number;
+  decompress: FirmwareDecompressor;
 }
 
-function createExtractionGraph(image: Uint8Array): ExtractionGraph {
+function createExtractionGraph(
+  image: Uint8Array,
+  decompress: FirmwareDecompressor,
+): ExtractionGraph {
   return {
     nodes: new Map([[0, { id: 0, bytes: image, depth: 0 }]]),
     decodedSections: new Map(),
     nextId: 1,
+    decompress,
   };
 }
 
@@ -331,7 +343,7 @@ async function decodeEncapsulation(
   const decoded =
     encapsulated.compression === "none"
       ? encapsulated.bytes
-      : await firmwareDecompress(encapsulated.bytes, encapsulated.compression);
+      : await graph.decompress(encapsulated.bytes, encapsulated.compression);
   const node: FirmwareBufferNode = {
     id: graph.nextId++,
     bytes: decoded,
@@ -373,8 +385,12 @@ async function nestedBuffers(graph: ExtractionGraph, node: FirmwareBufferNode) {
 // Breadth-first through the image and every buffer decoded out of it,
 // looking for all wanted FFS files at once so a shared nested volume is
 // only decompressed once no matter how many files live in it.
-async function locateFirmwareFiles(image: Uint8Array, wantedGuids: string[]) {
-  const graph = createExtractionGraph(image);
+async function locateFirmwareFiles(
+  image: Uint8Array,
+  wantedGuids: string[],
+  decompress: FirmwareDecompressor,
+) {
+  const graph = createExtractionGraph(image, decompress);
   const root = graph.nodes.get(0);
   if (!root) throw new Error("Source image is unavailable.");
   const queue = [root];
@@ -560,12 +576,13 @@ function retainArtifactBranches(
 export async function extractAptioIvBytes(
   image: Uint8Array,
   extractIfr: (hii: Uint8Array) => Promise<string> = runIfrExtractor,
+  decompress: FirmwareDecompressor = firmwareDecompress,
 ): Promise<AptioIvArtifacts> {
-  const { graph, located: files } = await locateFirmwareFiles(image, [
-    setupGuid,
-    amitseGuid,
-    setupDataGuid,
-  ]);
+  const { graph, located: files } = await locateFirmwareFiles(
+    image,
+    [setupGuid, amitseGuid, setupDataGuid],
+    decompress,
+  );
   const setup = files.get(setupGuid);
   if (!setup) {
     throw new Error("Setup FFS was not found after recursive decompression.");

@@ -1,4 +1,5 @@
 import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
+import type { AmiFirmwareGeneration } from "../scripts/amiFirmwareImage";
 
 export interface FileContainer {
   file?: File;
@@ -13,6 +14,8 @@ export interface FileContainer {
 export interface FirmwareSourceSession {
   fileName: string;
   artifacts: AptioIvArtifacts;
+  // What the preflight concluded about the image's Aptio generation.
+  generation: AmiFirmwareGeneration;
 }
 
 export interface Files {

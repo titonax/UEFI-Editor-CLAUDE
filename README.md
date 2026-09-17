@@ -77,10 +77,11 @@ the menu tree. A modified Setup module cannot yet be reinserted into the
 image it came from, so the **UEFI files** export stays disabled in this mode;
 `data.json` export still works.
 
-**Four separate files** (manual compatibility mode, the Aptio V workflow):
-extract these with [UEFITool](https://github.com/LongSoft/UEFITool) and
+**Four separate files** (manual compatibility mode): extract these with
+[UEFITool](https://github.com/LongSoft/UEFITool) and
 [IFRExtractor-RS](https://github.com/LongSoft/IFRExtractor-RS) yourself,
-then upload:
+then upload. The **UEFI files** export works here for Aptio IV and V alike,
+since you reinsert the patched modules with UEFITool yourself:
 
 | File | What it is |
 | --- | --- |
