@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { calculateJsonChecksum, sha256Hex } from "./hashing";
 import { parseData, version } from "./ifrParser";
 import { buildFixtureFiles } from "./testFixtures";
-import type { PopulatedFiles } from "../FileUploads/FileUploads";
+import type { PopulatedFiles } from "../FileUploads/fileModel";
 
 describe("parseData", () => {
   it("parses forms, suppressions, and cross-form references from a verbose IFR dump", async () => {

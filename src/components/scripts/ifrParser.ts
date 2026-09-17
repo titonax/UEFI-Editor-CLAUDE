@@ -1,4 +1,5 @@
-import type { PopulatedFiles } from "../FileUploads/FileUploads";
+import type { PopulatedFiles } from "../FileUploads/fileModel";
+import { inspectAmiRootVisibility } from "./amiRootVisibility";
 import {
   expressionMetadata,
   humanizeExpression,
@@ -1119,6 +1120,11 @@ export async function parseData(files: PopulatedFiles) {
     forms,
     varStores,
     suppressions,
+    // The root byte vector lives in the Setup PE32 inside the image, so it
+    // can only be looked for when the image itself was opened.
+    rootVisibility: files.firmwareSource
+      ? inspectAmiRootVisibility(formSetRoots, files.firmwareSource.artifacts.provenance)
+      : undefined,
     version,
     hashes: {
       setupTxt: setupTxtHash,

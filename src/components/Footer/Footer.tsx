@@ -4,7 +4,7 @@ import { IconDownload, IconUpload } from "@tabler/icons-react";
 import { saveAs } from "file-saver";
 import React from "react";
 import type { Updater } from "use-immer";
-import type { PopulatedFiles } from "../FileUploads/FileUploads";
+import type { PopulatedFiles } from "../FileUploads/fileModel";
 import { downloadModifiedFiles, validateByteInput } from "../scripts/binaryPatcher";
 import { calculateJsonChecksum } from "../scripts/hashing";
 import { version } from "../scripts/ifrParser";

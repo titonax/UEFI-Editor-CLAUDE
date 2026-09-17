@@ -3,10 +3,8 @@ import s from "./App.module.css";
 import { useImmer, type Updater } from "use-immer";
 import { AppShell, Button, Group, Stack } from "@mantine/core";
 import type { Data } from "./components/scripts/types";
-import FileUploads, {
-  type Files,
-  type PopulatedFiles,
-} from "./components/FileUploads/FileUploads";
+import FileUploads from "./components/FileUploads/FileUploads";
+import type { Files, PopulatedFiles } from "./components/FileUploads/fileModel";
 import FormUi from "./components/FormUi/FormUi";
 import Navigation from "./components/Navigation/Navigation";
 import NavbarResizeHandle from "./components/Navigation/NavbarResizeHandle";

@@ -4,28 +4,9 @@ import { Alert, FileInput, Stack, LoadingOverlay } from "@mantine/core";
 import { IconUpload } from "@tabler/icons-react";
 import { parseData } from "../scripts/ifrParser";
 import type { Data } from "../scripts/types";
+import type { FileContainer, Files, PopulatedFiles } from "./fileModel";
 const hexWorker = () =>
   new Worker(new URL("../scripts/hexWorker.ts", import.meta.url));
-
-export interface Files {
-  setupSctContainer: FileContainer;
-  setupTxtContainer: FileContainer;
-  amitseSctContainer: FileContainer;
-  setupdataBinContainer: FileContainer;
-}
-
-export interface PopulatedFiles {
-  setupSctContainer: Required<FileContainer>;
-  setupTxtContainer: Required<FileContainer>;
-  amitseSctContainer: Required<FileContainer>;
-  setupdataBinContainer: Required<FileContainer>;
-}
-
-export interface FileContainer {
-  file?: File;
-  textContent?: string;
-  isWrongFile: boolean;
-}
 
 export interface FileUploadsProps {
   files: Files;

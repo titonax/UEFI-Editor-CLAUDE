@@ -1,10 +1,19 @@
 export interface Data {
-  firmwareFamily: "aptio-v" | "aptio-iv";
+  // "ami-aptio" is the generation-unresolved case: known to be AMI Aptio,
+  // but neither IV nor V could be established.
+  firmwareFamily: "aptio-v" | "aptio-iv" | "ami-aptio";
   menu: Menu;
   formSetRoots?: Menu;
   varStores: VarStores;
   forms: Forms;
   suppressions: Suppression[];
+  // Only present when the firmware was opened as a complete image: the
+  // multi-FormSet root byte vector detected in the Setup PE32 (see
+  // amiRootVisibility.ts), immutable evidence about the source BIOS.
+  rootVisibility?: AmiRootVisibilityReport;
+  // Pending, reversible desired-state plans for individual roots (see
+  // amiRootVisibilityEditing.ts). Never applied to extracted-file exports.
+  rootVisibilityEdits?: AmiRootVisibilityEdit[];
   version: string;
   hashes: {
     setupTxt: string;
@@ -13,6 +22,51 @@ export interface Data {
     setupdataBin: string;
     offsetChecksum: string;
   };
+}
+
+export type AmiRootVisibilityStatus =
+  | "detected"
+  | "not-applicable"
+  | "unresolved"
+  | "ambiguous";
+
+export interface AmiRootVisibilityEntry {
+  rootIndex: number;
+  name: string;
+  formId: string;
+  formSetGuid?: string;
+  value: 0 | 1;
+  visible: boolean;
+  bufferOffset: number;
+}
+
+export interface AmiRootVisibilityReport {
+  status: AmiRootVisibilityStatus;
+  mechanism: "setup-pe32-root-byte-vector";
+  confidence: "corroborated" | "unresolved";
+  reason: string;
+  vector?: {
+    bufferId: number;
+    offset: number;
+    length: number;
+    codeReferenceOffset: number;
+    pageTableOffset: number;
+    countEvidence: "immediate" | "data";
+    landmarkOffset?: number;
+  };
+  entries: AmiRootVisibilityEntry[];
+}
+
+export interface AmiRootVisibilityEdit {
+  kind: "set-root-visibility";
+  rootIndex: number;
+  formId: string;
+  formSetGuid?: string;
+  bufferId: number;
+  bufferOffset: number;
+  expected: 0 | 1;
+  replacement: 0 | 1;
+  description: string;
 }
 
 export interface Suppression {

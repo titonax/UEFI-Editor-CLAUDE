@@ -10,6 +10,13 @@ import {
   readFirmwareSection,
   type FirmwareSection,
 } from "./firmwareSections";
+import type {
+  FirmwareArtifactKind,
+  FirmwareArtifactLocation,
+  FirmwareBufferNode,
+  FirmwareFileReference,
+  FirmwareProvenanceGraph,
+} from "./firmwareProvenance";
 
 const setupGuid = "899407D7-99FE-43D8-9A21-79EC328CAC21";
 const amitseGuid = "B1DA0ADF-4F77-4070-A88E-BFFE1C60529A";
@@ -23,6 +30,10 @@ export interface AptioIvArtifacts {
   setupData?: Uint8Array;
   formPackageCount: number;
   extractionDepth: number;
+  // Every decoded buffer on the way from the source image to each artifact,
+  // kept so the root-visibility detector can read the Setup PE32 in place
+  // and so a future full-image rebuild knows exactly what to put back where.
+  provenance: FirmwareProvenanceGraph;
 }
 
 function u24(bytes: Uint8Array, offset: number) {
@@ -169,107 +180,286 @@ function findVolumes(bytes: Uint8Array) {
   return volumes;
 }
 
-interface LocatedFile {
-  bytes: Uint8Array;
+interface FirmwareFileBounds {
   bodyStart: number;
   end: number;
+  size: number;
+  headerSize: number;
+}
+
+// An FFS file header is 24 bytes unless its 24-bit size field is the
+// 0xFFFFFF escape, in which case the real size follows as 64 bits and the
+// header grows to 32 bytes (FFS3 large files).
+function firmwareFileBounds(
+  bytes: Uint8Array,
+  fileStart: number,
+  volumeEnd: number,
+): FirmwareFileBounds | null {
+  if (fileStart + 24 > volumeEnd) return null;
+  const size24 = u24(bytes, fileStart + 20);
+  const extended = size24 === 0xffffff;
+  const headerSize = extended ? 32 : 24;
+  if (fileStart + headerSize > volumeEnd) return null;
+  const size = extended ? u64(bytes, fileStart + 24) : size24;
+  if (size < headerSize || fileStart + size > volumeEnd) return null;
+  return { bodyStart: fileStart + headerSize, end: fileStart + size, size, headerSize };
+}
+
+function isEmptyFileHeader(bytes: Uint8Array, fileStart: number) {
+  return bytes.slice(fileStart, fileStart + 24).every((byte) => byte === 0xff);
+}
+
+// A firmware volume embedded (uncompressed) inside an FFS file body has to
+// be reached through that file's section, never treated as a peer of the
+// outer volumes: otherwise its provenance would skip the enclosing file and
+// section, which a rebuild would need.
+function findTopLevelVolumes(bytes: Uint8Array) {
+  const volumes = findVolumes(bytes);
+  const nested = new Set<number>();
+  for (const parentStart of volumes) {
+    const parentEnd = parentStart + u64(bytes, parentStart + 0x20);
+    let fileStart = parentStart + align(u16(bytes, parentStart + 0x30), 8);
+    while (fileStart + 24 <= parentEnd) {
+      if (isEmptyFileHeader(bytes, fileStart)) break;
+      const file = firmwareFileBounds(bytes, fileStart, parentEnd);
+      if (!file) break;
+      for (const candidateStart of volumes) {
+        if (candidateStart === parentStart) continue;
+        const candidateEnd = candidateStart + u64(bytes, candidateStart + 0x20);
+        if (candidateStart >= file.bodyStart && candidateEnd <= file.end) {
+          nested.add(candidateStart);
+        }
+      }
+      fileStart = parentStart + align(fileStart - parentStart + file.size, 8);
+    }
+  }
+  return volumes.filter((start) => !nested.has(start));
+}
+
+interface LocatedFile extends FirmwareFileReference {
   depth: number;
 }
 
-function findFile(bytes: Uint8Array, wantedGuid: string, depth: number) {
-  for (const volumeStart of findVolumes(bytes)) {
+// Every buffer decoded so far, keyed by id, plus a cache so the same
+// section is never decompressed twice (the BFS below and the per-file
+// payload search can both reach it).
+interface ExtractionGraph {
+  nodes: Map<number, FirmwareBufferNode>;
+  decodedSections: Map<string, number>;
+  nextId: number;
+}
+
+function createExtractionGraph(image: Uint8Array): ExtractionGraph {
+  return {
+    nodes: new Map([[0, { id: 0, bytes: image, depth: 0 }]]),
+    decodedSections: new Map(),
+    nextId: 1,
+  };
+}
+
+function nodeBytes(graph: ExtractionGraph, bufferId: number) {
+  const node = graph.nodes.get(bufferId);
+  if (!node) {
+    throw new Error(`Decoded firmware buffer ${String(bufferId)} is unavailable.`);
+  }
+  return node.bytes;
+}
+
+function fileReference(file: LocatedFile): FirmwareFileReference {
+  return {
+    bufferId: file.bufferId,
+    guid: file.guid,
+    volumeStart: file.volumeStart,
+    volumeEnd: file.volumeEnd,
+    fileStart: file.fileStart,
+    bodyStart: file.bodyStart,
+    end: file.end,
+    headerSize: file.headerSize,
+  };
+}
+
+function* filesInVolumes(node: FirmwareBufferNode): Generator<LocatedFile> {
+  const bytes = node.bytes;
+  for (const volumeStart of findTopLevelVolumes(bytes)) {
     const volumeEnd = volumeStart + u64(bytes, volumeStart + 0x20);
     let fileStart = volumeStart + align(u16(bytes, volumeStart + 0x30), 8);
     while (fileStart + 24 <= volumeEnd) {
-      if (bytes.slice(fileStart, fileStart + 24).every((byte) => byte === 0xff)) break;
-      const size = u24(bytes, fileStart + 20);
-      if (size < 24 || fileStart + size > volumeEnd) break;
-      if (guid(bytes, fileStart) === wantedGuid) {
-        return { bytes, bodyStart: fileStart + 24, end: fileStart + size, depth };
-      }
-      fileStart = volumeStart + align(fileStart - volumeStart + size, 8);
+      if (isEmptyFileHeader(bytes, fileStart)) break;
+      const file = firmwareFileBounds(bytes, fileStart, volumeEnd);
+      if (!file) break;
+      yield {
+        bufferId: node.id,
+        guid: guid(bytes, fileStart),
+        volumeStart,
+        volumeEnd,
+        fileStart,
+        bodyStart: file.bodyStart,
+        end: file.end,
+        headerSize: file.headerSize,
+        depth: node.depth,
+      };
+      fileStart = volumeStart + align(fileStart - volumeStart + file.size, 8);
     }
   }
-  return null;
+}
+
+function findFiles(node: FirmwareBufferNode, wantedGuids: Set<string>) {
+  const found = new Map<string, LocatedFile>();
+  for (const file of filesInVolumes(node)) {
+    if (wantedGuids.has(file.guid) && !found.has(file.guid)) {
+      found.set(file.guid, file);
+    }
+  }
+  return found;
 }
 
 // Decodes an encapsulation section's payload (Compression Section or
-// GUID-Defined Section - see firmwareSections.ts) into the plain bytes it
-// wraps, decompressing when the section itself says it's compressed.
-async function decodeEncapsulation(bytes: Uint8Array, section: FirmwareSection) {
-  const encapsulated = encapsulatedFirmwareSection(bytes, section);
+// GUID-Defined Section - see firmwareSections.ts) into a new buffer node
+// that records exactly which bytes of which parent it came from.
+async function decodeEncapsulation(
+  graph: ExtractionGraph,
+  parent: FirmwareBufferNode,
+  section: FirmwareSection,
+  ownerFile?: LocatedFile,
+) {
+  const cacheKey = `${String(parent.id)}:${String(section.start)}:${String(section.end)}`;
+  const cachedId = graph.decodedSections.get(cacheKey);
+  if (cachedId !== undefined) return graph.nodes.get(cachedId) ?? null;
+
+  const encapsulated = encapsulatedFirmwareSection(parent.bytes, section);
   if (!encapsulated) return null;
-  return encapsulated.compression === "none"
-    ? encapsulated.bytes
-    : firmwareDecompress(encapsulated.bytes, encapsulated.compression);
+  const decoded =
+    encapsulated.compression === "none"
+      ? encapsulated.bytes
+      : await firmwareDecompress(encapsulated.bytes, encapsulated.compression);
+  const node: FirmwareBufferNode = {
+    id: graph.nextId++,
+    bytes: decoded,
+    depth: parent.depth + 1,
+    parent: {
+      parentBufferId: parent.id,
+      sectionStart: section.start,
+      sectionEnd: section.end,
+      sectionHeaderSize: section.headerSize,
+      sectionType: section.type,
+      payloadStart: encapsulated.payloadStart,
+      payloadEnd: encapsulated.payloadEnd,
+      compression: encapsulated.compression,
+      definitionGuid: encapsulated.definitionGuid,
+      attributes: encapsulated.attributes,
+      ownerFile: ownerFile ? fileReference(ownerFile) : undefined,
+    },
+  };
+  graph.nodes.set(node.id, node);
+  graph.decodedSections.set(cacheKey, node.id);
+  return node;
 }
 
-async function nestedBuffers(bytes: Uint8Array) {
-  const nested: Uint8Array[] = [];
-  for (const volumeStart of findVolumes(bytes)) {
-    const volumeEnd = volumeStart + u64(bytes, volumeStart + 0x20);
-    let fileStart = volumeStart + align(u16(bytes, volumeStart + 0x30), 8);
-    while (fileStart + 24 <= volumeEnd) {
-      if (bytes.slice(fileStart, fileStart + 24).every((byte) => byte === 0xff)) break;
-      const size = u24(bytes, fileStart + 20);
-      if (size < 24 || fileStart + size > volumeEnd) break;
-      let sectionStart = fileStart + 24;
-      const fileEnd = fileStart + size;
-      while (sectionStart + 4 <= fileEnd) {
-        const section = readFirmwareSection(bytes, sectionStart, fileEnd);
-        if (!section) break;
-        const child = await decodeEncapsulation(bytes, section);
-        if (child) nested.push(child);
-        sectionStart = align(section.end, 4);
-      }
-      fileStart = volumeStart + align(fileStart - volumeStart + size, 8);
+async function nestedBuffers(graph: ExtractionGraph, node: FirmwareBufferNode) {
+  const nested: FirmwareBufferNode[] = [];
+  for (const file of filesInVolumes(node)) {
+    let sectionStart = file.bodyStart;
+    while (sectionStart + 4 <= file.end) {
+      const section = readFirmwareSection(node.bytes, sectionStart, file.end);
+      if (!section) break;
+      const child = await decodeEncapsulation(graph, node, section, file);
+      if (child) nested.push(child);
+      sectionStart = align(section.end, 4);
     }
   }
   return nested;
 }
 
-async function locateFirmwareFile(bytes: Uint8Array, wantedGuid: string) {
-  const queue = [{ bytes, depth: 0 }];
+// Breadth-first through the image and every buffer decoded out of it,
+// looking for all wanted FFS files at once so a shared nested volume is
+// only decompressed once no matter how many files live in it.
+async function locateFirmwareFiles(image: Uint8Array, wantedGuids: string[]) {
+  const graph = createExtractionGraph(image);
+  const root = graph.nodes.get(0);
+  if (!root) throw new Error("Source image is unavailable.");
+  const queue = [root];
+  const remaining = new Set(wantedGuids);
+  const located = new Map<string, LocatedFile>();
   for (let index = 0; index < queue.length && index < 64; index++) {
     const current = queue[index];
-    const found = findFile(current.bytes, wantedGuid, current.depth);
-    if (found) return found;
-    const children = await nestedBuffers(current.bytes);
-    queue.push(...children.map((child) => ({ bytes: child, depth: current.depth + 1 })));
+    for (const [fileGuid, file] of findFiles(current, remaining)) {
+      located.set(fileGuid, file);
+      remaining.delete(fileGuid);
+    }
+    if (remaining.size === 0) break;
+    queue.push(...(await nestedBuffers(graph, current)));
   }
-  return null;
+  return { graph, located };
 }
 
-// A Setup/AMITSE FFS file's wanted section (the HII body, a freeform
-// SetupData/AMITSE blob, or the PE32 executable itself) is not always at
-// the top level: it's commonly hidden behind one or more layers of
-// encapsulation (Compression or GUID-Defined) that must be opened first.
-// This walks a file/nested-buffer's own section list looking for a section
-// `locatePayload` recognizes, recursing into every encapsulation section it
-// can open along the way. Real firmware has been seen nesting these eight
-// deep (see docs/ami/sample-corpus.md), so recursion is bounded rather than
-// unlimited.
 type SectionPayloadLocator = (bytes: Uint8Array, section: FirmwareSection) => number | null;
 
+interface LocatedPayload {
+  bytes: Uint8Array;
+  location: FirmwareArtifactLocation;
+}
+
+// A Setup/AMITSE/SetupData FFS file's wanted section (the HII body, a
+// freeform blob, or the PE32 executable itself) is not always at the top
+// level: it's commonly hidden behind one or more layers of encapsulation
+// that must be opened first. This walks a file's section list looking for a
+// section `locatePayload` recognizes, recursing into every encapsulation
+// section it can open along the way. Real firmware has been seen nesting
+// these eight deep (see docs/ami/sample-corpus.md), so recursion is bounded
+// rather than unlimited.
 async function locateSectionPayload(
+  graph: ExtractionGraph,
   file: LocatedFile,
+  artifactKind: FirmwareArtifactKind,
   locatePayload: SectionPayloadLocator,
+  sourceFile = fileReference(file),
   recursionDepth = 0,
-): Promise<Uint8Array | null> {
+): Promise<LocatedPayload | null> {
+  const bytes = nodeBytes(graph, file.bufferId);
   let sectionStart = file.bodyStart;
   while (sectionStart + 4 <= file.end) {
-    const section = readFirmwareSection(file.bytes, sectionStart, file.end);
+    const section = readFirmwareSection(bytes, sectionStart, file.end);
     if (!section) break;
-    const payloadStart = locatePayload(file.bytes, section);
+    const payloadStart = locatePayload(bytes, section);
     if (payloadStart !== null && payloadStart <= section.end) {
-      return file.bytes.slice(payloadStart, section.end);
+      return {
+        bytes: bytes.slice(payloadStart, section.end),
+        location: {
+          kind: artifactKind,
+          bufferId: file.bufferId,
+          payloadStart,
+          payloadEnd: section.end,
+          sourceFile,
+        },
+      };
     }
     if (recursionDepth < 16) {
-      const nested = await decodeEncapsulation(file.bytes, section);
+      const parent = graph.nodes.get(file.bufferId);
+      if (!parent) throw new Error("Decoded section parent is missing.");
+      // Only a section directly inside the FFS file records that file as
+      // its owner; a section found inside an already-decoded buffer has no
+      // FFS header of its own around it.
+      const nested = await decodeEncapsulation(
+        graph,
+        parent,
+        section,
+        recursionDepth === 0 ? file : undefined,
+      );
       const result = nested
         ? await locateSectionPayload(
-            { bytes: nested, bodyStart: 0, end: nested.length, depth: file.depth },
+            graph,
+            {
+              ...file,
+              bufferId: nested.id,
+              fileStart: 0,
+              bodyStart: 0,
+              end: nested.bytes.length,
+              headerSize: 0,
+              depth: nested.depth,
+            },
+            artifactKind,
             locatePayload,
+            sourceFile,
             recursionDepth + 1,
           )
         : null;
@@ -280,30 +470,32 @@ async function locateSectionPayload(
   return null;
 }
 
-function locateHii(file: LocatedFile) {
-  return locateSectionPayload(file, (bytes, section) =>
-    section.type === 0x18 &&
-    section.size >= section.headerSize + 16 &&
-    guid(bytes, section.start + section.headerSize) === hiiGuid
-      ? section.start + section.headerSize + 16
-      : null,
-  );
-}
-
-function locateFreeformSection(file: LocatedFile, wantedGuid: string) {
-  return locateSectionPayload(file, (bytes, section) =>
+function freeformLocator(wantedGuid: string): SectionPayloadLocator {
+  return (bytes, section) =>
     section.type === 0x18 &&
     section.size >= section.headerSize + 16 &&
     guid(bytes, section.start + section.headerSize) === wantedGuid
       ? section.start + section.headerSize + 16
-      : null,
-  );
+      : null;
 }
 
-function locatePe32(file: LocatedFile) {
-  return locateSectionPayload(file, (_bytes, section) =>
-    section.type === 0x10 ? section.start + section.headerSize : null,
-  );
+const pe32Locator: SectionPayloadLocator = (_bytes, section) =>
+  section.type === 0x10 ? section.start + section.headerSize : null;
+
+function locateHii(graph: ExtractionGraph, file: LocatedFile) {
+  return locateSectionPayload(graph, file, "setup-hii", freeformLocator(hiiGuid));
+}
+
+function locateSetupData(graph: ExtractionGraph, file: LocatedFile) {
+  return locateSectionPayload(graph, file, "setupdata", freeformLocator(setupDataGuid));
+}
+
+function locatePe32(
+  graph: ExtractionGraph,
+  file: LocatedFile,
+  artifactKind: Extract<FirmwareArtifactKind, "setup-hii" | "amitse">,
+) {
+  return locateSectionPayload(graph, file, artifactKind, pe32Locator);
 }
 
 async function runIfrExtractor(hii: Uint8Array) {
@@ -334,9 +526,47 @@ async function runIfrExtractor(hii: Uint8Array) {
   return outputs.map(([, output]) => new TextDecoder().decode(output.data)).join("\n");
 }
 
-export async function extractAptioIvArtifacts(file: File): Promise<AptioIvArtifacts> {
-  const image = new Uint8Array(await file.arrayBuffer());
-  const setup = await locateFirmwareFile(image, setupGuid);
+// Only the source image and the buffers on some artifact's path back to it
+// are kept; every other decoded buffer was a dead end and just costs memory.
+function retainArtifactBranches(
+  graph: ExtractionGraph,
+  artifacts: FirmwareArtifactLocation[],
+  sourceSize: number,
+): FirmwareProvenanceGraph {
+  const retained = new Set<number>([0]);
+  for (const artifact of artifacts) {
+    let bufferId = artifact.bufferId;
+    while (!retained.has(bufferId)) {
+      retained.add(bufferId);
+      const parent = graph.nodes.get(bufferId)?.parent;
+      if (!parent) break;
+      bufferId = parent.parentBufferId;
+    }
+  }
+
+  return {
+    rootBufferId: 0,
+    sourceSize,
+    buffers: [...retained]
+      .sort((left, right) => left - right)
+      .flatMap((id) => {
+        const node = graph.nodes.get(id);
+        return node ? [node] : [];
+      }),
+    artifacts,
+  };
+}
+
+export async function extractAptioIvBytes(
+  image: Uint8Array,
+  extractIfr: (hii: Uint8Array) => Promise<string> = runIfrExtractor,
+): Promise<AptioIvArtifacts> {
+  const { graph, located: files } = await locateFirmwareFiles(image, [
+    setupGuid,
+    amitseGuid,
+    setupDataGuid,
+  ]);
+  const setup = files.get(setupGuid);
   if (!setup) {
     throw new Error("Setup FFS was not found after recursive decompression.");
   }
@@ -344,30 +574,37 @@ export async function extractAptioIvArtifacts(file: File): Promise<AptioIvArtifa
   // (the common case); others wrap it as a PE32 executable instead, which
   // IFRExtractor can also parse directly (see docs/ami/sample-corpus.md's
   // image2.bin regression, "Setup FFS -> PE32").
-  const hii = (await locateHii(setup)) ?? (await locatePe32(setup));
+  const hii =
+    (await locateHii(graph, setup)) ?? (await locatePe32(graph, setup, "setup-hii"));
   if (!hii) {
     throw new Error("Neither a Setup HII package nor a Setup PE32 section was found.");
   }
-  const amitseFile = await locateFirmwareFile(image, amitseGuid);
-  const amitse = amitseFile ? await locatePe32(amitseFile) : null;
+  const amitseFile = files.get(amitseGuid);
+  const setupDataFile = files.get(setupDataGuid);
+  const amitse = amitseFile ? await locatePe32(graph, amitseFile, "amitse") : null;
   // SetupData is usually a freeform section inside the AMITSE FFS file, but
   // some images give it its own FFS file under the same GUID instead - try
   // that first and fall back to the AMITSE file.
-  const setupDataFile = await locateFirmwareFile(image, setupDataGuid);
-  let setupData = setupDataFile
-    ? await locateFreeformSection(setupDataFile, setupDataGuid)
-    : null;
+  let setupData = setupDataFile ? await locateSetupData(graph, setupDataFile) : null;
   if (!setupData && amitseFile) {
-    setupData = await locateFreeformSection(amitseFile, setupDataGuid);
+    setupData = await locateSetupData(graph, amitseFile);
   }
-  const ifrText = await runIfrExtractor(hii);
+  const ifrText = await extractIfr(hii.bytes);
   const formPackageCount = (ifrText.match(/FormSet Guid:/g) ?? []).length;
+  const locations = [hii.location, amitse?.location, setupData?.location].filter(
+    (location): location is FirmwareArtifactLocation => location !== undefined,
+  );
   return {
-    hii,
+    hii: hii.bytes,
     ifrText,
-    amitse: amitse ?? undefined,
-    setupData: setupData ?? undefined,
+    amitse: amitse?.bytes,
+    setupData: setupData?.bytes,
     formPackageCount,
     extractionDepth: setup.depth,
+    provenance: retainArtifactBranches(graph, locations, image.length),
   };
+}
+
+export async function extractAptioIvArtifacts(file: File): Promise<AptioIvArtifacts> {
+  return extractAptioIvBytes(new Uint8Array(await file.arrayBuffer()));
 }

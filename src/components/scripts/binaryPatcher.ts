@@ -1,5 +1,5 @@
 import { saveAs } from "file-saver";
-import type { PopulatedFiles } from "../FileUploads/FileUploads";
+import type { PopulatedFiles } from "../FileUploads/fileModel";
 import { findFormIndexByFormId, parseHexId, sameHexId } from "./hexId";
 import { isSoleOwnerOfCondition } from "./refMoving";
 import type { Data, Form, RefPrompt, Suppression } from "./types";

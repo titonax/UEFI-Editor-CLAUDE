@@ -3,12 +3,12 @@ import { Alert, FileInput, Group, Progress, Stack, Table, Text } from "@mantine/
 import { IconBinary, IconUpload } from "@tabler/icons-react";
 import {
   formatHexOffset,
-  inspectAptioIvImage,
-  type AptioIvImageReport,
-} from "../scripts/aptioIvImage";
+  inspectAmiFirmwareImage,
+  type AmiFirmwareImageReport,
+} from "../scripts/amiFirmwareImage";
 import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
 import type { AptioIvExtractorWorkerResult } from "../scripts/aptioIvExtractorWorker";
-import type { PopulatedFiles } from "../FileUploads/FileUploads";
+import type { PopulatedFiles } from "../FileUploads/fileModel";
 
 function offsets(values: number[]) {
   return values.length === 0 ? "Not found" : values.map(formatHexOffset).join(", ");
@@ -67,7 +67,7 @@ function extractInWorker(file: File): Promise<AptioIvArtifacts> {
 
 export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
   const [file, setFile] = React.useState<File | null>(null);
-  const [report, setReport] = React.useState<AptioIvImageReport | null>(null);
+  const [report, setReport] = React.useState<AmiFirmwareImageReport | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [stage, setStage] = React.useState("");
   const [error, setError] = React.useState("");
@@ -92,11 +92,11 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
           if (selected) {
             setLoading(true);
             setStage("Inspecting firmware volumes…");
-            void inspectAptioIvImage(selected)
+            void inspectAmiFirmwareImage(selected)
               .then(async (imageReport) => {
                 setReport(imageReport);
                 if (
-                  !imageReport.aptioIvCandidate &&
+                  !imageReport.amiAptioCandidate &&
                   !imageReport.deepScanRequired
                 ) {
                   return;
@@ -140,6 +140,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
                     textContent: toHex(setupDataBytes),
                     isWrongFile: false,
                   },
+                  firmwareSource: { fileName: selected.name, artifacts },
                 });
               })
               .catch((reason: unknown) => {
@@ -163,14 +164,14 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
         <>
           <Alert
             color={
-              report.aptioIvCandidate
+              report.amiAptioCandidate
                 ? "green"
                 : report.deepScanRequired
                   ? "blue"
                   : "yellow"
             }
           >
-            {report.aptioIvCandidate
+            {report.amiAptioCandidate
               ? report.nestedFirmwareCandidate
                 ? "AMI Aptio IV candidate: Setup is inside a compressed nested volume. Recursive extraction is required."
                 : "AMI Aptio IV candidate: Setup FFS was found. Automatic IFR extraction is available."

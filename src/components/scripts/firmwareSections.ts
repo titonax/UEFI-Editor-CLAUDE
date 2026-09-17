@@ -18,6 +18,12 @@ export type FirmwareSectionCompression = "none" | "standard" | "lzma";
 export interface EncapsulatedFirmwareSection {
   bytes: Uint8Array;
   compression: FirmwareSectionCompression;
+  // Absolute bounds of `bytes` inside the section's own buffer, so a
+  // provenance edge can say exactly which bytes were decoded.
+  payloadStart: number;
+  payloadEnd: number;
+  definitionGuid?: string;
+  attributes?: number;
 }
 
 function u16(bytes: Uint8Array, offset: number) {
@@ -114,7 +120,12 @@ export function encapsulatedFirmwareSection(
     if (!compression) {
       return null;
     }
-    return { bytes: bytes.slice(metadata + 5, section.end), compression };
+    return {
+      bytes: bytes.slice(metadata + 5, section.end),
+      compression,
+      payloadStart: metadata + 5,
+      payloadEnd: section.end,
+    };
   }
 
   if (section.type === 0x02) {
@@ -145,6 +156,10 @@ export function encapsulatedFirmwareSection(
     return {
       bytes: bytes.slice(section.start + dataOffset, section.end),
       compression,
+      payloadStart: section.start + dataOffset,
+      payloadEnd: section.end,
+      definitionGuid,
+      attributes,
     };
   }
 
@@ -152,6 +167,8 @@ export function encapsulatedFirmwareSection(
     return {
       bytes: bytes.slice(section.start + section.headerSize, section.end),
       compression: "none",
+      payloadStart: section.start + section.headerSize,
+      payloadEnd: section.end,
     };
   }
 
