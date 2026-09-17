@@ -1,101 +1,115 @@
 import React from "react";
 import type { Updater } from "use-immer";
-import { Alert, FileInput, Stack, LoadingOverlay } from "@mantine/core";
+import { FileInput, Stack, LoadingOverlay } from "@mantine/core";
 import { IconUpload } from "@tabler/icons-react";
 import { parseData } from "../scripts/ifrParser";
 import type { Data } from "../scripts/types";
-import type { FileContainer, Files, PopulatedFiles } from "./fileModel";
+import { fileContainers, isPopulatedFiles, type Files } from "./fileModel";
+
 const hexWorker = () =>
   new Worker(new URL("../scripts/hexWorker.ts", import.meta.url));
+const MAX_INPUT_BYTES = 512 * 1024 * 1024;
 
 export interface FileUploadsProps {
   files: Files;
   setFiles: Updater<Files>;
   setData: Updater<Data>;
+  onError: (message: string) => void;
+}
+
+function fileToHex(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const worker = hexWorker();
+    worker.onmessage = (event: MessageEvent<string>) => {
+      worker.terminate();
+      resolve(event.data);
+    };
+    worker.onerror = (event) => {
+      worker.terminate();
+      reject(new Error(`Could not read ${file.name}: ${event.message}`));
+    };
+    worker.postMessage(file);
+  });
+}
+
+function errorMessage(reason: unknown) {
+  return reason instanceof Error ? reason.message : String(reason);
 }
 
 export default function FileUploads({
   files,
   setFiles,
   setData,
+  onError,
 }: FileUploadsProps) {
-  const [error, setError] = React.useState("");
+  // The `files` object that finished loading (successfully or not). The
+  // overlay shows while a populated set is still being read/parsed, and
+  // must go away again after a failure, not just after success.
+  const [settledFiles, setSettledFiles] = React.useState<Files | null>(null);
+  const populated = isPopulatedFiles(files);
+  const hasOversizedFile =
+    populated &&
+    fileContainers(files).some((container) => container.file.size > MAX_INPUT_BYTES);
+  const isLoading = populated && !hasOversizedFile && settledFiles !== files;
 
   React.useEffect(() => {
+    if (!isPopulatedFiles(files)) {
+      return undefined;
+    }
+    let cancelled = false;
+    onError("");
+
     if (
-      files.setupSctContainer.file &&
-      !files.setupSctContainer.isWrongFile &&
-      files.setupTxtContainer.file &&
-      !files.setupTxtContainer.isWrongFile &&
-      files.amitseSctContainer.file &&
-      !files.amitseSctContainer.isWrongFile &&
-      files.setupdataBinContainer.file &&
-      !files.setupdataBinContainer.isWrongFile
+      fileContainers(files).some((container) => container.file.size > MAX_INPUT_BYTES)
     ) {
-      if (
-        Object.values(files).every(
-          (fileContainer: FileContainer) => !fileContainer.textContent
-        )
-      ) {
-        void Promise.all([
-          files.setupTxtContainer.file.text(),
-          ...[
-            files.setupSctContainer.file,
-            files.amitseSctContainer.file,
-            files.setupdataBinContainer.file,
-          ].map((file) => {
-            return new Promise<string>((resolve) => {
-              const worker = hexWorker();
-              worker.onmessage = (e: MessageEvent<string>) => {
-                resolve(e.data);
-              };
-              worker.postMessage(file);
-            });
-          }),
-        ]).then((values) => {
+      onError("One of the selected files exceeds the 512 MiB safety limit.");
+      return undefined;
+    }
+
+    if (fileContainers(files).every((container) => !container.textContent)) {
+      void Promise.all([
+        files.setupTxtContainer.file.text(),
+        fileToHex(files.setupSctContainer.file),
+        fileToHex(files.amitseSctContainer.file),
+        fileToHex(files.setupdataBinContainer.file),
+      ])
+        .then((values) => {
+          if (cancelled) return;
           setFiles((draft) => {
             draft.setupTxtContainer.textContent = values[0];
             draft.setupSctContainer.textContent = values[1];
             draft.amitseSctContainer.textContent = values[2];
             draft.setupdataBinContainer.textContent = values[3];
           });
+        })
+        .catch((reason: unknown) => {
+          if (cancelled) return;
+          onError(errorMessage(reason));
+          setSettledFiles(files);
         });
-      } else {
-        setError("");
-        void parseData(files as PopulatedFiles)
-          .then((data) => {
-            setData(data);
-          })
-          .catch((reason: unknown) => {
-            setError(reason instanceof Error ? reason.message : String(reason));
-          });
-      }
+    } else {
+      void parseData(files)
+        .then((data) => {
+          if (cancelled) return;
+          setData(data);
+          setSettledFiles(files);
+        })
+        .catch((reason: unknown) => {
+          if (cancelled) return;
+          onError(errorMessage(reason));
+          setSettledFiles(files);
+        });
     }
-  }, [files, setFiles, setData]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [files, onError, setFiles, setData]);
 
   return (
     <>
-      <LoadingOverlay
-        visible={
-          !!(
-            files.setupSctContainer.file &&
-            !files.setupSctContainer.isWrongFile &&
-            files.setupTxtContainer.file &&
-            !files.setupTxtContainer.isWrongFile &&
-            files.amitseSctContainer.file &&
-            !files.amitseSctContainer.isWrongFile &&
-            files.setupdataBinContainer.file &&
-            !files.setupdataBinContainer.isWrongFile
-          )
-        }
-        loaderProps={{ size: "xl" }}
-      />
+      <LoadingOverlay visible={isLoading} loaderProps={{ size: "xl" }} />
       <Stack>
-        {error && (
-          <Alert color="red" title="Could not parse the extracted files">
-            {error}
-          </Alert>
-        )}
         <FileInput
           leftSection={<IconUpload />}
           size="lg"

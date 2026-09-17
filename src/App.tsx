@@ -1,7 +1,7 @@
 import React from "react";
 import s from "./App.module.css";
 import { useImmer, type Updater } from "use-immer";
-import { AppShell, Button, Group, Stack } from "@mantine/core";
+import { Alert, AppShell, Button, Divider, Group, Stack, Text } from "@mantine/core";
 import type { Data } from "./components/scripts/types";
 import FileUploads from "./components/FileUploads/FileUploads";
 import type { Files, PopulatedFiles } from "./components/FileUploads/fileModel";
@@ -43,6 +43,10 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
   const [currentFormIndex, setCurrentFormIndex] = React.useState(
     TOP_LEVEL_MENU_VIEW,
   );
+  const [error, setError] = React.useState("");
+  const handleError = React.useCallback((message: string) => {
+    setError(message);
+  }, []);
 
   // Computed once here instead of independently inside Navigation, Header,
   // and FormUi - it's a non-trivial recursive walk of the whole form graph
@@ -55,26 +59,45 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
   if (!data || !tree) {
     return (
       <Stack className={s.padding} gap="xl">
+        {error.length > 0 && (
+          <Alert color="red" title="The firmware could not be loaded">
+            {error}
+          </Alert>
+        )}
         <BiosImageUpload
           onExtracted={async (extractedFiles) => {
+            setError("");
             // Parse first, then set `files` and `data` together. Setting
             // `files` before `data` is ready would re-render FileUploads
             // with all four slots already populated - its own effect would
             // then kick off a second, redundant parseData() in parallel
             // with this one, racing to overwrite whichever data lands last.
             const parsed = await parseData(extractedFiles);
+            // A modified Setup module can't be reinserted into the image
+            // it came from yet, so exporting extracted files from a
+            // complete-image session stays disabled (see Footer).
             parsed.firmwareFamily = "aptio-iv";
             setFiles(extractedFiles);
             setLoadedData(parsed);
           }}
         />
-        <FileUploads files={files} setFiles={setFiles} setData={setLoadedData} />
+        <Divider label="Or load previously extracted HII artefacts" />
+        <Text c="dimmed" size="sm" ta="center">
+          Manual compatibility mode for existing Setup, IFR, AMITSE and SetupData
+          files.
+        </Text>
+        <FileUploads
+          files={files}
+          setFiles={setFiles}
+          setData={setLoadedData}
+          onError={handleError}
+        />
         <Group justify="center">
           <Button
             variant="default"
             size="lg"
             component="a"
-            href="https://github.com/BoringBoredom/UEFI-Editor#usage-guide"
+            href="https://github.com/titonax/UEFI-Editor-CLAUDE#using-it"
             target="_blank"
             leftSection={<IconBrandGithub />}
           >
@@ -84,7 +107,7 @@ export default function App({ navbarWidth, setNavbarWidth }: AppProps) {
             variant="default"
             size="lg"
             component="a"
-            href="https://github.com/BoringBoredom/UEFI-Editor/issues"
+            href="https://github.com/titonax/UEFI-Editor-CLAUDE/issues"
             target="_blank"
             leftSection={<IconBrandGithub />}
           >
