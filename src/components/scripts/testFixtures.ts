@@ -13,7 +13,9 @@ async function sha256Hex(bytes: Uint8Array) {
 // two options, and a Ref pointing at Form 2 - enough to exercise the scope
 // stack, suppression bookkeeping, and cross-form reference tracking that
 // parseData() relies on.
-export async function buildFixtureFiles(): Promise<PopulatedFiles> {
+export async function buildFixtureFiles(
+  overrides: { setupdataBin?: string; amitseSct?: string } = {},
+): Promise<PopulatedFiles> {
   const formSetGuid = "12345678-1234-1234-1234-123456789ABC";
 
   const lines = [
@@ -57,8 +59,8 @@ export async function buildFixtureFiles(): Promise<PopulatedFiles> {
     ...lines,
   ].join("\n");
 
-  const setupdataBin = "00000000";
-  const amitseSct = "";
+  const setupdataBin = overrides.setupdataBin ?? "00000000";
+  const amitseSct = overrides.amitseSct ?? "";
 
   return {
     setupTxtContainer: {

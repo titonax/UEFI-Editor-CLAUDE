@@ -61,15 +61,12 @@ function littleEndianUint32(value: string) {
   return normalized.length === 8 ? parseInt(normalized, 16) : Number.NaN;
 }
 
-function isPageMask(value: number) {
-  return value === 0 || (value > 0 && (value & (value - 1)) === 0);
-}
-
 function discoverSetupDataMenu(formSetRoots: Menu, setupData: string): Menu {
+  const normalizedSetupData = setupData.toUpperCase();
   const candidates: {
     entry: Menu[number];
     start: number;
-    mask: number;
+    pageValue: number;
   }[] = [];
 
   for (const entry of formSetRoots) {
@@ -77,16 +74,18 @@ function discoverSetupDataMenu(formSetRoots: Menu, setupData: string): Menu {
       continue;
     }
     const encodedGuid = guidToUefiHex(entry.formSetGuid);
-    let guidIndex = setupData.indexOf(encodedGuid);
+    let guidIndex = normalizedSetupData.indexOf(encodedGuid);
     while (guidIndex !== -1) {
       if (guidIndex >= 8) {
         const start = guidIndex - 8;
-        const mask = littleEndianUint32(setupData.slice(start, guidIndex));
-        if (isPageMask(mask)) {
-          candidates.push({ entry, start, mask });
+        const pageValue = littleEndianUint32(
+          normalizedSetupData.slice(start, guidIndex),
+        );
+        if (Number.isSafeInteger(pageValue)) {
+          candidates.push({ entry, start, pageValue });
         }
       }
-      guidIndex = setupData.indexOf(encodedGuid, guidIndex + 2);
+      guidIndex = normalizedSetupData.indexOf(encodedGuid, guidIndex + 2);
     }
   }
 
@@ -114,11 +113,11 @@ function discoverSetupDataMenu(formSetRoots: Menu, setupData: string): Menu {
     return [];
   }
 
-  return pageList.map(({ entry, start, mask }) => ({
+  return pageList.map(({ entry, start, pageValue }) => ({
     ...entry,
     offset: null,
     source: "setupdata",
-    pageMask: decToHexString(mask),
+    pageMask: decToHexString(pageValue),
     pageInfoOffset: decToHexString(start / 2),
   }));
 }
@@ -218,7 +217,7 @@ function getAdditionalData(
       byteArray[2] +
       byteArray[3] +
       `.{${String(GAP_ANCHOR23_TO_FAILSAFE)}}(..)(..)`,
-    "g",
+    "gi",
   );
 
   const matches = [...hexSetupdataBin.matchAll(regex)].filter(
@@ -1059,7 +1058,7 @@ export async function parseData(files: PopulatedFiles) {
   enrichConditions(forms, varStores, suppressions);
 
   const matches = [...formSetIds].flatMap((formSetId) =>
-    [...amitseSct.matchAll(new RegExp(formSetId + "(.{4})", "g"))].map(
+    [...amitseSct.matchAll(new RegExp(formSetId + "(.{4})", "gi"))].map(
       (match) => ({ match, formSetId }),
     ),
   );

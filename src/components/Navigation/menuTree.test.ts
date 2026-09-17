@@ -261,6 +261,101 @@ describe("buildMenuTree", () => {
     expect(tree.truncated).toBe(false);
   });
 
+  it("does not restart a menu profile on Main right after Exit unless Main/SysInfo already appeared", () => {
+    const forms = [
+      makeForm({ formId: "0x1", name: "Boot" }),
+      makeForm({ formId: "0x2", name: "Exit" }),
+      makeForm({ formId: "0x3", name: "Main" }),
+    ];
+    const data = makeData({
+      forms,
+      menu: [
+        makeMenuRoot({ formId: "0x1", name: "Boot" }),
+        makeMenuRoot({ formId: "0x2", name: "Exit" }),
+        makeMenuRoot({ formId: "0x3", name: "Main" }),
+      ],
+    });
+
+    const tree = buildMenuTree(data);
+
+    // "Main" is this menu's very first Main/SysInfo root, so it can't be
+    // restarting a sequence that never started - this must stay one group.
+    expect(tree.profiles).toHaveLength(1);
+  });
+
+  it("recognizes a vendor File/Storage/Power page sequence as an OEM profile distinct from the AMI fallback", () => {
+    const definitions = [
+      ["File", "0x40A", "0x0"],
+      ["Storage", "0x40F", "0x40"],
+      ["Security", "0x412", "0x50"],
+      ["Power", "0x41B", "0x60"],
+      ["Advanced", "0x41F", "0x70"],
+      ["Advanced", "0x402", "0x80"],
+      ["Boot", "0x406", "0x2"],
+      ["Chipset", "0x405", "0x8"],
+      ["Save & Exit", "0x409", "0x4"],
+      ["Main", "0x400", "0x20"],
+      ["Security", "0x408", "0x1"],
+    ] as const;
+    const roots = definitions.map(([name, formId, pageMask], index) => ({
+      name,
+      formId,
+      formSetGuid: `00000000-0000-0000-0000-${String(index + 1).padStart(12, "0")}`,
+      pageMask,
+    }));
+    const forms = roots.map((root) =>
+      makeForm({
+        formId: root.formId,
+        name: root.name,
+        formSetGuid: root.formSetGuid,
+        formSetTitle: root.name,
+      }),
+    );
+    const menu: Menu = roots.map((root) => ({
+      name: root.name,
+      formId: root.formId,
+      offset: null,
+      formSetGuid: root.formSetGuid,
+      source: "setupdata",
+      pageMask: root.pageMask,
+    }));
+    const data = makeData({ forms, menu });
+
+    const tree = buildMenuTree(data);
+
+    expect(tree.orphans).toHaveLength(0);
+    expect(tree.profiles).toHaveLength(2);
+    expect(tree.profiles[0]).toMatchObject({
+      label: "OEM menu profile · probable live",
+      assessment: "probable-live",
+    });
+    expect(tree.profiles[0].roots.map((root) => root.formId)).toEqual([
+      "0x40A",
+      "0x40F",
+      "0x412",
+      "0x41B",
+      "0x41F",
+    ]);
+    expect(tree.profiles[1]).toMatchObject({
+      label: "AMI full profile · probable fallback",
+      assessment: "probable-fallback",
+    });
+    expect(tree.profiles[1].roots.map((root) => root.formId)).toEqual([
+      "0x402",
+      "0x406",
+      "0x405",
+      "0x409",
+      "0x400",
+      "0x408",
+    ]);
+    expect(tree.profiles[0].roots[0].reachabilityLabel).toBe(
+      "Probable live SetupData root",
+    );
+    expect(tree.profiles[1].roots[0].reachabilityLabel).toBe(
+      "Probable fallback SetupData root",
+    );
+  });
+
   it("changes signature when a Ref target changes", () => {
     const withoutRef = makeData({
       forms: [

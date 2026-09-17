@@ -19,7 +19,9 @@ interface BiosImageUploadProps {
 }
 
 function toHex(bytes: Uint8Array) {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(bytes, (byte) =>
+    byte.toString(16).toUpperCase().padStart(2, "0"),
+  ).join("");
 }
 
 // Recursive nested-volume decompression + IFRExtractor both run as

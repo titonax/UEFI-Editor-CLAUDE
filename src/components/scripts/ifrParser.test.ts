@@ -113,6 +113,72 @@ describe("parseData", () => {
     );
     expect(data.hashes.offsetChecksum).toBe(recomputedChecksum);
   });
+
+  it("matches the AMITSE executable menu table regardless of hex casing", async () => {
+    // The FormSet's GUID Data4 segments ("1234" + "123456789ABC") followed
+    // by a little-endian FormId (0x1, so bytes 01 00 -> capture "0100"),
+    // all lowercased: real extractor output is not guaranteed to be
+    // uppercase, and the matching regex must not silently miss it.
+    const files = await buildFixtureFiles({
+      amitseSct: "1234123456789abc0100",
+    });
+    const data = await parseData(files);
+
+    expect(data.menu).toEqual([
+      {
+        name: "Main Page",
+        formId: "0x1",
+        offset: "0x8",
+        formSetGuid: "12345678-1234-1234-1234-123456789ABC",
+        source: "amitse",
+      },
+    ]);
+  });
+
+  it("accepts a non-power-of-two SetupData page selector and matches its GUID case-insensitively", async () => {
+    // Three copies of the FormSet's encoded GUID, each preceded by a
+    // little-endian page-selector value that is not a bitmask (0x3/0x5/0x6
+    // all have more than one bit set), spaced exactly 40 hex chars apart so
+    // discoverSetupDataMenu treats them as one contiguous page-list run.
+    // The whole thing is lowercased to also exercise case-insensitive GUID
+    // matching against the extractor's own hex output.
+    const setupdataBin =
+      "0300000078563412341234121234123456789abc" +
+      "0500000078563412341234121234123456789abc" +
+      "0600000078563412341234121234123456789abc";
+    const files = await buildFixtureFiles({ setupdataBin });
+    const data = await parseData(files);
+
+    expect(data.menu).toEqual([
+      {
+        name: "Main Setup",
+        formId: "0x1",
+        offset: null,
+        formSetGuid: "12345678-1234-1234-1234-123456789ABC",
+        source: "setupdata",
+        pageMask: "0x3",
+        pageInfoOffset: "0x0",
+      },
+      {
+        name: "Main Setup",
+        formId: "0x1",
+        offset: null,
+        formSetGuid: "12345678-1234-1234-1234-123456789ABC",
+        source: "setupdata",
+        pageMask: "0x5",
+        pageInfoOffset: "0x14",
+      },
+      {
+        name: "Main Setup",
+        formId: "0x1",
+        offset: null,
+        formSetGuid: "12345678-1234-1234-1234-123456789ABC",
+        source: "setupdata",
+        pageMask: "0x6",
+        pageInfoOffset: "0x28",
+      },
+    ]);
+  });
 });
 
 describe("parseData validation", () => {
