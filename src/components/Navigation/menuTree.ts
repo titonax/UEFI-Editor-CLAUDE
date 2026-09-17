@@ -1,15 +1,22 @@
-import type { Data, VisibilityStatus } from "../scripts/types";
-import { findFormIndexByFormId, normalizedHexId } from "../scripts/hexId";
+import type { Data, Form, Menu, VisibilityStatus } from "../scripts/types";
+import { normalizedHexId, sameGuidOrBothUndefined } from "../scripts/hexId";
 import {
   childVisibility,
   combineVisibility,
   visibilityLabel,
 } from "../scripts/visibility";
+import { desiredAmiRootVisibility } from "../scripts/amiRootVisibilityEditing";
 
 export type ReachabilityStatus =
   | "root"
   | "reachable"
   | "detached"
+  // A Ref into a FormSet that is not part of the extracted Setup HII at
+  // all - registered by some other firmware driver at runtime, if ever.
+  | "external"
+  // A Ref whose target should be in the loaded HII but isn't - dynamic,
+  // deliberately unreachable in this build, or simply invalid.
+  | "unresolved"
   | "broken";
 
 export type RootSource =
@@ -36,6 +43,7 @@ export interface MenuTreeNode {
   children: MenuTreeNode[];
   cycle?: boolean;
   missing?: boolean;
+  external?: boolean;
   status: VisibilityStatus;
   statusLabel: string;
   reachability: ReachabilityStatus;
@@ -52,6 +60,12 @@ export interface MenuTreeNode {
   outgoingReferenceCount: number;
   parentageLabel: string;
   conditionSummary?: string;
+  // Set on a root whose FormSet has an entry in the detected AMITSE root
+  // byte vector (see amiRootVisibility.ts): the byte the BIOS ships with,
+  // the byte the pending edit plan wants, and whether they differ.
+  rootVisibilityOriginal?: 0 | 1;
+  rootVisibilityDesired?: 0 | 1;
+  rootVisibilityPending?: boolean;
   // Identifies the exact Ref opcode this node was reached through - the
   // parent Form's index and which of its children the Ref is - so a "move"
   // action on this row can retarget that specific opcode (see
@@ -70,6 +84,48 @@ export interface MenuTree {
   firstKeyByFormIndex: Map<number, string>;
   signature: string;
   truncated: boolean;
+}
+
+// Resolves a Ref/menu entry for the tree. Unlike hexId's
+// findFormIndexByFormId this never guesses: a reference that names a
+// FormSet only resolves inside that FormSet, and one that doesn't only
+// resolves when exactly one Form anywhere carries the id. A wrong guess
+// would draw a plausible-looking but false branch.
+function findTreeFormIndex(data: Data, formId: string, formSetGuid?: string) {
+  const normalized = normalizedHexId(formId);
+  if (formSetGuid) {
+    return data.forms.findIndex(
+      (form) =>
+        sameGuidOrBothUndefined(form.formSetGuid, formSetGuid) &&
+        normalizedHexId(form.formId) === normalized,
+    );
+  }
+  const candidates = data.forms.flatMap((form, index) =>
+    normalizedHexId(form.formId) === normalized ? [index] : [],
+  );
+  return candidates.length === 1 ? candidates[0] : -1;
+}
+
+function formDisplayName(form: Form) {
+  if (form.name.trim().length > 0) return form.name;
+  if (form.formSetTitle?.trim().length) return form.formSetTitle;
+  return `Form ${form.formId}`;
+}
+
+function rootVisibilityEntry(data: Data, root: Menu[number]) {
+  const report = data.rootVisibility;
+  if (report?.status !== "detected") return undefined;
+  if (root.formSetGuid) {
+    return report.entries.find((entry) =>
+      sameGuidOrBothUndefined(entry.formSetGuid, root.formSetGuid),
+    );
+  }
+  const matches = report.entries.filter(
+    (entry) =>
+      normalizedHexId(entry.formId) === normalizedHexId(root.formId) &&
+      entry.name === root.name,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function conditionDescriptions(
@@ -278,6 +334,11 @@ export function buildMenuTree(data: Data): MenuTree {
   const firstKeyByFormIndex = new Map<number, string>();
   let nodeCount = 0;
   let truncated = false;
+  const loadedFormSetGuids = new Set(
+    data.forms.flatMap((form) =>
+      form.formSetGuid ? [form.formSetGuid.toLowerCase()] : [],
+    ),
+  );
 
   function buildFormNode(options: BuildFormNodeOptions): MenuTreeNode {
     nodeCount++;
@@ -327,8 +388,8 @@ export function buildMenuTree(data: Data): MenuTree {
             const reference = child;
             const targetFormSetGuid =
               reference.targetFormSetGuid ?? form.formSetGuid;
-            const targetIndex = findFormIndexByFormId(
-              data.forms,
+            const targetIndex = findTreeFormIndex(
+              data,
               reference.formId,
               targetFormSetGuid,
             );
@@ -346,30 +407,45 @@ export function buildMenuTree(data: Data): MenuTree {
               uiStateDependent || visibility.uiStateDependent;
 
             if (targetIndex < 0) {
+              const external = Boolean(
+                reference.targetFormSetGuid &&
+                  !loadedFormSetGuids.has(reference.targetFormSetGuid.toLowerCase()),
+              );
               return {
                 key: childKey,
                 label:
                   reference.name.length > 0
                     ? reference.name
                     : `Missing form ${reference.formId}`,
-                formName: "Referenced form was not found",
+                formName: external
+                  ? "Referenced FormSet is not loaded"
+                  : "Referenced form was not found",
                 formId: reference.formId,
                 formIndex: null,
                 children: [],
                 missing: true,
-                status: "broken",
-                statusLabel: visibilityLabel("broken"),
-                reachability: "broken",
-                reachabilityLabel: "Dangling Ref target",
+                external,
+                status: "unknown",
+                statusLabel: external
+                  ? "Requires an external HII package"
+                  : "Target absent from static Setup HII",
+                reachability: external ? "external" : "unresolved",
+                reachabilityLabel: external
+                  ? "External HII FormSet"
+                  : "Unresolved Ref target",
                 hardwareDependent: nextHardwareDependent,
                 accessDependent: nextAccessDependent,
                 uiStateDependent: nextUiStateDependent,
                 incomingReferenceCount: 1,
                 outgoingReferenceCount: 0,
-                parentageLabel: `Referenced by ${form.name || form.formId}, but the target does not exist.`,
+                parentageLabel: external
+                  ? `Referenced by ${form.name || form.formId}; target FormSet ${reference.targetFormSetGuid ?? ""} is not part of the extracted Setup HII and may be registered by another firmware driver.`
+                  : `Referenced by ${form.name || form.formId}, but the target is absent from the extracted Setup HII. It may be created at runtime, intentionally unreachable under this build, or invalid.`,
                 conditionSummary:
                   nextConditionPath.join("; ") ||
-                  "The Ref target does not exist in the parsed HII graph.",
+                  (external
+                    ? "The Ref names a different FormSet that is not present in the extracted Setup package."
+                    : "The static package does not contain the Ref target; runtime firmware behavior is required to distinguish a dynamic target from a defect."),
                 sourceFormIndex: formIndex,
                 refChildIndex: childIndex,
               };
@@ -463,11 +539,13 @@ export function buildMenuTree(data: Data): MenuTree {
 
   const roots = rootEntries
     .map((entry, menuIndex): MenuTreeNode | null => {
-      const formIndex = findFormIndexByFormId(
-        data.forms,
-        entry.formId,
-        entry.formSetGuid,
-      );
+      const formIndex = findTreeFormIndex(data, entry.formId, entry.formSetGuid);
+      const vectorEntry = rootVisibilityEntry(data, entry);
+      const desiredRootState = vectorEntry
+        ? desiredAmiRootVisibility(data, vectorEntry)
+        : undefined;
+      const rootStatePending =
+        vectorEntry !== undefined && desiredRootState !== vectorEntry.value;
       const rootSource: RootSource =
         entry.source === "setupdata"
           ? "setupdata"
@@ -508,7 +586,7 @@ export function buildMenuTree(data: Data): MenuTree {
       }
 
       const form = data.forms[formIndex];
-      return buildFormNode({
+      const node = buildFormNode({
         formIndex,
         key: `root-${String(menuIndex)}-${normalizedHexId(entry.formId)}`,
         label:
@@ -516,9 +594,19 @@ export function buildMenuTree(data: Data): MenuTree {
             ? entry.name
             : (form.formSetTitle ?? form.name),
         ancestors: new Set(),
-        inheritedStatus: "visible",
+        // A root whose vector byte is (or is planned to be) 0 is removed
+        // from the live page list, and everything under it goes with it.
+        inheritedStatus: desiredRootState === 0 ? "hidden" : "visible",
         reachability: "root",
-        statusLabel: "No visibility gate",
+        statusLabel: vectorEntry
+          ? rootStatePending
+            ? desiredRootState === 1
+              ? "Pending: root will be visible"
+              : "Pending: root will be hidden"
+            : vectorEntry.value === 1
+              ? "Visible in AMITSE root vector"
+              : "Hidden by AMITSE root vector"
+          : "No visibility gate",
         reachabilityLabel,
         rootSource,
         pageMask: entry.pageMask,
@@ -527,6 +615,12 @@ export function buildMenuTree(data: Data): MenuTree {
             ? `Registered as a top-level AMITSE SetupData page${entry.pageMask ? ` with selector ${entry.pageMask}` : ""}. It has ${String(form.referencedIn.length)} incoming and ${String(form.children.filter((child) => child.type === "Ref").length)} outgoing IFR Ref(s); its parent is the AMITSE menu profile, not another HII form.`
             : "Registered as a top-level menu entry; it does not require an IFR Ref parent.",
       });
+      if (vectorEntry) {
+        node.rootVisibilityOriginal = vectorEntry.value;
+        node.rootVisibilityDesired = desiredRootState;
+        node.rootVisibilityPending = rootStatePending;
+      }
+      return node;
     })
     .filter((node): node is MenuTreeNode => node !== null);
 
@@ -537,7 +631,7 @@ export function buildMenuTree(data: Data): MenuTree {
           buildFormNode({
             formIndex,
             key: `root-fallback-${String(formIndex)}`,
-            label: form.formSetTitle ?? form.name,
+            label: formDisplayName(form),
             ancestors: new Set(),
             inheritedStatus: "visible",
             reachability: "root",
@@ -569,8 +663,8 @@ export function buildMenuTree(data: Data): MenuTree {
       if (child.type !== "Ref") {
         continue;
       }
-      const targetIndex = findFormIndexByFormId(
-        data.forms,
+      const targetIndex = findTreeFormIndex(
+        data,
         child.formId,
         child.targetFormSetGuid ?? form.formSetGuid,
       );
@@ -588,9 +682,7 @@ export function buildMenuTree(data: Data): MenuTree {
       data.formSetRoots ??
       data.menu.filter((entry) => entry.source === "formset")
     )
-      .map((entry) =>
-        findFormIndexByFormId(data.forms, entry.formId, entry.formSetGuid),
-      )
+      .map((entry) => findTreeFormIndex(data, entry.formId, entry.formSetGuid))
       .filter((formIndex) => formIndex >= 0),
   );
   const detachedCandidates = [
@@ -612,7 +704,7 @@ export function buildMenuTree(data: Data): MenuTree {
       buildFormNode({
         formIndex,
         key: `detached-${String(formIndex)}`,
-        label: form.formSetTitle ?? form.name,
+        label: formDisplayName(form),
         ancestors: new Set(),
         inheritedStatus: "visible",
         reachability: "detached",
@@ -627,13 +719,16 @@ export function buildMenuTree(data: Data): MenuTree {
     addDetachedRoot(
       formIndex,
       formSetRootIndices.has(formIndex)
-        ? "Detached HII FormSet"
-        : "Unreferenced form",
+        ? "HII FormSet entry not registered by the detected menu profile"
+        : "Unreferenced form; it may be intentionally hidden or linked dynamically at runtime",
     );
   }
 
   for (const formIndex of remaining) {
-    addDetachedRoot(formIndex, "Detached cycle or isolated subgraph");
+    addDetachedRoot(
+      formIndex,
+      "Isolated HII subgraph; no static path from the detected menu roots was found",
+    );
   }
 
   const signature = [

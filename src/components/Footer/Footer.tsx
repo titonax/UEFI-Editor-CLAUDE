@@ -5,7 +5,9 @@ import { saveAs } from "file-saver";
 import React from "react";
 import type { Updater } from "use-immer";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
+import { assertAmiRootVisibilityEditsMatch } from "../scripts/amiRootVisibilityEditing";
 import { downloadModifiedFiles, validateByteInput } from "../scripts/binaryPatcher";
+import { parseDataFile } from "../scripts/dataValidation";
 import { calculateJsonChecksum } from "../scripts/hashing";
 import { version } from "../scripts/ifrParser";
 import type { Data, Suppression } from "../scripts/types";
@@ -38,8 +40,7 @@ export default function Footer({
               if (file) {
                 void (async () => {
                   try {
-                    const fileData = await file.text();
-                    const jsonData = JSON.parse(fileData) as Data;
+                    const jsonData = parseDataFile(await file.text());
 
                     if (
                       jsonData.version === version &&
@@ -54,12 +55,21 @@ export default function Footer({
                         jsonData.suppressions,
                       )) === data.hashes.offsetChecksum
                     ) {
+                      // The root vector is evidence about the firmware that
+                      // is open right now, never trusted from a file; a saved
+                      // plan is kept only if it still matches that evidence.
+                      jsonData.rootVisibility = data.rootVisibility;
+                      assertAmiRootVisibilityEditsMatch(
+                        jsonData.rootVisibilityEdits,
+                        jsonData.rootVisibility,
+                      );
                       setData(jsonData);
                     } else {
                       notifications.show({
                         color: "red",
                         title: "Could not load data.json",
-                        message: "Wrong JSON version or file hashes.",
+                        message:
+                          "Wrong data.json version, source hashes, or offset checksum.",
                       });
                     }
                   } catch (error) {
@@ -110,11 +120,16 @@ export default function Footer({
             size="xs"
             variant="default"
             leftSection={<IconDownload />}
-            disabled={data.firmwareFamily === "aptio-iv"}
+            disabled={
+              data.firmwareFamily === "aptio-iv" ||
+              (data.rootVisibilityEdits?.length ?? 0) > 0
+            }
             title={
-              data.firmwareFamily === "aptio-iv"
-                ? "Aptio IV export is disabled until safe reinsertion is implemented"
-                : undefined
+              (data.rootVisibilityEdits?.length ?? 0) > 0
+                ? "Root visibility changes require the verified full-image reconstruction path"
+                : data.firmwareFamily === "aptio-iv"
+                  ? "Aptio IV export is disabled until safe reinsertion is implemented"
+                  : undefined
             }
             onClick={() => {
               try {

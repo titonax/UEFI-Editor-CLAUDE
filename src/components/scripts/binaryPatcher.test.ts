@@ -44,6 +44,29 @@ describe("downloadModifiedFiles", () => {
     expect(saveAsMock).not.toHaveBeenCalled();
   });
 
+  it("refuses to export extracted files while a root visibility plan is pending", async () => {
+    const files = await buildFixtureFiles();
+    const data = await parseData(files);
+    data.rootVisibilityEdits = [
+      {
+        kind: "set-root-visibility",
+        rootIndex: 0,
+        formId: "0x1",
+        bufferId: 0,
+        bufferOffset: 0x40,
+        expected: 0,
+        replacement: 1,
+        description: "Show root FormSet Main Setup",
+      },
+    ];
+
+    saveAsMock.mockClear();
+    expect(() => downloadModifiedFiles(data, files)).toThrow(
+      /verified full-image reconstruction path/,
+    );
+    expect(saveAsMock).not.toHaveBeenCalled();
+  });
+
   it("patches the SuppressIf end marker when a suppression is deactivated", async () => {
     const files = await buildFixtureFiles();
     const data = await parseData(files);

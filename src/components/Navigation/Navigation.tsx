@@ -121,13 +121,17 @@ export default function Navigation({
       orphaned: s.statusHidden,
       broken: s.statusBroken,
     }[node.status];
+    const unresolvedTarget =
+      node.reachability === "external" || node.reachability === "unresolved";
     const iconClass =
       node.reachability === "detached"
         ? s.statusDetached
-        : node.status === "visible" &&
-            node.profileAssessment === "probable-fallback"
-          ? s.statusProfileFallback
-          : gateClass;
+        : unresolvedTarget
+          ? s.statusUnknown
+          : node.status === "visible" &&
+              node.profileAssessment === "probable-fallback"
+            ? s.statusProfileFallback
+            : gateClass;
     const semanticTitle = `${title}${node.profileLabel ? `\n${node.profileLabel}` : ""}\n${node.reachabilityLabel}\n${node.parentageLabel}\n${node.statusLabel}${
       node.conditionSummary ? `: ${node.conditionSummary}` : ""
     }`;
@@ -148,6 +152,7 @@ export default function Navigation({
             s.treeRow,
             active ? s.selected : "",
             node.missing ? s.missing : "",
+            unresolvedTarget ? s.external : "",
             node.reachability === "detached" ? s.detachedRow : "",
           ]
             .filter(Boolean)
@@ -175,7 +180,10 @@ export default function Navigation({
           </button>
 
           {node.missing ? (
-            <IconAlertTriangle size={16} className={s.warningIcon} />
+            <IconAlertTriangle
+              size={16}
+              className={unresolvedTarget ? s.externalIcon : s.warningIcon}
+            />
           ) : node.cycle ? (
             <IconRefresh size={16} className={s.mutedIcon} />
           ) : hasChildren ? (
@@ -216,6 +224,7 @@ export default function Navigation({
             <span className={s.formId}>{node.formId}</span>
             {(node.reachability === "root" ||
               (node.reachability === "detached" && depth === 0) ||
+              unresolvedTarget ||
               node.reachability === "broken") && (
               <span className={s.reachabilityLabel}>
                 {node.reachabilityLabel}
@@ -223,7 +232,8 @@ export default function Navigation({
               </span>
             )}
             {(node.status === "hidden" ||
-              node.status === "conditional") && (
+              node.status === "conditional" ||
+              node.rootVisibilityPending) && (
               <span className={`${s.statusLabel} ${gateClass}`}>
                 {node.statusLabel}
               </span>

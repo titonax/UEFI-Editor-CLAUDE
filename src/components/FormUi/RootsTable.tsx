@@ -52,16 +52,17 @@ export default function RootsTable({
                   .map((form) => form.formId)}
                 onChange={(ev) => {
                   const value = ev.target.value;
+                  const selectedName = data.forms.find(
+                    (form) =>
+                      (!entry.formSetGuid ||
+                        form.formSetGuid === entry.formSetGuid) &&
+                      sameHexId(form.formId, value),
+                  )?.name;
+                  if (selectedName === undefined) return;
 
                   setData((draft) => {
                     draft.menu[index].formId = value;
-                    const matchedForm = data.forms.find(
-                      (form) =>
-                        (!entry.formSetGuid ||
-                          form.formSetGuid === entry.formSetGuid) &&
-                        sameHexId(form.formId, value),
-                    );
-                    draft.menu[index].name = matchedForm?.name ?? entry.name;
+                    draft.menu[index].name = selectedName;
                   });
                 }}
               />
@@ -71,7 +72,7 @@ export default function RootsTable({
                 <Tooltip
                   label={
                     entry.source === "setupdata"
-                      ? `This root is registered in the AMITSE SetupData page list${entry.pageMask ? ` with page mask ${entry.pageMask}` : ""}.`
+                      ? `This root is registered in the AMITSE SetupData page list${entry.pageMask ? ` with page selector ${entry.pageMask}` : ""}.`
                       : entry.source === "amitse" || entry.offset !== null
                         ? "This root is present in the AMITSE executable menu table."
                         : "This is the entry form declared by its HII FormSet. It is structural evidence, not a runtime visibility condition."
@@ -96,7 +97,7 @@ export default function RootsTable({
                         : "HII FormSet entry"}
                   </Badge>
                 </Tooltip>
-                {roots[index]?.profileLabel && (
+                {data.rootVisibility?.status !== "detected" && roots[index]?.profileLabel && (
                   <Badge
                     size="xs"
                     color={

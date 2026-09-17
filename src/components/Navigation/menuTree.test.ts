@@ -107,7 +107,7 @@ describe("buildMenuTree", () => {
     expect(tree.roots[0].children[0].refChildIndex).toBe(0);
   });
 
-  it("marks a Ref to a nonexistent form as missing/broken", () => {
+  it("marks a Ref whose target is absent from the loaded HII as unresolved", () => {
     const forms = [
       makeForm({
         formId: "0x1",
@@ -120,12 +120,171 @@ describe("buildMenuTree", () => {
     const child = tree.roots[0].children[0];
 
     expect(child.missing).toBe(true);
-    expect(child.status).toBe("broken");
+    expect(child.external).toBe(false);
+    expect(child.status).toBe("unknown");
+    expect(child.reachability).toBe("unresolved");
+    expect(child.reachabilityLabel).toBe("Unresolved Ref target");
+    expect(child.statusLabel).toBe("Target absent from static Setup HII");
+    expect(child.formName).toBe("Referenced form was not found");
     expect(child.formIndex).toBeNull();
-    // Still a real Ref opcode - a "move" action should be able to fix a
-    // dangling reference just like it can retarget a working one.
+    // Still a real Ref opcode - a "move" action should be able to relocate
+    // a dangling reference just like a working one.
     expect(child.sourceFormIndex).toBe(0);
     expect(child.refChildIndex).toBe(0);
+  });
+
+  it("marks a Ref into a FormSet that is not loaded as external", () => {
+    const forms = [
+      makeForm({
+        formId: "0x1",
+        formSetGuid: "AAAAAAAA-0000-0000-0000-000000000000",
+        children: [
+          makeRef({ formId: "0x2", targetFormSetGuid: "BBBBBBBB-0000-0000-0000-000000000000" }),
+        ],
+      }),
+    ];
+    const data = makeData({
+      forms,
+      menu: [makeMenuRoot({ formSetGuid: "AAAAAAAA-0000-0000-0000-000000000000" })],
+    });
+
+    const child = buildMenuTree(data).roots[0].children[0];
+
+    expect(child.missing).toBe(true);
+    expect(child.external).toBe(true);
+    expect(child.reachability).toBe("external");
+    expect(child.reachabilityLabel).toBe("External HII FormSet");
+    expect(child.statusLabel).toBe("Requires an external HII package");
+    expect(child.formName).toBe("Referenced FormSet is not loaded");
+    expect(child.parentageLabel).toContain("BBBBBBBB-0000-0000-0000-000000000000");
+  });
+
+  it("never guesses a same-id Form from another FormSet", () => {
+    const forms = [
+      makeForm({
+        formId: "0x1",
+        formSetGuid: "AAAAAAAA-0000-0000-0000-000000000000",
+        children: [makeRef({ formId: "0x2" })],
+      }),
+      makeForm({
+        formId: "0x2",
+        name: "Other FormSet's page",
+        formSetGuid: "BBBBBBBB-0000-0000-0000-000000000000",
+      }),
+    ];
+    const data = makeData({
+      forms,
+      menu: [makeMenuRoot({ formSetGuid: "AAAAAAAA-0000-0000-0000-000000000000" })],
+    });
+
+    const child = buildMenuTree(data).roots[0].children[0];
+
+    expect(child.formIndex).toBeNull();
+    expect(child.reachability).toBe("unresolved");
+  });
+
+  it("resolves a GUID-less reference only when its id is unambiguous", () => {
+    const ambiguous = makeData({
+      forms: [
+        makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
+        makeForm({ formId: "0x2", name: "First" }),
+        makeForm({ formId: "0x2", name: "Second" }),
+      ],
+      menu: [makeMenuRoot()],
+    });
+    const unique = makeData({
+      forms: [
+        makeForm({ formId: "0x1", children: [makeRef({ formId: "0x2" })] }),
+        makeForm({ formId: "0x2", name: "Only" }),
+      ],
+      menu: [makeMenuRoot()],
+    });
+
+    expect(buildMenuTree(ambiguous).roots[0].children[0].formIndex).toBeNull();
+    expect(buildMenuTree(unique).roots[0].children[0].formIndex).toBe(1);
+  });
+
+  it("applies the detected AMITSE root vector and pending plans to root nodes", () => {
+    const guidA = "AAAAAAAA-0000-0000-0000-000000000000";
+    const guidB = "BBBBBBBB-0000-0000-0000-000000000000";
+    const forms = [
+      makeForm({
+        formId: "0x1",
+        name: "Main",
+        formSetGuid: guidA,
+        children: [makeRef({ formId: "0x3" })],
+      }),
+      makeForm({ formId: "0x2", name: "File", formSetGuid: guidB }),
+      makeForm({ formId: "0x3", name: "Sub", formSetGuid: guidA, referencedIn: ["0x1"] }),
+    ];
+    const rootVisibility: Data["rootVisibility"] = {
+      status: "detected",
+      mechanism: "setup-pe32-root-byte-vector",
+      confidence: "corroborated",
+      reason: "vector",
+      vector: {
+        bufferId: 5,
+        offset: 0x10,
+        length: 2,
+        codeReferenceOffset: 0x1,
+        pageTableOffset: 0x20,
+        countEvidence: "immediate",
+      },
+      entries: [
+        { rootIndex: 0, name: "Main", formId: "0x1", formSetGuid: guidA, value: 0, visible: false, bufferOffset: 0x10 },
+        { rootIndex: 1, name: "File", formId: "0x2", formSetGuid: guidB, value: 1, visible: true, bufferOffset: 0x11 },
+      ],
+    };
+    const menu = [
+      makeMenuRoot({ formId: "0x1", name: "Main", formSetGuid: guidA }),
+      makeMenuRoot({ formId: "0x2", name: "File", formSetGuid: guidB }),
+    ];
+
+    const original = buildMenuTree(makeData({ forms, menu, rootVisibility }));
+
+    expect(original.roots[0]).toMatchObject({
+      status: "hidden",
+      statusLabel: "Hidden by AMITSE root vector",
+      rootVisibilityOriginal: 0,
+      rootVisibilityDesired: 0,
+      rootVisibilityPending: false,
+    });
+    // A root removed from the page list takes its whole branch with it.
+    expect(original.roots[0].children[0].status).toBe("hidden");
+    expect(original.roots[1]).toMatchObject({
+      status: "visible",
+      statusLabel: "Visible in AMITSE root vector",
+      rootVisibilityOriginal: 1,
+    });
+
+    const planned = buildMenuTree(
+      makeData({
+        forms,
+        menu,
+        rootVisibility,
+        rootVisibilityEdits: [
+          {
+            kind: "set-root-visibility",
+            rootIndex: 0,
+            formId: "0x1",
+            formSetGuid: guidA,
+            bufferId: 5,
+            bufferOffset: 0x10,
+            expected: 0,
+            replacement: 1,
+            description: "Show root FormSet Main",
+          },
+        ],
+      }),
+    );
+
+    expect(planned.roots[0]).toMatchObject({
+      status: "visible",
+      statusLabel: "Pending: root will be visible",
+      rootVisibilityDesired: 1,
+      rootVisibilityPending: true,
+    });
+    expect(planned.roots[0].children[0].status).toBe("visible");
   });
 
   it("detects a Ref cycle without recursing forever", () => {

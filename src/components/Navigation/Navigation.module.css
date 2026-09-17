@@ -112,6 +112,10 @@
   color: var(--mantine-color-pink-4);
 }
 
+.externalIcon {
+  color: var(--mantine-color-gray-5);
+}
+
 .mutedIcon {
   color: var(--mantine-color-gray-5);
 }
@@ -190,6 +194,10 @@
 
 .missing {
   opacity: 0.75;
+}
+
+.external {
+  color: var(--mantine-color-gray-4);
 }
 
 .detachedRow {

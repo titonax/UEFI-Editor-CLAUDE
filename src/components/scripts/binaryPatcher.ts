@@ -232,6 +232,16 @@ function applyRefMoves(
 }
 
 export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
+  // A root byte lives in the Setup PE32 inside the image, not in any of
+  // the four extracted files, so a pending plan can't be honored here and
+  // silently dropping it would export something other than what the user
+  // asked for.
+  if ((data.rootVisibilityEdits?.length ?? 0) > 0) {
+    throw new Error(
+      "Root visibility changes require the verified full-image reconstruction path and cannot be exported as extracted UEFI files.",
+    );
+  }
+
   let wasSetupSctModified = false;
   let wasAmitseSctModified = false;
   let wasSetupdataBinModified = false;

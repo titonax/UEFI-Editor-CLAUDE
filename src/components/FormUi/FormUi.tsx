@@ -8,6 +8,7 @@ import SearchUi from "./SearchUi/SearchUi";
 import { summarizeFormBranch } from "../scripts/visibility";
 import { findNodePath, type MenuTree } from "../Navigation/menuTree";
 import RootsTable from "./RootsTable";
+import RootVisibilityAnalysis from "./RootVisibilityAnalysis";
 import BranchSummary from "./BranchSummary";
 import TableRow from "./TableRow";
 import s from "./FormUi.module.css";
@@ -84,12 +85,15 @@ export default function FormUi({
 
   if (currentFormIndex === TOP_LEVEL_MENU_VIEW) {
     return (
-      <RootsTable
-        data={data}
-        setData={setData}
-        roots={tree.roots}
-        handleRefClick={handleRefClick}
-      />
+      <Stack>
+        <RootVisibilityAnalysis data={data} setData={setData} />
+        <RootsTable
+          data={data}
+          setData={setData}
+          roots={tree.roots}
+          handleRefClick={handleRefClick}
+        />
+      </Stack>
     );
   }
 
