@@ -110,9 +110,16 @@ describe("SingleFormSetNavigation", () => {
     const data = hubData();
     const tree = buildMenuTree(data);
     const onMovePage = vi.fn();
+    const onToggleVisibility = vi.fn();
     render(
       <MantineProvider>
-        <SingleFormSetNavigation data={data} tree={tree} onMovePage={onMovePage} />
+        <SingleFormSetNavigation
+          data={data}
+          tree={tree}
+          hubFormIndex={0}
+          onMovePage={onMovePage}
+          onToggleVisibility={onToggleVisibility}
+        />
       </MantineProvider>,
     );
 
@@ -131,7 +138,7 @@ describe("SingleFormSetNavigation", () => {
     const promote = screen.getByRole("button", { name: "Promote or relocate Security as top-level tab" });
     expect(promote).toBeEnabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Hide or relocate Main top-level tab" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move Main top-level tab" }));
     expect(onMovePage).toHaveBeenCalledOnce();
     const [page, node] = onMovePage.mock.calls[0] as [{ formId: string }, { sourceFormIndex: number; refChildIndex: number }];
     expect(page.formId).toBe("0x2714");
@@ -162,7 +169,13 @@ describe("SingleFormSetNavigation", () => {
     });
     render(
       <MantineProvider>
-        <SingleFormSetNavigation data={data} tree={buildMenuTree(data)} onMovePage={vi.fn()} />
+        <SingleFormSetNavigation
+          data={data}
+          tree={buildMenuTree(data)}
+          hubFormIndex={0}
+          onMovePage={vi.fn()}
+          onToggleVisibility={vi.fn()}
+        />
       </MantineProvider>,
     );
 
@@ -184,7 +197,13 @@ describe("SingleFormSetNavigation", () => {
     };
     render(
       <MantineProvider>
-        <SingleFormSetNavigation data={data} tree={buildMenuTree(data)} onMovePage={vi.fn()} />
+        <SingleFormSetNavigation
+          data={data}
+          tree={buildMenuTree(data)}
+          hubFormIndex={0}
+          onMovePage={vi.fn()}
+          onToggleVisibility={vi.fn()}
+        />
       </MantineProvider>,
     );
 
@@ -203,7 +222,13 @@ describe("SingleFormSetNavigation", () => {
     };
     const { container } = render(
       <MantineProvider>
-        <SingleFormSetNavigation data={data} tree={buildMenuTree(data)} onMovePage={vi.fn()} />
+        <SingleFormSetNavigation
+          data={data}
+          tree={buildMenuTree(data)}
+          hubFormIndex={0}
+          onMovePage={vi.fn()}
+          onToggleVisibility={vi.fn()}
+        />
       </MantineProvider>,
     );
 

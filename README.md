@@ -117,16 +117,20 @@ sole occupant of, and the Setup HII never changes size. Like every other
 edit, the bytes only move when you export.
 
 When a single-FormSet navigation hub is detected, the top-level view lists
-every page with its role: the hub, a current direct tab, an AMITSE-registered
-descendant, or a registered-only page, together with the effective IFR state of
-its Ref: a vendor layout often keeps AMI reference tabs under an always-true
-`SuppressIf`, and those count as direct tabs that are hidden. "Visible as a
-tab" is structural there:
-the **Visible tab · hide/move** control relocates a tab's hub Ref under another
+every page with its role: the hub, a current direct tab, a tab hidden by the
+visibility toggle, an AMITSE-registered descendant, or a registered-only
+page, together with the effective IFR state of its Ref: a vendor layout often
+keeps AMI reference tabs under an always-true `SuppressIf`, and those count
+as direct tabs that are hidden. "Visible as a tab" is structural there:
+a direct tab's **Hide** button parks its Ref inside an existing, reused
+constant-true `SuppressIf` scope elsewhere in the FormSet, and a hidden tab's
+**Show** button moves it straight back - both fixed-size, no new opcode ever
+created. The **Move…** control still relocates a tab's hub Ref under another
 existing Form (demoting it), and **Not a tab · promote/move** returns a
-descendant's existing Ref to the hub (promoting it). Both open the same move
-dialog with the same checks; AMITSE registration by itself never promotes a
-page, and no FormSet or menu is ever created. See
+descendant's existing Ref to the hub (promoting it); a tab hidden by the
+toggle offers only Show, since it must return to the hub before it can be
+moved anywhere else. AMITSE registration by itself never promotes a page, and
+no FormSet or menu is ever created. See
 [`docs/ami/single-formset-ifr-navigation.md`](docs/ami/single-formset-ifr-navigation.md).
 
 When a multi-FormSet root vector is detected in the Setup PE32, the top-level

@@ -60,9 +60,20 @@ this graph.
 6. tab order comes from Ref order, never from AMITSE occurrence order.
 
 AMITSE matches are collapsed by FormSet GUID and FormId while retaining every
-registration offset. Pages are then labelled hub, direct tab, reachable
-descendant, or registered-only. A missing or duplicate direct target makes the
-result ambiguous, which disables the stronger classification.
+registration offset. Pages are then labelled hub, direct tab, suppressed tab,
+reachable descendant, or registered-only. A missing or duplicate direct target
+makes the result ambiguous, which disables the stronger classification.
+
+## Suppressed tabs
+
+A registered page whose only IFR path in is a Ref sitting inside a
+constant-true `SuppressIf` scope elsewhere in the FormSet is reported as
+`suppressed-tab`, not `registered-only`: nothing live currently reaches it
+through the hub's own fan-out, but the exact scope hiding it
+(`suppressionOffset`) is known, so it is one Show away from being a direct
+tab again (see Hide/Show visibility toggle below). More than one such
+suppressed Ref naming the same page makes "the" suppressed reference
+ambiguous, so the page falls back to `registered-only` instead.
 
 ## Effective state
 
@@ -95,3 +106,32 @@ A current direct tab can be relocated away from the hub, and a uniquely
 referenced descendant can be moved back to it. An AMITSE-only registration
 stays disabled when no unique IFR Ref exists; the editor never invents an
 opcode to make such a page movable.
+
+## Hide/Show visibility toggle
+
+A direct tab can also be hidden or shown without the generic Move dialog and
+without any HII resize:
+
+- **Hide** moves the bare Ref opcode - never a new `SuppressIf` wrapper -
+  from the hub into an existing, already-active constant-true `SuppressIf`
+  scope elsewhere in the FormSet: the lowest-offset scope that already parks
+  at least one other Ref, so it is a genuine, reusable parking spot rather
+  than merely constant-true by coincidence. The scope itself never moves and
+  may already be shared with other hidden tabs, or gain more later.
+- **Show** moves the bare Ref opcode back out to the hub and clears the
+  condition it picked up. It lands next to the direct tab it used to sit
+  beside, from the tab inventory's last-known order, rather than always at
+  the end - unless that neighbor's own Ref also moved in the same export, in
+  which case it falls back to the hub's own end.
+
+Both directions are fixed-size and share their byte-relocation machinery with
+the generic Move feature. What distinguishes a toggle-hidden Ref from one
+hidden by an ordinary pristine condition is `RefPrompt.hiddenByTabToggle`, a
+session-only marker: a parked Ref is byte-for-byte indistinguishable from any
+other Ref sharing that scope, so nothing in a fresh parse can recover it.
+Show is therefore only available for a tab hidden earlier in the same
+session, or reloaded from a `data.json` export that still carries the
+marker - not after re-extracting a downloaded binary from scratch. The
+generic Move dialog refuses a toggle-hidden Ref outright and points at Show
+instead: moving only the bare opcode away from a scope it doesn't own would
+either strand the scope hiding whatever lands there next, or leave it empty.

@@ -1046,6 +1046,8 @@ export async function parseData(files: PopulatedFiles) {
     formSetRoots,
     forms,
     discoveredMenu,
+    undefined,
+    suppressions,
   );
   const hubMenu = singleFormSetHubMenu(singleFormSetNavigation);
   const menu =

@@ -36,6 +36,9 @@ function moveBlocker(
 ): string | null {
   const sourceForm = data.forms[location.sourceFormIndex];
   const ref = location.ref;
+  if (ref.hiddenByTabToggle !== undefined) {
+    return "This item is currently hidden by the top-level tab visibility toggle; use Show to restore it to the navigation hub before moving it elsewhere.";
+  }
   if (!isSoleOwnerOfCondition(sourceForm, ref)) {
     return "This item shares its hide condition with other items on this page, so it can't be moved alone: splitting a shared SuppressIf/GrayOutIf/DisableIf would either strand it hiding the wrong content, or drop the condition entirely.";
   }

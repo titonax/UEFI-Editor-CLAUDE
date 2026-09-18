@@ -13,6 +13,7 @@ import SingleFormSetNavigation from "./SingleFormSetNavigation";
 import MenuMoveDialog from "../Navigation/MenuMoveDialog";
 import type { MenuTreeNode } from "../Navigation/menuTree";
 import { sameGuidOrBothUndefined } from "../scripts/hexId";
+import { applyTabVisibilityToggle } from "./tabVisibility";
 import BranchSummary from "./BranchSummary";
 import TableRow from "./TableRow";
 import s from "./FormUi.module.css";
@@ -128,6 +129,7 @@ export default function FormUi({
         <SingleFormSetNavigation
           data={data}
           tree={tree}
+          hubFormIndex={hubFormIndex}
           onMovePage={(page, node) => {
             setTabMove({
               node,
@@ -135,6 +137,11 @@ export default function FormUi({
               // A promotion offers the hub straight away when it is known.
               initialDestinationFormIndex:
                 page.role === "descendant" && hubFormIndex >= 0 ? hubFormIndex : undefined,
+            });
+          }}
+          onToggleVisibility={(_page, direction, sourceFormIndex, childIndex) => {
+            setData((draft) => {
+              applyTabVisibilityToggle(draft, hubFormIndex, sourceFormIndex, childIndex, direction);
             });
           }}
         />

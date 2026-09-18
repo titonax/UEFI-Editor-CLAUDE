@@ -3,6 +3,10 @@ import type { AmiSingleFormSetPage, Data, VisibilityStatus } from "../scripts/ty
 import { sameGuidOrBothUndefined, sameHexId } from "../scripts/hexId";
 import type { MenuTree, MenuTreeNode } from "../Navigation/menuTree";
 import { movableNodeForPage } from "./tabPlacement";
+import {
+  analyzeTabVisibilityToggle,
+  type TabVisibilityDirection,
+} from "./tabVisibility";
 
 const stateColors: Record<VisibilityStatus, string> = {
   visible: "green",
@@ -39,6 +43,7 @@ function effectiveNode(data: Data, tree: MenuTree, page: AmiSingleFormSetPage) {
 const roleMeta = {
   hub: { label: "IFR navigation hub", color: "blue" },
   "direct-tab": { label: "Current top-level tab", color: "green" },
+  "suppressed-tab": { label: "Hidden by tab toggle", color: "orange" },
   descendant: { label: "Registered descendant", color: "violet" },
   "registered-only": { label: "Registered only", color: "gray" },
 } as const;
@@ -54,6 +59,12 @@ const placementControls = {
     color: "green",
     explanation:
       "Move this existing Ref away from the Setup hub to remove it from the top-level tabs.",
+  },
+  "suppressed-tab": {
+    label: "Hidden tab · show/move",
+    color: "orange",
+    explanation:
+      "Parked inside an existing constant-true SuppressIf scope by the tab visibility toggle. Move first restores it to the hub, then relocates it elsewhere.",
   },
   descendant: {
     label: "Not a tab · promote/move",
@@ -72,7 +83,14 @@ const placementControls = {
 interface SingleFormSetNavigationProps {
   data: Data;
   tree: MenuTree;
+  hubFormIndex: number;
   onMovePage: (page: AmiSingleFormSetPage, node: MenuTreeNode) => void;
+  onToggleVisibility: (
+    page: AmiSingleFormSetPage,
+    direction: TabVisibilityDirection,
+    sourceFormIndex: number,
+    childIndex: number,
+  ) => void;
 }
 
 // The tab inventory of a single-FormSet hub layout: every page the IFR hub
@@ -81,7 +99,9 @@ interface SingleFormSetNavigationProps {
 export default function SingleFormSetNavigation({
   data,
   tree,
+  hubFormIndex,
   onMovePage,
+  onToggleVisibility,
 }: SingleFormSetNavigationProps) {
   const report = data.singleFormSetNavigation;
   if (!report || report.status === "not-applicable") return null;
@@ -148,6 +168,15 @@ export default function SingleFormSetNavigation({
               const control = placementControls[page.role];
               const movableNode = movableNodeForPage(data, tree, page);
               const node = effectiveNode(data, tree, page);
+              const toggleDirection: TabVisibilityDirection | undefined =
+                page.role === "direct-tab"
+                  ? "hide"
+                  : page.role === "suppressed-tab"
+                    ? "show"
+                    : undefined;
+              const toggle = toggleDirection
+                ? analyzeTabVisibilityToggle(data, tree, page, toggleDirection, hubFormIndex)
+                : undefined;
               return (
                 <Table.Tr key={`${page.formSetGuid}:${page.formId}`}>
                   <Table.Td>{page.name}</Table.Td>
@@ -197,26 +226,61 @@ export default function SingleFormSetNavigation({
                     )}
                   </Table.Td>
                   <Table.Td>
-                    <Tooltip label={control.explanation} multiline w={340}>
-                      <Button
-                        size="compact-xs"
-                        color={control.color}
-                        variant={page.role === "direct-tab" ? "filled" : "light"}
-                        disabled={page.role === "hub" || movableNode === undefined}
-                        aria-label={
-                          page.role === "direct-tab"
-                            ? `Hide or relocate ${page.name} top-level tab`
-                            : page.role === "descendant"
-                              ? `Promote or relocate ${page.name} as top-level tab`
-                              : control.label
-                        }
-                        onClick={() => {
-                          if (movableNode) onMovePage(page, movableNode);
-                        }}
-                      >
-                        {control.label}
-                      </Button>
-                    </Tooltip>
+                    <Group gap={4} wrap="nowrap">
+                      {toggleDirection && toggle && (
+                        <Tooltip label={toggle.reason} multiline w={340}>
+                          <Button
+                            size="compact-xs"
+                            color={toggleDirection === "hide" ? "red" : "teal"}
+                            variant="filled"
+                            disabled={!toggle.available}
+                            aria-label={
+                              toggleDirection === "hide"
+                                ? `Hide ${page.name} from the navigation hub`
+                                : `Show ${page.name} on the navigation hub`
+                            }
+                            onClick={() => {
+                              if (
+                                toggle.available &&
+                                toggle.sourceFormIndex !== undefined &&
+                                toggle.childIndex !== undefined
+                              ) {
+                                onToggleVisibility(
+                                  page,
+                                  toggleDirection,
+                                  toggle.sourceFormIndex,
+                                  toggle.childIndex,
+                                );
+                              }
+                            }}
+                          >
+                            {toggleDirection === "hide" ? "Hide" : "Show"}
+                          </Button>
+                        </Tooltip>
+                      )}
+                      {page.role !== "suppressed-tab" && (
+                        <Tooltip label={control.explanation} multiline w={340}>
+                          <Button
+                            size="compact-xs"
+                            color={control.color}
+                            variant={page.role === "direct-tab" ? "light" : "light"}
+                            disabled={page.role === "hub" || movableNode === undefined}
+                            aria-label={
+                              page.role === "direct-tab"
+                                ? `Move ${page.name} top-level tab`
+                                : page.role === "descendant"
+                                  ? `Promote or relocate ${page.name} as top-level tab`
+                                  : control.label
+                            }
+                            onClick={() => {
+                              if (movableNode) onMovePage(page, movableNode);
+                            }}
+                          >
+                            {page.role === "direct-tab" ? "Move…" : control.label}
+                          </Button>
+                        </Tooltip>
+                      )}
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               );

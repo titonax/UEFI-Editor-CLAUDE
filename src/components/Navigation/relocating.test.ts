@@ -68,6 +68,18 @@ describe("analyzeMoveDestinations", () => {
     expect(results[2].compatibility).toBe("safe-cross-package");
   });
 
+  it("blocks every destination for a Ref parked by the tab visibility toggle", () => {
+    const { bytes, data } = buildMoveFixture({ explicitTargetGuid: true });
+    (data.forms[0].children[0] as RefPrompt).hiddenByTabToggle = "0x16";
+
+    const results = analyzeMoveDestinations(data, buildRefLocation(data, 0, 0), bytes);
+
+    expect(results.every((result) => result.compatibility === "unavailable")).toBe(true);
+    expect(results[2].reason).toBe(
+      "This item is currently hidden by the top-level tab visibility toggle; use Show to restore it to the navigation hub before moving it elsewhere.",
+    );
+  });
+
   it("blocks every destination for a Ref sharing its condition with a sibling", () => {
     const { bytes, data } = buildMoveFixture({ explicitTargetGuid: true, hiddenRef: true });
     const ref = data.forms[0].children[0] as RefPrompt;

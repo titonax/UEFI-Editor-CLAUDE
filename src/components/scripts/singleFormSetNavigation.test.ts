@@ -4,7 +4,7 @@ import {
   refreshSingleFormSetNavigation,
   singleFormSetHubMenu,
 } from "./singleFormSetNavigation";
-import type { Data, Form, Menu, RefPrompt } from "./types";
+import type { Data, Form, Menu, RefPrompt, Suppression } from "./types";
 
 const GUID = "7B59104A-C00D-4158-87FF-F04D6396A915";
 
@@ -114,7 +114,9 @@ describe("inspectSingleFormSetNavigation", () => {
       parentFormIds: [],
     });
     expect(report.reason).toContain("9 direct Refs define the current top-level tabs");
-    expect(report.reason).toContain("AMITSE corroborates 9 of them and contains 3 registered non-tab pages");
+    expect(report.reason).toContain(
+      "AMITSE corroborates 9 of the current tabs and contains 3 other registered pages",
+    );
   });
 
   it("collapses repeated AMITSE registrations of one page into its offsets", () => {
@@ -203,6 +205,89 @@ describe("inspectSingleFormSetNavigation", () => {
 
     expect(report.status).toBe("detected");
     expect(report.pages.map((page) => page.formId)).toEqual(["0x1", "0x2", "0x4"]);
+  });
+
+  it("classifies a page reachable only through a constant-true SuppressIf as a suppressed tab", () => {
+    const { forms, registrations } = z390Graph();
+    const hub = forms[0];
+    // "Boot" (0x2718) is where the tab-visibility toggle parked "Tool"'s
+    // Ref - an existing, reused SuppressIf scope elsewhere in the FormSet,
+    // not Tool's own Form.
+    const boot = forms.find((form) => form.formId === "0x2718");
+    if (!boot) throw new Error("Boot form missing from fixture");
+    const toolIndex = hub.children.findIndex(
+      (child) => child.type === "Ref" && child.formId === "0x2719",
+    );
+    const [toolRef] = hub.children.splice(toolIndex, 1) as [RefPrompt];
+    toolRef.conditions = ["0x99000"];
+    toolRef.suppressIf = ["0x99000"];
+    toolRef.hiddenByTabToggle = "0x99000";
+    boot.children.push(toolRef);
+    const suppressions: Suppression[] = [
+      { offset: "0x99000", active: true, start: "0x99000", end: "0x99010", kind: "SuppressIf", constant: true },
+    ];
+
+    const report = inspectSingleFormSetNavigation(
+      [formSetRoot()],
+      forms,
+      registrations,
+      undefined,
+      suppressions,
+    );
+
+    expect(report.pages.filter((page) => page.role === "direct-tab")).toHaveLength(8);
+    expect(report.pages.find((page) => page.formId === "0x2719")).toMatchObject({
+      role: "suppressed-tab",
+      suppressionOffset: "0x99000",
+      parentFormIds: ["0x2718"],
+    });
+    expect(report.reason).toContain(
+      "1 registered page is currently parked inside a constant-true SuppressIf scope",
+    );
+  });
+
+  it("falls back to registered-only when two Refs suppress the same target", () => {
+    const { forms, registrations } = z390Graph();
+    const hub = forms[0];
+    const boot = forms.find((form) => form.formId === "0x2718");
+    const chipset = forms.find((form) => form.formId === "0x2717");
+    if (!boot || !chipset) throw new Error("Fixture form missing");
+    const toolIndex = hub.children.findIndex(
+      (child) => child.type === "Ref" && child.formId === "0x2719",
+    );
+    const [toolRef] = hub.children.splice(toolIndex, 1) as [RefPrompt];
+    toolRef.conditions = ["0x99000"];
+    toolRef.suppressIf = ["0x99000"];
+    boot.children.push(toolRef);
+    // A second, independent Ref to the same target, parked under a
+    // different constant-true scope - "the" suppressed reference is now
+    // ambiguous, so this must not be promoted to "suppressed-tab".
+    chipset.children.push(
+      makeRef({
+        name: "Tool",
+        formId: "0x2719",
+        questionId: "0x300",
+        sctOffset: "0x99200",
+        conditions: ["0x99100"],
+        suppressIf: ["0x99100"],
+      }),
+    );
+    const suppressions: Suppression[] = [
+      { offset: "0x99000", active: true, start: "0x99000", end: "0x99010", kind: "SuppressIf", constant: true },
+      { offset: "0x99100", active: true, start: "0x99100", end: "0x99110", kind: "SuppressIf", constant: true },
+    ];
+
+    const report = inspectSingleFormSetNavigation(
+      [formSetRoot()],
+      forms,
+      registrations,
+      undefined,
+      suppressions,
+    );
+
+    expect(report.pages.find((page) => page.formId === "0x2719")).toMatchObject({
+      role: "registered-only",
+    });
   });
 });
 
@@ -299,6 +384,58 @@ describe("refreshSingleFormSetNavigation", () => {
     expect(imported).toMatchObject({
       singleFormSetNavigation: { status: "detected", hubFormId: "0x2710" },
       menu: [{ source: "ifr-hub", formId: "0x2710" }],
+    });
+  });
+
+  it("keeps a newly-hidden tab at its known position instead of moving it to the end", () => {
+    const data = hubData();
+    const hub = data.forms[0];
+    const boot = data.forms.find((form) => form.formId === "0x2718");
+    if (!boot) throw new Error("Boot form missing from fixture");
+    // Hide "Ai Tweaker" (the 3rd tab) by parking its Ref inside an
+    // existing constant-true SuppressIf scope elsewhere - exactly what
+    // applyTabVisibilityToggle does, done here by hand to isolate ordering.
+    const aiTweakerIndex = hub.children.findIndex(
+      (child) => child.type === "Ref" && child.formId === "0x2714",
+    );
+    const [aiTweakerRef] = hub.children.splice(aiTweakerIndex, 1) as [RefPrompt];
+    aiTweakerRef.conditions = ["0x99000"];
+    aiTweakerRef.suppressIf = ["0x99000"];
+    aiTweakerRef.hiddenByTabToggle = "0x99000";
+    boot.children.push(aiTweakerRef);
+    data.suppressions.push({
+      offset: "0x99000",
+      active: true,
+      start: "0x99000",
+      end: "0x99010",
+      kind: "SuppressIf",
+      constant: true,
+    });
+
+    refreshSingleFormSetNavigation(data);
+
+    const report = data.singleFormSetNavigation;
+    // Without order preservation, a fresh classification would put the
+    // now-suppressed "Ai Tweaker" last, after every other registered page -
+    // it stays 3rd, right where it always was.
+    expect(report?.pages.map((page) => page.formId)).toEqual([
+      "0x2710",
+      "0x2712",
+      "0x2713",
+      "0x2714",
+      "0x2715",
+      "0x2716",
+      "0x2717",
+      "0x2718",
+      "0x2719",
+      "0x271A",
+      "0x27E5",
+      "0x271B",
+    ]);
+    expect(report?.pages.find((page) => page.formId === "0x2714")).toMatchObject({
+      role: "suppressed-tab",
+      suppressionOffset: "0x99000",
+      parentFormIds: ["0x2718"],
     });
   });
 

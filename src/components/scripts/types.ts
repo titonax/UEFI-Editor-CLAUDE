@@ -86,6 +86,11 @@ export type AmiSingleFormSetNavigationStatus =
 export type AmiSingleFormSetPageRole =
   | "hub"
   | "direct-tab"
+  // Registered in AMITSE but its only IFR path in is a Ref sitting inside
+  // a constant-true SuppressIf scope: a tab that once was (or could again
+  // be) a direct hub child, currently parked hidden rather than genuinely
+  // unreachable (see "descendant"/"registered-only").
+  | "suppressed-tab"
   | "descendant"
   | "registered-only";
 
@@ -98,6 +103,9 @@ export interface AmiSingleFormSetPage {
   registrationOffsets: string[];
   // The hub's direct Ref opcode naming this page, for a direct tab.
   ifrReferenceOffset?: string;
+  // The constant-true SuppressIf currently hiding this page, set only for
+  // role "suppressed-tab".
+  suppressionOffset?: string;
   parentFormIds: string[];
 }
 
@@ -216,6 +224,16 @@ export interface RefPrompt extends FormChild {
   formIdOffset: string;
   targetFormSetGuid?: string;
   pageId: string | null;
+  // Set while this Ref is parked inside an existing, reused constant-true
+  // SuppressIf scope by the single-FormSet tab visibility toggle (see
+  // tabVisibility.ts) - the scope's own offset, same value as
+  // conditions[0]/suppressIf[0] while parked. Distinguishes "moved here by
+  // the toggle, which always relocates the bare opcode alone and leaves
+  // the (possibly shared, reused) wrapper in place" from every other kind
+  // of condition a Ref can carry, where the generic Move feature is
+  // allowed to bring a sole-owned wrapper along bodily. Never set for a
+  // Ref hidden by its original, pristine IFR condition.
+  hiddenByTabToggle?: string;
 }
 
 export interface NumericPrompt extends FormChild {

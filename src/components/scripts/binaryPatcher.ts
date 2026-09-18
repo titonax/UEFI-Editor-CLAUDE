@@ -73,12 +73,24 @@ export interface RefBlock {
 
 // Computes a Ref's movable block (see movableBlockStart for the guard
 // against a shared condition wrapper).
+//
+// A Ref parked by the single-FormSet tab visibility toggle (see
+// tabVisibility.ts) is always the bare opcode alone, whatever its current
+// conditions say: the SuppressIf scope it sits in is an existing, reused
+// "parking bin" that must stay exactly where it is (other hidden tabs may
+// already, or later, share it), never a wrapper this specific Ref owns and
+// carries along the way movableBlockStart's sole-owner condition does for
+// every other kind of move.
 function computeRefBlock(
   data: Data,
   form: Form,
   ref: RefPrompt,
   bytes: Uint8Array,
 ): RefBlock {
+  if (ref.hiddenByTabToggle !== undefined) {
+    const start = parseHexId(ref.sctOffset);
+    return { start, length: opcodeLength(bytes, start) };
+  }
   const start = movableBlockStart(data, form, ref);
   const conditionOffset = ref.conditions?.[0];
   if (conditionOffset !== undefined) {
@@ -112,6 +124,49 @@ export interface DetectedRefMove {
   block: RefBlock;
   sourceFormIndex: number;
   destinationFormIndex: number;
+  // Where in the destination the block lands, when it isn't simply "right
+  // before the destination Form's own closing End" - a pristine byte
+  // offset, remapped the same way every other offset is (see
+  // applyRefMoves). Set for a tab-visibility Hide (the block must stay
+  // inside the reused SuppressIf scope, so it lands right before that
+  // scope's own End, never the Form's) and, when it applies, for keeping a
+  // moved Ref next to the sibling it was inserted before in the
+  // declarative model rather than always at the very end (see
+  // stationaryDestinationAnchor).
+  destinationOffsetOverride?: number;
+}
+
+// The pristine byte offset a moved Ref should land right before, when the
+// declarative model inserted it somewhere other than the very end of its
+// destination Form's children - e.g. the tab-visibility Show toggle
+// restoring a tab next to where it used to sit (see tabVisibility.ts)
+// rather than always appending it last. Only trusted when that next
+// sibling is itself stationary (its own pristine owner is already this
+// same destination Form): an anchor that's ALSO moving in this same
+// export would need its own remapped position, which would make two
+// moves' order matter to each other - safer to fall back to appending at
+// the Form's own end (this function's `undefined`) for that rarer,
+// compound case than to get the anchor wrong.
+function stationaryDestinationAnchor(
+  data: Data,
+  destinationFormIndex: number,
+  childIndex: number,
+) {
+  const siblings = data.forms[destinationFormIndex].children;
+  if (childIndex + 1 >= siblings.length) {
+    return undefined;
+  }
+  const next = siblings[childIndex + 1];
+  if (next.type !== "Ref") {
+    return undefined;
+  }
+  const nextPristineOwner = findPristineOwnerFormIndex(
+    data,
+    parseHexId(next.sctOffset),
+  );
+  return nextPristineOwner === destinationFormIndex
+    ? parseHexId(next.sctOffset)
+    : undefined;
 }
 
 // A Ref has been moved (in the declarative `data` model, immediately on the
@@ -127,9 +182,9 @@ export function detectRefMoves(
   const moves: DetectedRefMove[] = [];
 
   data.forms.forEach((form, formIndex) => {
-    for (const child of form.children) {
+    form.children.forEach((child, childIndex) => {
       if (child.type !== "Ref") {
-        continue;
+        return;
       }
       // Decide "moved or not" from the Ref opcode's own pristine offset
       // before touching its block: the block requires a sole-owner
@@ -139,15 +194,30 @@ export function detectRefMoves(
         parseHexId(child.sctOffset),
       );
       if (pristineOwner === formIndex) {
-        continue;
+        return;
       }
+      const destinationOffsetOverride =
+        child.hiddenByTabToggle !== undefined
+          ? (() => {
+              const suppression = data.suppressions.find(
+                (candidate) => candidate.offset === child.hiddenByTabToggle,
+              );
+              if (!suppression) {
+                throw new Error(
+                  "Something went wrong. Please file a bug report on Github.",
+                );
+              }
+              return parseHexId(suppression.end);
+            })()
+          : stationaryDestinationAnchor(data, formIndex, childIndex);
       moves.push({
         ref: child,
         block: computeRefBlock(data, form, child, bytes),
         sourceFormIndex: pristineOwner,
         destinationFormIndex: formIndex,
+        destinationOffsetOverride,
       });
-    }
+    });
   });
 
   return moves.sort((left, right) => left.block.start - right.block.start);
@@ -220,7 +290,8 @@ function applyRefMoves(
     const sourceOffset = remap(move.block.start);
     const sourceEnd = sourceOffset + move.block.length;
     const destinationOffset = remap(
-      parseHexId(data.forms[move.destinationFormIndex].endOffset),
+      move.destinationOffsetOverride ??
+        parseHexId(data.forms[move.destinationFormIndex].endOffset),
     );
 
     applyMoveRotation(bytes, sourceOffset, sourceEnd, destinationOffset);
@@ -282,7 +353,8 @@ function planContainerLengthPatches(
     const source = packageContaining(packages, move.block.start);
     const destination = packageContaining(
       packages,
-      parseHexId(data.forms[move.destinationFormIndex].endOffset),
+      move.destinationOffsetOverride ??
+        parseHexId(data.forms[move.destinationFormIndex].endOffset),
     );
     if (!source || !destination) {
       throw new Error("Something went wrong. Please file a bug report on Github.");
@@ -421,9 +493,12 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
   for (const move of refMoves) {
     const sourceForm = data.forms[move.sourceFormIndex];
     const destinationForm = data.forms[move.destinationFormIndex];
-    setupSctChangeLog += `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"${
-      crossPackageMoves.has(move) ? " across HII Forms Packages" : ""
-    }\n`;
+    setupSctChangeLog +=
+      move.ref.hiddenByTabToggle !== undefined
+        ? `Hid top-level tab ${move.ref.name || "Ref"} inside an existing SuppressIf scope in "${destinationForm.name}"\n`
+        : `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"${
+            crossPackageMoves.has(move) ? " across HII Forms Packages" : ""
+          }\n`;
     wasSetupSctModified = true;
   }
 

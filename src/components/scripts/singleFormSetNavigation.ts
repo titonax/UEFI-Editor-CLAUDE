@@ -8,6 +8,7 @@ import type {
   Forms,
   Menu,
   RefPrompt,
+  Suppression,
 } from "./types";
 
 // Some later AMI Setup layouts keep every navigation page inside one HII
@@ -24,6 +25,33 @@ function formKey(formId: string, formSetGuid: string) {
 
 function refsOf(form: Form): RefPrompt[] {
   return form.children.filter((child): child is RefPrompt => child.type === "Ref");
+}
+
+// Every constant-true SuppressIf offset: a page behind one of these is not
+// currently reachable through the hub's own fan-out at all, whatever the
+// static Ref graph says - the expression never evaluates any other way.
+function constantTrueSuppressionOffsets(suppressions: Suppression[]) {
+  return new Set(
+    suppressions
+      .filter(
+        (suppression) =>
+          (suppression.kind ?? "SuppressIf") === "SuppressIf" &&
+          suppression.active &&
+          suppression.constant === true,
+      )
+      .map((suppression) => suppression.offset),
+  );
+}
+
+function suppressedBy(ref: RefPrompt, alwaysHiddenOffsets: Set<string>) {
+  return (ref.suppressIf ?? []).find((offset) => alwaysHiddenOffsets.has(offset));
+}
+
+// A Ref currently gated by a constant-true SuppressIf can never actually be
+// followed, so it plays no part in "what does the hub currently reach" -
+// neither as one of its direct tabs nor as a path to anything further down.
+function liveRefsOf(form: Form, alwaysHiddenOffsets: Set<string>) {
+  return refsOf(form).filter((ref) => suppressedBy(ref, alwaysHiddenOffsets) === undefined);
 }
 
 function formsMatching(forms: Forms, formId: string, formSetGuid: string) {
@@ -68,11 +96,11 @@ function collectRegistrations(registrations: Menu, formSetGuid: string) {
 }
 
 // Which Forms (by FormId) hold a Ref to each Form of the FormSet.
-function collectParents(forms: Forms, formSetGuid: string) {
+function collectParents(forms: Forms, formSetGuid: string, alwaysHiddenOffsets: Set<string>) {
   const parents = new Map<string, string[]>();
   for (const owner of forms) {
     if (!sameGuidOrBothUndefined(owner.formSetGuid, formSetGuid)) continue;
-    for (const ref of refsOf(owner)) {
+    for (const ref of liveRefsOf(owner, alwaysHiddenOffsets)) {
       if (!staysInFormSet(ref, owner, formSetGuid)) continue;
       const key = formKey(ref.formId, formSetGuid);
       const known = parents.get(key) ?? [];
@@ -83,21 +111,53 @@ function collectParents(forms: Forms, formSetGuid: string) {
   return parents;
 }
 
-// Every Form the hub reaches through unambiguous same-FormSet Refs.
-function collectReachable(forms: Forms, hub: Form, formSetGuid: string) {
+// Every Form the hub reaches through unambiguous, currently-live same-
+// FormSet Refs (a Ref behind a constant-true SuppressIf leads nowhere).
+function collectReachable(
+  forms: Forms,
+  hub: Form,
+  formSetGuid: string,
+  alwaysHiddenOffsets: Set<string>,
+) {
   const reachable = new Set<string>();
   const queue = [hub];
   for (let owner = queue.shift(); owner; owner = queue.shift()) {
     const key = formKey(owner.formId, formSetGuid);
     if (reachable.has(key)) continue;
     reachable.add(key);
-    for (const ref of refsOf(owner)) {
+    for (const ref of liveRefsOf(owner, alwaysHiddenOffsets)) {
       if (!staysInFormSet(ref, owner, formSetGuid)) continue;
       const targets = formsMatching(forms, ref.formId, formSetGuid);
       if (targets.length === 1) queue.push(targets[0]);
     }
   }
   return reachable;
+}
+
+// Registered pages reachable ONLY through a Ref sitting inside a constant-
+// true SuppressIf scope somewhere in the FormSet: candidates for role
+// "suppressed-tab" rather than plain "registered-only", provided exactly
+// one such Ref names them (more than one would make which scope "the"
+// suppression ambiguous).
+function collectSuppressedTargets(
+  forms: Forms,
+  formSetGuid: string,
+  alwaysHiddenOffsets: Set<string>,
+) {
+  const byTarget = new Map<string, { owner: Form; ref: RefPrompt; suppressionOffset: string }[]>();
+  for (const owner of forms) {
+    if (!sameGuidOrBothUndefined(owner.formSetGuid, formSetGuid)) continue;
+    for (const ref of refsOf(owner)) {
+      const suppressionOffset = suppressedBy(ref, alwaysHiddenOffsets);
+      if (suppressionOffset === undefined) continue;
+      if (!staysInFormSet(ref, owner, formSetGuid)) continue;
+      const key = formKey(ref.formId, formSetGuid);
+      const entries = byTarget.get(key) ?? [];
+      entries.push({ owner, ref, suppressionOffset });
+      byTarget.set(key, entries);
+    }
+  }
+  return byTarget;
 }
 
 function undetected(
@@ -124,6 +184,7 @@ export function inspectSingleFormSetNavigation(
   forms: Forms,
   amitseRegistrations: Menu,
   knownHubFormId?: string,
+  suppressions: Suppression[] = [],
 ): AmiSingleFormSetNavigationReport {
   const root = formSetRoots.length === 1 ? formSetRoots[0] : undefined;
   if (!root?.formSetGuid) {
@@ -148,8 +209,11 @@ export function inspectSingleFormSetNavigation(
         );
   }
   const hub = hubCandidates[0];
+  const alwaysHiddenOffsets = constantTrueSuppressionOffsets(suppressions);
 
-  const directRefs = refsOf(hub).filter((ref) => staysInFormSet(ref, hub, formSetGuid));
+  const directRefs = liveRefsOf(hub, alwaysHiddenOffsets).filter((ref) =>
+    staysInFormSet(ref, hub, formSetGuid),
+  );
   if (knownHubFormId === undefined && directRefs.length < 2) {
     return undetected(
       "unresolved",
@@ -181,14 +245,17 @@ export function inspectSingleFormSetNavigation(
   }
 
   const registrations = collectRegistrations(amitseRegistrations, formSetGuid);
-  const parents = collectParents(forms, formSetGuid);
-  const reachable = collectReachable(forms, hub, formSetGuid);
+  const parents = collectParents(forms, formSetGuid, alwaysHiddenOffsets);
+  const reachable = collectReachable(forms, hub, formSetGuid, alwaysHiddenOffsets);
+  const suppressedTargets = collectSuppressedTargets(forms, formSetGuid, alwaysHiddenOffsets);
   const pages: AmiSingleFormSetPage[] = [];
   const addPage = (
     form: Form,
     role: AmiSingleFormSetPageRole,
     displayName: string,
     ifrReferenceOffset?: string,
+    parentFormIds?: string[],
+    suppressionOffset?: string,
   ) => {
     const key = formKey(form.formId, formSetGuid);
     const registration = registrations.get(key);
@@ -200,7 +267,8 @@ export function inspectSingleFormSetNavigation(
       registeredInAmitse: registration !== undefined,
       registrationOffsets: registration?.offsets ?? [],
       ifrReferenceOffset,
-      parentFormIds: parents.get(key) ?? [],
+      suppressionOffset,
+      parentFormIds: parentFormIds ?? parents.get(key) ?? [],
     });
   };
 
@@ -213,6 +281,25 @@ export function inspectSingleFormSetNavigation(
     if (represented.has(key)) continue;
     const targets = formsMatching(forms, registration.formId, formSetGuid);
     if (targets.length !== 1) continue;
+    // A page reachable ONLY through one constant-true-SuppressIf-guarded
+    // Ref (not also through some other, live path) is a suppressed tab:
+    // AMITSE still knows it as a page, and exactly one hidden Ref proves
+    // where it currently sits, but nothing live reaches it right now.
+    const suppressed = (suppressedTargets.get(key) ?? []).filter(
+      ({ owner }) => formKey(owner.formId, formSetGuid) !== key,
+    );
+    if (!reachable.has(key) && suppressed.length === 1) {
+      const [{ owner, ref, suppressionOffset }] = suppressed;
+      addPage(
+        targets[0],
+        "suppressed-tab",
+        registration.name || ref.name || targets[0].name,
+        ref.sctOffset,
+        [owner.formId],
+        suppressionOffset,
+      );
+      continue;
+    }
     addPage(
       targets[0],
       reachable.has(key) ? "descendant" : "registered-only",
@@ -222,15 +309,16 @@ export function inspectSingleFormSetNavigation(
 
   const tabs = pages.filter((page) => page.role === "direct-tab");
   const corroboratedTabs = tabs.filter((page) => page.registeredInAmitse).length;
+  const suppressedTabs = pages.filter((page) => page.role === "suppressed-tab").length;
   const registeredNonTabs = pages.filter(
-    (page) => page.registeredInAmitse && page.role !== "direct-tab",
+    (page) => page.registeredInAmitse && page.role !== "direct-tab" && page.role !== "suppressed-tab",
   ).length;
   return {
     status: "detected",
     mechanism: "single-formset-ifr-hub",
     confidence:
       tabs.length > 0 && corroboratedTabs === tabs.length ? "corroborated" : "ifr-only",
-    reason: `The FormSet entry ${hub.name || hub.formId} (${hub.formId}) is the IFR navigation hub: ${String(tabs.length)} direct Ref${tabs.length === 1 ? "" : "s"} define the current top-level tabs. AMITSE corroborates ${String(corroboratedTabs)} of them and contains ${String(registeredNonTabs)} registered non-tab page${registeredNonTabs === 1 ? "" : "s"}; registration alone is not treated as tab visibility.`,
+    reason: `The FormSet entry ${hub.name || hub.formId} (${hub.formId}) is the IFR navigation hub: ${String(tabs.length)} direct Ref${tabs.length === 1 ? "" : "s"} define the current top-level tabs.${suppressedTabs > 0 ? ` ${String(suppressedTabs)} registered page${suppressedTabs === 1 ? " is" : "s are"} currently parked inside a constant-true SuppressIf scope.` : ""} AMITSE corroborates ${String(corroboratedTabs)} of the current tabs and contains ${String(registeredNonTabs)} other registered page${registeredNonTabs === 1 ? "" : "s"}; registration alone is not treated as tab visibility.`,
     formSetGuid,
     hubFormId: hub.formId,
     hubName: hub.name || root.name,
@@ -268,6 +356,36 @@ function registrationsFromReport(report: AmiSingleFormSetNavigationReport): Menu
   );
 }
 
+// Keeps the inventory's row order stable across a re-classification: a
+// page keeps the position it had in `evidence` (the last-known report)
+// when it is still present, in that same relative order; a page that is
+// genuinely new (never seen before) falls in after all the known ones, in
+// whatever order the fresh classification produced it. Without this, a
+// single Hide/Show toggle would otherwise reshuffle the whole tab list
+// every time, since freshly-hidden or freshly-shown pages change which
+// role bucket (and therefore which pass of `inspectSingleFormSetNavigation`)
+// produces them.
+function preserveKnownPageOrder(
+  report: AmiSingleFormSetNavigationReport,
+  evidence: AmiSingleFormSetNavigationReport,
+) {
+  if (report.status !== "detected" || evidence.status !== "detected") return;
+  const previousOrder = new Map(
+    evidence.pages.map((page, index) => [formKey(page.formId, page.formSetGuid), index]),
+  );
+  report.pages = report.pages
+    .map((page, naturalIndex) => ({ page, naturalIndex }))
+    .sort((left, right) => {
+      const leftOrder = previousOrder.get(formKey(left.page.formId, left.page.formSetGuid));
+      const rightOrder = previousOrder.get(formKey(right.page.formId, right.page.formSetGuid));
+      if (leftOrder !== undefined && rightOrder !== undefined) return leftOrder - rightOrder;
+      if (leftOrder !== undefined) return -1;
+      if (rightOrder !== undefined) return 1;
+      return left.naturalIndex - right.naturalIndex;
+    })
+    .map(({ page }) => page);
+}
+
 // Rebuilds the tab inventory from the current IFR graph, keeping the
 // AMITSE evidence of `evidence` (the report of the firmware that is open).
 // Called after every Ref move and after a data.json import; a hub layout
@@ -295,7 +413,9 @@ export function refreshSingleFormSetNavigation(
     data.forms,
     registrationsFromReport(evidence),
     evidence.status === "detected" ? evidence.hubFormId : undefined,
+    data.suppressions,
   );
+  preserveKnownPageOrder(report, evidence);
   data.singleFormSetNavigation = report;
   const menu = singleFormSetHubMenu(report);
   if (menu.length > 0) data.menu = menu;
