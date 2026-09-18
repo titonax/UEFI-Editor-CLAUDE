@@ -24,8 +24,10 @@ it against 14 images from five vendors and two Aptio generations.
 | `E7B09AMS.1C0` / `.1D9` | Gigabyte (AM5) | V | 948 / 953 |
 | `X399AG7.F12`, `X399AORUSGaming7.F13d`, `X399TC3.90`, `X399TC4.03` | Gigabyte X399 (four boards) | V | 573–663 each |
 | `image1.bin`, `image2.bin`, `image3.bin` | (unlabeled Aptio V, intel-flash) | V | ~3,835 each |
+| `AmericanMegatrendsInc.-P10AAA.047.140617.rom`, `BOA_8005.BIN`, `E7752IMS.2B0`, `E7893AMS.140`, `K01_0308.BIN`, `K56CBAS.205`, `L01_0278.BIN`, `P8H77-M-PRO-ASUS-1505.CAP`, `Rampage-IV-Extreme-ASUS-4901.CAP`, `SABERTOOTH-Z97-MARK-1-ASUS-2702.CAP`, `X79GA00O_fulldump.bin`, `Z68XPUD4.U1L`, `bios.bin` | 12 more IV boards (AMI reference, Biostar, Gigabyte, MSI, ASUS ×3, AAEON, unlabeled ×2) | IV | 504–2,518 each |
+| `ROG-ZENITH-EXTREME-ASUS-2601.CAP` | ASUS ROG Zenith Extreme | V (single-FormSet hub, despite arriving in an "Aptio IV" batch - correctly told apart, see below) | 1,546 |
 
-33,551 matched question records total.
+53,411 matched question records total, 28 images.
 
 ## Why the Show/Hide reading does not hold up
 
@@ -54,13 +56,16 @@ readings, so neither is reported as a verdict.
 
 | Value | Count | Bits set |
 | --- | ---: | --- |
-| 0x09 | 21,956 | 0, 3 |
-| 0x01 | 8,751 | 0 |
-| 0x29 | 2,182 | 0, 3, 5 |
-| 0x21 | 625 | 0, 5 |
+| 0x09 | 36,797 | 0, 3 |
+| 0x01 | 11,943 | 0 |
+| 0x29 | 3,240 | 0, 3, 5 |
+| 0x21 | 1,390 | 0, 5 |
 | 0x49 | 35 | 0, 3, 6 |
 | 0x41 | 1 | 0, 6 |
 | 0x11 | 1 | 0, 4 |
+| 0x05 | 2 | 0, 2 |
+| 0x0D | 1 | 0, 2, 3 |
+| 0x2D | 1 | 0, 2, 3, 5 |
 
 - **Bit 0**: always set (see above).
 - **Bit 3**: set on interactive questions (OneOf, CheckBox, most Numerics),
@@ -69,6 +74,10 @@ readings, so neither is reported as a verdict.
 - **Bit 5**: appears on items with dynamic content - HDD security entries,
   Secure Boot state and key actions, System Information, fan tuning,
   storage ports, OC profiles - across several boards. Same caveat as bit 3.
+- **Bit 2**: seen only on one older board (`X79GA00O_fulldump.bin`, a Sandy
+  Bridge-E/X79 image): `Performance Tuning` and `North Bridge Configuration`
+  (both `Ref`s, so not the bit-3 "interactive" pattern) and `ACPI Sleep
+  State` / `Performance Memory Profiles`. No interpretation.
 - **Bits 4 and 6**: one occurrence each in the whole corpus (a Secure Boot
   mode selector and a GT power option), with no interpretation at all.
 
