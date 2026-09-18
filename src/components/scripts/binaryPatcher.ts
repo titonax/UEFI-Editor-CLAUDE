@@ -497,14 +497,13 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
   for (const move of refMoves) {
     const sourceForm = data.forms[move.sourceFormIndex];
     const destinationForm = data.forms[move.destinationFormIndex];
+    const crossPackageSuffix = crossPackageMoves.has(move) ? " across HII Forms Packages" : "";
     setupSctChangeLog +=
       move.ref.hiddenByTabToggle !== undefined
-        ? `Hid top-level tab ${move.ref.name || "Ref"} inside an existing SuppressIf scope in "${destinationForm.name}"\n`
+        ? `Hid top-level tab ${move.ref.name || "Ref"} inside an existing SuppressIf scope in "${destinationForm.name}"${crossPackageSuffix}\n`
         : sourceForm === destinationForm
           ? `Showed top-level tab ${move.ref.name || "Ref"} back on "${destinationForm.name}"\n`
-          : `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"${
-              crossPackageMoves.has(move) ? " across HII Forms Packages" : ""
-            }\n`;
+          : `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"${crossPackageSuffix}\n`;
     wasSetupSctModified = true;
   }
 
