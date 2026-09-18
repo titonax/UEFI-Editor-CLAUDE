@@ -141,10 +141,12 @@ reconstruction path can rewrite.
 The header names the loaded firmware (the image, or the Setup file in
 four-file mode) next to the breadcrumb of the page you are on.
 
-The Access Level byte is really AMI's SetupData control flag byte; its
-tooltip decodes it, and an item whose bit 0 is clear is reported as hidden by
-SetupData (the switch AMIBCP shows as Show/Hide). See
-[`docs/ami/setupdata-control-flags.md`](docs/ami/setupdata-control-flags.md).
+The Access Level byte is really AMI's SetupData control flag byte, not a
+level; its tooltip decodes the bits that are set. Across 14 reference images
+no bit correlates with whether an item is actually hidden - see
+[`docs/ami/setupdata-control-flags.md`](docs/ami/setupdata-control-flags.md)
+for the evidence - so it is shown for reference only and never drives the
+HII effect column.
 
 `data.json` round-trips the whole session, pending plans included. A
 re-uploaded file is validated against the loaded firmware's hashes, its

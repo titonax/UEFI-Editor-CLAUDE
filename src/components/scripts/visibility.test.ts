@@ -342,26 +342,3 @@ describe("summarizeFormBranch", () => {
     expect(summary.branchSources.hardware).toBe(1);
   });
 });
-
-describe("childVisibility with SetupData control flags", () => {
-  it("reports a clear bit 0 as hidden by SetupData when no IFR gate applies", () => {
-    const data = makeData();
-    const hidden = childVisibility(data, makeCheckBox({ accessLevel: "08" }));
-    expect(hidden).toMatchObject({ status: "hidden", gate: "setupdata", label: "Hidden by SetupData flags" });
-    expect(hidden.explanation).toContain("0x08: interactive");
-
-    const shown = childVisibility(data, makeCheckBox({ accessLevel: "09" }));
-    expect(shown.status).toBe("visible");
-    expect(shown.explanation).toContain("SetupData control flags 0x09: shown, interactive");
-  });
-
-  it("lets an IFR SuppressIf take precedence over the SetupData flag", () => {
-    const data = makeData({
-      suppressions: [
-        { offset: "0x10", active: true, start: "0x12", end: "0x20", kind: "SuppressIf", constant: true, expression: "True", source: "constant" },
-      ],
-    });
-    const info = childVisibility(data, makeCheckBox({ accessLevel: "08", conditions: ["0x10"], suppressIf: ["0x10"] }));
-    expect(info.gate).toBe("suppression");
-  });
-});

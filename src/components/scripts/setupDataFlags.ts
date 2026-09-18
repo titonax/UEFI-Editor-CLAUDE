@@ -1,61 +1,70 @@
 // The AMI SetupData byte this app has always exposed as "Access Level" (see
 // setupData.ts, record offset +16) is a control flag byte, not a level.
-// Across the three reference images (HP IPISB-CH2, ASUS ROG STRIX Z390-E,
-// Intel NUC 10) it takes only the values 0x01, 0x09, 0x21, 0x29 and 0x49:
-// bit 0 is set on every one of the 9,209 records, bit 3 on interactive
-// questions (OneOf/CheckBox/Numeric) but never on a plain Ref, bit 5 on
-// items with dynamic content (HDD security entries, Secure Boot state,
-// System Information, fan tuning, storage ports) and bit 6 once. That
-// matches the AMITSE control-flag layout, whose first bit is the control's
-// visibility - the switch AMIBCP presents as Show/Hide - so a clear bit 0
-// is reported as a SetupData-level hide. No reference image clears it, so
-// that verdict is evidence-based but unconfirmed on hardware. Bits 5 and 6
-// are named tentatively.
+//
+// Across 14 reference images (HP IPISB-CH2, ASUS PRIME Z370-P and ROG
+// STRIX Z390-E, Intel NUC 10 FNCML357, Supermicro H12SSL, Gigabyte
+// E7B09AMS x2, Gigabyte X399 AORUS/Designare/Taichi x4, and three more
+// Aptio V images) it takes only 0x01, 0x09, 0x11, 0x21, 0x29, 0x41 and
+// 0x49, over 33,551 matched records:
+//
+//   value  count   bits set
+//   0x09   21,956  0,3
+//   0x01    8,751  0
+//   0x29    2,182  0,3,5
+//   0x21      625  0,5
+//   0x49       35  0,3,6
+//   0x41        1  0,6
+//   0x11        1  0,4
+//
+// Bit 0 is set on every single record - no counter-example anywhere in the
+// corpus. An earlier version of this file read that as the AMITSE
+// control-flag layout's own visibility bit (AMIBCP's Show/Hide switch) and
+// reported a clear bit 0 as a SetupData-level hide. Two things argue
+// against that reading and it has been withdrawn:
+//
+// 1. It never fires: not one of 33,551 records clears it, across boards
+//    from five different vendors and two Aptio generations.
+// 2. It does not separate known cases either way. The Intel NUC 10 image
+//    has five AMI reference pages under the Setup hub, four of them always
+//    hidden by a constant-true SuppressIf and one with no hide at all; none
+//    of bit 0 (always set) or any other record byte checked (offsets 4, 8,
+//    22, 30, 44, 46 - the only ones with non-degenerate, non-identifier-
+//    like variance) separates the hidden group from the visible one. Those
+//    bytes instead track the control's own type/kind, not its page's
+//    visibility.
+//
+// A record's own "valid entry" marker is at least as plausible a reading
+// of a bit that is unconditionally set on every anchor-matched record:
+// every question the IFR compiler emits presumably gets a populated
+// SetupData record regardless of whether anything currently hides it, so
+// bit 0 could just mean "this slot is in use." Nothing in the corpus
+// distinguishes the two readings.
+//
+// Bits 3 (interactive questions - OneOf/CheckBox/Numeric - never a plain
+// Ref) and 5 (items with dynamic content: HDD security entries, Secure
+// Boot state and key actions, System Information, fan tuning, storage
+// ports, OC profiles) are corroborated only by co-occurrence with control
+// type, not by any visibility check, and bits 4 and 6 are single
+// occurrences with no interpretation at all. None of this is exposed as a
+// verdict; decodeControlFlags is purely informational.
 
 export interface SetupDataControlFlags {
   value: number;
-  shown: boolean;
-  interactive: boolean;
-  refreshOrAccess: boolean;
-  unresolved: number[];
+  bits: number[];
 }
-
-const KNOWN_BITS = new Map<number, string>([
-  [0, "shown"],
-  [3, "interactive"],
-  [5, "refresh / access (tentative)"],
-]);
 
 export function decodeControlFlags(accessLevel: string | null): SetupDataControlFlags | null {
   if (accessLevel === null || !/^[0-9a-f]{1,2}$/i.test(accessLevel)) return null;
   const value = Number.parseInt(accessLevel, 16);
-  const unresolved: number[] = [];
+  const bits: number[] = [];
   for (let bit = 0; bit < 8; bit++) {
-    if ((value & (1 << bit)) !== 0 && !KNOWN_BITS.has(bit)) unresolved.push(bit);
+    if ((value & (1 << bit)) !== 0) bits.push(bit);
   }
-  return {
-    value,
-    shown: (value & 0x01) !== 0,
-    interactive: (value & 0x08) !== 0,
-    refreshOrAccess: (value & 0x20) !== 0,
-    unresolved,
-  };
-}
-
-// True when SetupData itself keeps the control off the page (bit 0 clear).
-export function hiddenBySetupData(accessLevel: string | null) {
-  const flags = decodeControlFlags(accessLevel);
-  return flags !== null && !flags.shown;
+  return { value, bits };
 }
 
 export function describeControlFlags(accessLevel: string | null) {
   const flags = decodeControlFlags(accessLevel);
   if (!flags) return "No SetupData control record was matched for this item.";
-  const parts = [...KNOWN_BITS]
-    .filter(([bit]) => (flags.value & (1 << bit)) !== 0)
-    .map(([, name]) => name);
-  if (flags.unresolved.length > 0) {
-    parts.push(`bit${flags.unresolved.length === 1 ? "" : "s"} ${flags.unresolved.join(", ")} (unresolved)`);
-  }
-  return `SetupData control flags 0x${accessLevel ?? ""}: ${parts.length > 0 ? parts.join(", ") : "no flag set"}. Bit 0 is the Show/Hide switch; clearing it hides the item in SetupData without touching the IFR.`;
+  return `SetupData control flags 0x${accessLevel ?? ""}: bit${flags.bits.length === 1 ? "" : "s"} ${flags.bits.join(", ")} set. This byte's meaning is not established - see docs/ami/setupdata-control-flags.md - and is reported for reference only.`;
 }

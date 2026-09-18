@@ -1,5 +1,5 @@
 import { findFormIndexByFormId } from "./hexId";
-import { describeControlFlags, hiddenBySetupData } from "./setupDataFlags";
+import { describeControlFlags } from "./setupDataFlags";
 import type {
   ConditionSource,
   Data,
@@ -10,7 +10,7 @@ import type {
 
 export interface VisibilityInfo {
   status: VisibilityStatus;
-  gate: "none" | "suppression" | "setupdata" | "availability";
+  gate: "none" | "suppression" | "availability";
   label: string;
   explanation: string;
   conditions: Suppression[];
@@ -86,21 +86,6 @@ export function childVisibility(
       explanation: alwaysHidden
         ? "The IFR contains an always-true SuppressIf gate, so this item is hidden."
         : "SuppressIf is a real HII hiding gate. The item is hidden whenever the displayed expression evaluates to true; its current runtime value is not stored in the firmware image.",
-      conditions,
-      hardwareDependent,
-      accessDependent,
-      uiStateDependent,
-    };
-  }
-
-  // SetupData's own Show/Hide switch (see setupDataFlags.ts): reported
-  // after the IFR gates, which the firmware evaluates first anyway.
-  if (hiddenBySetupData(child.accessLevel)) {
-    return {
-      status: "hidden",
-      gate: "setupdata",
-      label: "Hidden by SetupData flags",
-      explanation: `${describeControlFlags(child.accessLevel)} This is the SetupData-level hide, not an IFR condition; it is evidence-based and not yet confirmed on hardware.`,
       conditions,
       hardwareDependent,
       accessDependent,
