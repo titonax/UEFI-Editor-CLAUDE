@@ -30,7 +30,11 @@ function refsOf(form: Form): RefPrompt[] {
 // Every constant-true SuppressIf offset: a page behind one of these is not
 // currently reachable through the hub's own fan-out at all, whatever the
 // static Ref graph says - the expression never evaluates any other way.
-function constantTrueSuppressionOffsets(suppressions: Suppression[]) {
+// Exported so the tab visibility toggle (FormUi/tabVisibility.ts) and the
+// generic Move dialog (Navigation/relocating.ts) can recognize a Ref parked
+// in one of these scopes purely from its current, byte-derivable condition -
+// never from a session-only flag that a fresh parse can't reconstruct.
+export function constantTrueSuppressionOffsets(suppressions: Suppression[]) {
   return new Set(
     suppressions
       .filter(

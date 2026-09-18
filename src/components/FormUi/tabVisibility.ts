@@ -1,5 +1,8 @@
 import { sameGuidOrBothUndefined, sameHexId } from "../scripts/hexId";
-import { refreshSingleFormSetNavigation } from "../scripts/singleFormSetNavigation";
+import {
+  constantTrueSuppressionOffsets,
+  refreshSingleFormSetNavigation,
+} from "../scripts/singleFormSetNavigation";
 import type {
   AmiSingleFormSetNavigationReport,
   AmiSingleFormSetPage,
@@ -15,9 +18,18 @@ import { movableNodeForPage } from "./tabPlacement";
 // HII resize) it reuses an existing, already-active constant-true SuppressIf
 // scope elsewhere in the FormSet as a "parking bin" for the bare Ref opcode.
 // Hide moves the Ref into that scope; Show moves it back to the hub. Both are
-// fixed-size - see hiddenByTabToggle on RefPrompt and computeRefBlock/
-// detectRefMoves in binaryPatcher.ts for how the actual byte relocation
-// mirrors the generic Move feature's own machinery.
+// fixed-size - see computeRefBlock/detectRefMoves in binaryPatcher.ts for how
+// the actual byte relocation mirrors the generic Move feature's own
+// machinery.
+//
+// Show's own availability is read straight from the Ref's current
+// conditions/suppressIf against data.suppressions - the same live evidence
+// that earns a page the "suppressed-tab" role in the first place - never
+// from RefPrompt.hiddenByTabToggle. That marker only exists to steer Hide's
+// own export-time byte computation around the generic Move feature's sole-
+// owner rule (see computeRefBlock); it is never set by a parse and does not
+// survive one, so anything Show depends on to work again after reopening an
+// exported file (or a data.json missing the marker) must not need it.
 
 export type TabVisibilityDirection = "hide" | "show";
 
@@ -81,7 +93,7 @@ function findVisibilityHost(
     const alreadyParksTarget = host.children.some(
       (child) =>
         child.type === "Ref" &&
-        child.hiddenByTabToggle === suppression.offset &&
+        child.conditions?.[0] === suppression.offset &&
         sameHexId(child.formId, targetFormId) &&
         sameGuidOrBothUndefined(child.targetFormSetGuid ?? host.formSetGuid, targetFormSetGuid),
     );
@@ -170,10 +182,14 @@ export function analyzeTabVisibilityToggle(
     };
   }
 
-  if (ref.hiddenByTabToggle === undefined) {
+  const suppressionOffset = ref.conditions?.[0];
+  if (
+    suppressionOffset === undefined ||
+    !constantTrueSuppressionOffsets(data.suppressions).has(suppressionOffset)
+  ) {
     return {
       available: false,
-      reason: "This Ref isn't currently parked by the tab visibility toggle.",
+      reason: "This Ref isn't currently parked inside a constant-true SuppressIf scope.",
       ...located,
     };
   }
@@ -231,12 +247,15 @@ function orderPreservingIndex(
 }
 
 // Applies a Hide or Show toggle to the declarative model in place: Hide
-// splices the hub's Ref out and parks it (with hiddenByTabToggle set) at the
-// end of an existing reused SuppressIf scope's Form; Show clears that
-// marker and splices the Ref back into the hub at an order-preserving
-// position. Callers must pass the exact location analyzeTabVisibilityToggle
-// resolved - this never re-derives it, so it never silently acts on a
-// different Ref than the one the availability check reasoned about.
+// splices the hub's Ref out and parks it (with hiddenByTabToggle set, purely
+// to steer computeRefBlock's export-time bare-opcode decision around the
+// generic Move feature's sole-owner rule - see the file header) at the end
+// of an existing reused SuppressIf scope's Form; Show verifies the Ref's
+// current condition is still an active constant-true SuppressIf, then clears
+// it and splices the Ref back into the hub at an order-preserving position.
+// Callers must pass the exact location analyzeTabVisibilityToggle resolved -
+// this never re-derives it, so it never silently acts on a different Ref
+// than the one the availability check reasoned about.
 export function applyTabVisibilityToggle(
   draft: Data,
   hubFormIndex: number,
@@ -267,7 +286,12 @@ export function applyTabVisibilityToggle(
   } else {
     const source = draft.forms[sourceFormIndex];
     const ref = source.children[childIndex];
-    if (ref.type !== "Ref" || ref.hiddenByTabToggle === undefined) {
+    const suppressionOffset = ref.type === "Ref" ? ref.conditions?.[0] : undefined;
+    if (
+      ref.type !== "Ref" ||
+      suppressionOffset === undefined ||
+      !constantTrueSuppressionOffsets(draft.suppressions).has(suppressionOffset)
+    ) {
       throw new Error("Something went wrong. Please file a bug report on Github.");
     }
     const navigation = draft.singleFormSetNavigation;

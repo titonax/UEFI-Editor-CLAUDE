@@ -125,13 +125,19 @@ without any HII resize:
   which case it falls back to the hub's own end.
 
 Both directions are fixed-size and share their byte-relocation machinery with
-the generic Move feature. What distinguishes a toggle-hidden Ref from one
-hidden by an ordinary pristine condition is `RefPrompt.hiddenByTabToggle`, a
-session-only marker: a parked Ref is byte-for-byte indistinguishable from any
-other Ref sharing that scope, so nothing in a fresh parse can recover it.
-Show is therefore only available for a tab hidden earlier in the same
-session, or reloaded from a `data.json` export that still carries the
-marker - not after re-extracting a downloaded binary from scratch. The
-generic Move dialog refuses a toggle-hidden Ref outright and points at Show
-instead: moving only the bare opcode away from a scope it doesn't own would
-either strand the scope hiding whatever lands there next, or leave it empty.
+the generic Move feature. Show's own availability, and the byte-safe bare-
+opcode relocation it performs, are read straight from the Ref's current
+condition against `data.suppressions` - the same live, byte-derivable
+evidence that earns a page the `suppressed-tab` role in the first place -
+so Show keeps working for a tab hidden in an earlier session after
+reopening an exported binary from scratch or a `data.json` that never
+carried any toggle-specific marker, exactly like the role classification
+itself does. `RefPrompt.hiddenByTabToggle` exists only to steer Hide's own
+export-time byte computation for the one export cycle between clicking Hide
+and downloading: it tells the generic Move feature's sole-owner rule to
+stand aside for this specific relocation, since a parked Ref sharing its
+scope with another Ref would otherwise be refused as unmovable. The generic
+Move dialog refuses a Ref currently sharing a live constant-true `SuppressIf`
+scope outright - with or without that marker - and points at Show instead:
+moving only the bare opcode away from a scope it doesn't own would either
+strand the scope hiding whatever lands there next, or leave it empty.

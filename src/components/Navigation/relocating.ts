@@ -5,7 +5,10 @@ import {
   type HiiFormsPackage,
 } from "../scripts/hiiPackages";
 import { isSoleOwnerOfCondition, movableBlockStart } from "../scripts/refMoving";
-import { refreshSingleFormSetNavigation } from "../scripts/singleFormSetNavigation";
+import {
+  constantTrueSuppressionOffsets,
+  refreshSingleFormSetNavigation,
+} from "../scripts/singleFormSetNavigation";
 import type { Data } from "../scripts/types";
 import { resolveRefTarget, wouldCreateCycle, type RefLocation } from "./reparenting";
 
@@ -36,7 +39,17 @@ function moveBlocker(
 ): string | null {
   const sourceForm = data.forms[location.sourceFormIndex];
   const ref = location.ref;
-  if (ref.hiddenByTabToggle !== undefined) {
+  // hiddenByTabToggle only survives within the session that set it (see its
+  // comment on RefPrompt) - a Ref the tab visibility toggle parked earlier,
+  // reopened from an export or a data.json missing that marker, is still
+  // recognizable the same way the toggle's own Show button recognizes it:
+  // sharing an active constant-true SuppressIf scope with something else.
+  if (
+    ref.hiddenByTabToggle !== undefined ||
+    (!isSoleOwnerOfCondition(sourceForm, ref) &&
+      ref.conditions?.[0] !== undefined &&
+      constantTrueSuppressionOffsets(data.suppressions).has(ref.conditions[0]))
+  ) {
     return "This item is currently hidden by the top-level tab visibility toggle; use Show to restore it to the navigation hub before moving it elsewhere.";
   }
   if (!isSoleOwnerOfCondition(sourceForm, ref)) {

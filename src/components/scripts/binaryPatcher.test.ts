@@ -411,9 +411,12 @@ describe("downloadModifiedFiles", () => {
   it("shows a previously-hidden tab back on the hub, appending it at the hub's own end", async () => {
     // Starts from the pristine shape a fresh parse would produce for a tab
     // a previous session already hid: the Ref's bytes already sit inside
-    // Chipset's SuppressIf scope, sharing it with the seed. hiddenByTabToggle
-    // is set by hand afterward - see buildTabVisibilityFixture's comment on
-    // why a parse alone can never recover it.
+    // Chipset's SuppressIf scope, sharing it with the seed, and
+    // hiddenByTabToggle is never set - a parse alone can never recover it
+    // (see its comment on RefPrompt). applyTabVisibilityToggle's Show reads
+    // the Ref's live conditions/suppressIf instead, so this is exactly what
+    // it acts on when a tab hidden in an earlier session is shown again
+    // after reopening an export or a data.json missing that marker.
     const { bytes, data, offsets } = buildTabVisibilityFixture({ alreadyHidden: true });
     const hub = data.forms[0];
     const chipset = data.forms[1];
@@ -421,15 +424,8 @@ describe("downloadModifiedFiles", () => {
       (child) => child.type === "Ref" && child.formId === "0x2",
     );
     const [shown] = chipset.children.splice(parkedIndex, 1) as [RefPrompt];
-    // applyTabVisibilityToggle requires hiddenByTabToggle set on entry (the
-    // precondition proving this Ref is actually parked by the toggle) but
-    // clears it, along with the condition, before splicing the Ref back
-    // into the hub - a shown Ref must never carry destinationOffsetOverride
-    // toward the scope it just left.
-    shown.hiddenByTabToggle = data.suppressions[0].offset;
     delete shown.conditions;
     delete shown.suppressIf;
-    delete shown.hiddenByTabToggle;
     hub.children.push(shown);
     const files = moveFixtureFiles(bytes);
 

@@ -80,8 +80,27 @@ describe("analyzeMoveDestinations", () => {
     );
   });
 
-  it("blocks every destination for a Ref sharing its condition with a sibling", () => {
+  it("recognizes a Ref sharing a live constant-true SuppressIf as toggle-shaped, even without hiddenByTabToggle", () => {
+    // A Ref sharing an active, constant-true SuppressIf scope with a
+    // sibling is exactly what the tab visibility toggle's Show button
+    // itself looks for (see tabVisibility.ts) - indistinguishable from a
+    // toggle-hidden tab reopened without the session-only marker, so the
+    // same "use Show" refusal applies whether or not that marker survived.
     const { bytes, data } = buildMoveFixture({ explicitTargetGuid: true, hiddenRef: true });
+    const ref = data.forms[0].children[0] as RefPrompt;
+    data.forms[0].children.push({ ...ref, questionId: "0x0002", formId: "0x2" });
+
+    const results = analyzeMoveDestinations(data, buildRefLocation(data, 0, 0), bytes);
+
+    expect(results.every((result) => result.compatibility === "unavailable")).toBe(true);
+    expect(results[2].reason).toBe(
+      "This item is currently hidden by the top-level tab visibility toggle; use Show to restore it to the navigation hub before moving it elsewhere.",
+    );
+  });
+
+  it("blocks every destination for a Ref sharing a non-constant-true condition with a sibling", () => {
+    const { bytes, data } = buildMoveFixture({ explicitTargetGuid: true, hiddenRef: true });
+    data.suppressions[0].constant = false;
     const ref = data.forms[0].children[0] as RefPrompt;
     data.forms[0].children.push({ ...ref, questionId: "0x0002", formId: "0x2" });
 

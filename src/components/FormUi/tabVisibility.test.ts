@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildMenuTree } from "../Navigation/menuTree";
 import {
   inspectSingleFormSetNavigation,
+  refreshSingleFormSetNavigation,
   singleFormSetHubMenu,
 } from "../scripts/singleFormSetNavigation";
 import type { AmiSingleFormSetPage, Data, Form, Menu, RefPrompt, Suppression } from "../scripts/types";
@@ -300,6 +301,46 @@ describe("applyTabVisibilityToggle", () => {
     expect(restored?.conditions).toBeUndefined();
     expect(restored?.suppressIf).toBeUndefined();
     expect(restored?.hiddenByTabToggle).toBeUndefined();
+    expect(findPage(data, "0x2725").role).toBe("direct-tab");
+  });
+
+  it("shows a tab hidden in an earlier session, even though a fresh parse never sets hiddenByTabToggle", () => {
+    // Simulates reopening an export (or a data.json) from a session that
+    // already hid Advanced: its Ref sits in Chipset sharing the seed's
+    // constant-true SuppressIf, exactly what a real parse would produce -
+    // hiddenByTabToggle itself is never part of that, see its comment on
+    // RefPrompt.
+    const data = hubData();
+    const hub = data.forms[HUB_FORM_INDEX];
+    const chipset = data.forms.find((form) => form.formId === "0x2721");
+    if (!chipset) throw new Error("Chipset form missing from fixture");
+    const advancedIndex = hub.children.findIndex(
+      (child) => child.type === "Ref" && child.formId === "0x2725",
+    );
+    const [advancedRef] = hub.children.splice(advancedIndex, 1) as [RefPrompt];
+    advancedRef.conditions = ["0x9000"];
+    advancedRef.suppressIf = ["0x9000"];
+    chipset.children.push(advancedRef);
+    refreshSingleFormSetNavigation(data);
+    expect(advancedRef.hiddenByTabToggle).toBeUndefined();
+
+    const suppressed = findPage(data, "0x2725");
+    expect(suppressed.role).toBe("suppressed-tab");
+    const show = analyzeTabVisibilityToggle(
+      data,
+      buildMenuTree(data),
+      suppressed,
+      "show",
+      HUB_FORM_INDEX,
+    );
+    expect(show.available).toBe(true);
+    if (show.sourceFormIndex === undefined || show.childIndex === undefined) {
+      throw new Error("Suppressed tab did not resolve to a location");
+    }
+
+    applyTabVisibilityToggle(data, HUB_FORM_INDEX, show.sourceFormIndex, show.childIndex, "show");
+
+    expect(hub.children.map((child) => (child as RefPrompt).formId)).toContain("0x2725");
     expect(findPage(data, "0x2725").role).toBe("direct-tab");
   });
 });

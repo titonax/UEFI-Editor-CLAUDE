@@ -224,15 +224,21 @@ export interface RefPrompt extends FormChild {
   formIdOffset: string;
   targetFormSetGuid?: string;
   pageId: string | null;
-  // Set while this Ref is parked inside an existing, reused constant-true
-  // SuppressIf scope by the single-FormSet tab visibility toggle (see
-  // tabVisibility.ts) - the scope's own offset, same value as
-  // conditions[0]/suppressIf[0] while parked. Distinguishes "moved here by
-  // the toggle, which always relocates the bare opcode alone and leaves
-  // the (possibly shared, reused) wrapper in place" from every other kind
-  // of condition a Ref can carry, where the generic Move feature is
-  // allowed to bring a sole-owned wrapper along bodily. Never set for a
-  // Ref hidden by its original, pristine IFR condition.
+  // Set for one export cycle, from the moment the single-FormSet tab
+  // visibility toggle's Hide parks this Ref inside an existing, reused
+  // constant-true SuppressIf scope (see tabVisibility.ts) until the next
+  // export or Show - the scope's own offset, same value as
+  // conditions[0]/suppressIf[0] while parked. Tells computeRefBlock
+  // (binaryPatcher.ts) to relocate the bare opcode alone and leave the
+  // (possibly shared, reused) wrapper in place, instead of applying the
+  // generic Move feature's rule of carrying a sole-owned wrapper along
+  // bodily - the two rules would otherwise be indistinguishable from a
+  // Ref's position alone. Never set by a parse and never required for
+  // Show or for the Move dialog's own refusal: both recognize a toggle-
+  // parked Ref the same way its role classification does, straight from
+  // conditions/suppressIf against a live constant-true SuppressIf, so
+  // showing a tab hidden in an earlier session still works after
+  // reopening an export or a data.json that never carried this marker.
   hiddenByTabToggle?: string;
 }
 
