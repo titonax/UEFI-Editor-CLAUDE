@@ -26,8 +26,25 @@ it against 14 images from five vendors and two Aptio generations.
 | `image1.bin`, `image2.bin`, `image3.bin` | (unlabeled Aptio V, intel-flash) | V | ~3,835 each |
 | `AmericanMegatrendsInc.-P10AAA.047.140617.rom`, `BOA_8005.BIN`, `E7752IMS.2B0`, `E7893AMS.140`, `K01_0308.BIN`, `K56CBAS.205`, `L01_0278.BIN`, `P8H77-M-PRO-ASUS-1505.CAP`, `Rampage-IV-Extreme-ASUS-4901.CAP`, `SABERTOOTH-Z97-MARK-1-ASUS-2702.CAP`, `X79GA00O_fulldump.bin`, `Z68XPUD4.U1L`, `bios.bin` | 12 more IV boards (AMI reference, Biostar, Gigabyte, MSI, ASUS ×3, AAEON, unlabeled ×2) | IV | 504–2,518 each |
 | `ROG-ZENITH-EXTREME-ASUS-2601.CAP` | ASUS ROG Zenith Extreme | V (single-FormSet hub, despite arriving in an "Aptio IV" batch - correctly told apart, see below) | 1,546 |
+| `BIOS_H14SHM-1D6B_20260323_2.0_STDsp.bin`, `BIOS_H14SSL-1D9F_20260317_2.0_STDsp.bin` | Supermicro H14SHM, H14SSL (server) | V | 634 / 626 |
+| `BIOS_X14SAEF-1D78_20260603_2.1_STDsp.bin` | Supermicro X14SAEF (server) | V | 8,147 |
+| `TRX50-WS_14.10.ROM`, `WRX90WS_12.09.ROM` | ASRock TRX50-WS, WRX90WS (Threadripper/EPYC workstation) | V | 642 / 553 |
+| `W790-WS_12.01.ROM` | ASRock W790-WS (Xeon-W workstation) | V | 1,582 |
+| `X870TCC4.50.ROM`, `X870ETO4.43.ROM` | Gigabyte X870 (AM5) | V | 600 / 624 |
+| `Z890-Pro-A_3.40.ROM`, `Z890-Taichi-OCF_3.32.ROM` | ASRock Z890 (Arrow Lake) | V | 9,171 / 9,257 |
 
-53,411 matched question records total, 28 images.
+63,565 matched question records total, 38 images. The ten newest images (five
+vendors not previously in the corpus, spanning server, HEDT workstation and
+current-generation consumer boards) all extracted, parsed and classified with
+no errors or ambiguous states, and every one confirmed the shared "unified AMI
+Setup" FormSet GUID (`7B59104A-C00D-4158-87FF-F04D6396A915`) and the
+single-FormSet IFR navigation hub layout already established by the ASUS and
+Intel samples above - see
+[`single-formset-ifr-navigation.md`](single-formset-ifr-navigation.md).
+`W790-WS_12.01.ROM` additionally corroborates the `suppressed-tab` role
+in the wild, independent of this editor's own Hide/Show toggle: its hub
+already ships with `Chipset` (`0x2713`) reachable only through a Ref inside
+a constant-true `SuppressIf` scope.
 
 ## Why the Show/Hide reading does not hold up
 
@@ -56,11 +73,11 @@ readings, so neither is reported as a verdict.
 
 | Value | Count | Bits set |
 | --- | ---: | --- |
-| 0x09 | 36,797 | 0, 3 |
-| 0x01 | 11,943 | 0 |
-| 0x29 | 3,240 | 0, 3, 5 |
-| 0x21 | 1,390 | 0, 5 |
-| 0x49 | 35 | 0, 3, 6 |
+| 0x09 | 59,393 | 0, 3 |
+| 0x01 | 17,443 | 0 |
+| 0x29 | 5,685 | 0, 3, 5 |
+| 0x21 | 1,803 | 0, 5 |
+| 0x49 | 917 | 0, 3, 6 |
 | 0x41 | 1 | 0, 6 |
 | 0x11 | 1 | 0, 4 |
 | 0x05 | 2 | 0, 2 |
@@ -71,6 +88,14 @@ readings, so neither is reported as a verdict.
 - **Bit 3**: set on interactive questions (OneOf, CheckBox, most Numerics),
   never on a plain page `Ref`. Corroborated only by this co-occurrence, not
   by any visibility check.
+- **Bit 6**: revised after the ten-image batch above - no longer a single
+  outlier (`0x41`, one occurrence, a Secure Boot mode selector). `0x49`
+  (bits 0, 3, 6) now accounts for 917 records, concentrated on three of the
+  newest boards (`BIOS_X14SAEF-1D78...`, `Z890-Pro-A_3.40.ROM`,
+  `Z890-Taichi-OCF_3.32.ROM` - 236, 323 and 323 respectively) and absent from
+  every other board tested, including the other seven in that same batch.
+  Reads as a per-board or per-BIOS-version pattern, still with no known
+  meaning or visibility correlation.
 - **Bit 5**: appears on items with dynamic content - HDD security entries,
   Secure Boot state and key actions, System Information, fan tuning,
   storage ports, OC profiles - across several boards. Same caveat as bit 3.
@@ -78,8 +103,8 @@ readings, so neither is reported as a verdict.
   Bridge-E/X79 image): `Performance Tuning` and `North Bridge Configuration`
   (both `Ref`s, so not the bit-3 "interactive" pattern) and `ACPI Sleep
   State` / `Performance Memory Profiles`. No interpretation.
-- **Bits 4 and 6**: one occurrence each in the whole corpus (a Secure Boot
-  mode selector and a GT power option), with no interpretation at all.
+- **Bit 4**: one occurrence in the whole corpus (a GT power option), with no
+  interpretation at all.
 
 ## Page records
 

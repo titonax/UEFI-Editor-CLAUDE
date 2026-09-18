@@ -75,6 +75,13 @@ tab again (see Hide/Show visibility toggle below). More than one such
 suppressed Ref naming the same page makes "the" suppressed reference
 ambiguous, so the page falls back to `registered-only` instead.
 
+This role is not specific to the toggle: `W790-WS_12.01.ROM` (see
+[`setupdata-control-flags.md`](setupdata-control-flags.md)'s corpus) ships
+with `Chipset` (`0x2713`) already parked this way, reachable only through a
+Ref inside a constant-true `SuppressIf` scope from the factory - a genuine,
+independent confirmation of the classification against a layout this editor
+never edited.
+
 ## Effective state
 
 Being a direct hub Ref is a structural fact; whether the tab shows is still
