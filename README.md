@@ -180,3 +180,25 @@ Deployment to GitHub Pages runs automatically on push to `main` via
 
 See [`src/components/scripts/README.md`](src/components/scripts/README.md)
 for how the parsing/patching code is organized.
+
+### Corpus regression runner
+
+If you have a local set of real firmware extracts (never commit them -
+see [`docs/aptio-iv/README.md`](docs/aptio-iv/README.md)'s "Sample intake"),
+you can run every one of them through the parser and classifier and get a
+structured report per image instead of checking each by hand:
+
+```bash
+CORPUS_DIR=/path/to/your/corpus npx vitest run src/components/scripts/corpusRunner.node.test.ts
+```
+
+Each `<CORPUS_DIR>/<image-name>/` subdirectory holds the same four files the
+"Four separate files" mode above accepts, named `setup.sct`, `amitse.sct`,
+`setupdata.bin` and `setup.ifr.txt`. The run writes one JSON report per image
+plus a `summary.txt` (both under `<CORPUS_DIR>/reports` by default, or
+`$CORPUS_OUT`) recording Form/Ref/condition counts, the single-FormSet
+navigation verdict, and - for every page in that inventory - whether Hide and
+Show are available and the exact reason when they aren't. It's a diagnostic
+tool only: read-only, like the app's own preflight, never patches or exports
+anything. `CORPUS_DIR` unset (the default) skips it entirely, so it never
+affects `npm test`/CI.

@@ -22,5 +22,15 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // corpusRunner.node.test.ts is a Node-only dev tool (reads a local
+  // firmware corpus from disk, never bundled or shipped) that needs
+  // node:fs/node:path/process. Adding @types/node here would auto-include
+  // its ambient globals for this entire browser-app program too - no
+  // "types" allowlist exists to scope it, and Node's ambient setTimeout/
+  // console/Buffer declarations can silently conflict with the DOM lib's
+  // own. Excluding just this file keeps the browser app's type-checking as
+  // is; the file still runs fine under vitest, whose esbuild transform
+  // never needs these types to resolve.
+  "exclude": ["src/components/scripts/corpusRunner.node.test.ts"]
 }
