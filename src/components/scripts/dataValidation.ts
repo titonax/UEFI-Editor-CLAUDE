@@ -282,6 +282,19 @@ function invalidData(message: string): never {
   throw new Error(`data.json ${message}.`);
 }
 
+// Bumped whenever this app's own Data/RefPrompt shape changes in a way an
+// older or newer build could silently misinterpret rather than reject -
+// a field whose absence changes meaning, or one that's repurposed. This is
+// independent of `version` (the IFRExtractor-RS tool version, checked
+// against the currently open firmware's own identity in Footer.tsx) and of
+// the structural field checks below, which happily accept a data.json an
+// older or newer build produced as long as every field they know about is
+// present and well-typed - exactly the case a schema change can break
+// without any single field becoming invalid on its own. Written into every
+// export by Footer.tsx and checked, never carried into the returned Data:
+// it describes the file, not the model.
+export const DATA_SCHEMA_VERSION = 1;
+
 // Parses and structurally validates a data.json. The root visibility
 // report is deliberately not read back: it is evidence about the firmware
 // that is open right now, and is re-attached from there by the caller.
@@ -294,6 +307,13 @@ export function parseDataFile(text: string): Data {
   }
 
   if (!isRecord(value)) invalidData("does not contain an object");
+  if (value.schemaVersion !== DATA_SCHEMA_VERSION) {
+    invalidData(
+      value.schemaVersion === undefined
+        ? "was exported by an older version of this editor and can no longer be imported safely - redo the edit against a freshly opened firmware"
+        : `was exported by a different version of this editor (schema ${JSON.stringify(value.schemaVersion)}, this build expects ${String(DATA_SCHEMA_VERSION)})`,
+    );
+  }
   if (
     value.firmwareFamily !== "aptio-v" &&
     value.firmwareFamily !== "aptio-iv" &&

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDataFile } from "./dataValidation";
+import { DATA_SCHEMA_VERSION, parseDataFile } from "./dataValidation";
 import { parseData } from "./ifrParser";
 import { buildFixtureFiles } from "./testFixtures";
 
@@ -10,9 +10,15 @@ async function fixtureData() {
 }
 
 // A data.json as an untyped object tree, so a test can corrupt any field
-// the way a hand edit would.
+// the way a hand edit would. Includes schemaVersion, since a real export
+// always goes through Footer.tsx's wrapping - a raw parseData() result
+// never carries it on its own (see the schemaVersion-specific tests below,
+// which exercise that boundary directly).
 async function fixtureJson(): Promise<JsonObject> {
-  return JSON.parse(JSON.stringify(await fixtureData())) as JsonObject;
+  return {
+    ...(JSON.parse(JSON.stringify(await fixtureData())) as JsonObject),
+    schemaVersion: DATA_SCHEMA_VERSION,
+  };
 }
 
 function firstChild(json: JsonObject): JsonObject {
@@ -35,10 +41,30 @@ describe("parseDataFile", () => {
   it("round-trips a data.json the app itself exported, minus the rebuilt evidence", async () => {
     const data = await fixtureData();
 
-    expect(parseDataFile(JSON.stringify(data))).toEqual({
+    expect(
+      parseDataFile(JSON.stringify({ ...data, schemaVersion: DATA_SCHEMA_VERSION })),
+    ).toEqual({
       ...data,
       singleFormSetNavigation: undefined,
     });
+  });
+
+  it("rejects a data.json with no schemaVersion at all, as an export from before this guard existed would have", async () => {
+    const data = await fixtureData();
+
+    expect(() => parseDataFile(JSON.stringify(data))).toThrow(
+      "data.json was exported by an older version of this editor and can no longer be imported safely - redo the edit against a freshly opened firmware.",
+    );
+  });
+
+  it("rejects a data.json from a different schema version", async () => {
+    const data = await fixtureData();
+
+    expect(() =>
+      parseDataFile(JSON.stringify({ ...data, schemaVersion: DATA_SCHEMA_VERSION + 1 })),
+    ).toThrow(
+      `data.json was exported by a different version of this editor (schema ${String(DATA_SCHEMA_VERSION + 1)}, this build expects ${String(DATA_SCHEMA_VERSION)}).`,
+    );
   });
 
   it("accepts an IFR hub menu root but never the imported tab inventory", async () => {

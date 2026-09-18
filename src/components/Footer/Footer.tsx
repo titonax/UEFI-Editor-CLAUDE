@@ -7,7 +7,7 @@ import type { Updater } from "use-immer";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 import { assertAmiRootVisibilityEditsMatch } from "../scripts/amiRootVisibilityEditing";
 import { downloadModifiedFiles, validateByteInput } from "../scripts/binaryPatcher";
-import { parseDataFile } from "../scripts/dataValidation";
+import { DATA_SCHEMA_VERSION, parseDataFile } from "../scripts/dataValidation";
 import { refreshSingleFormSetNavigation } from "../scripts/singleFormSetNavigation";
 import { calculateJsonChecksum } from "../scripts/hashing";
 import { version } from "../scripts/ifrParser";
@@ -114,9 +114,10 @@ export default function Footer({
             leftSection={<IconDownload />}
             onClick={() => {
               saveAs(
-                new Blob([JSON.stringify(data, null, 2)], {
-                  type: "text/plain",
-                }),
+                new Blob(
+                  [JSON.stringify({ ...data, schemaVersion: DATA_SCHEMA_VERSION }, null, 2)],
+                  { type: "text/plain" },
+                ),
                 "data.json",
               );
             }}
