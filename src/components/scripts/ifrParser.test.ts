@@ -4,6 +4,12 @@ import { parseData, version } from "./ifrParser";
 import { FIXTURE_FORM_SET_GUID, buildFixtureFiles } from "./testFixtures";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 
+function guidToUefiHex(value: string) {
+  const parts = value.split("-");
+  const reverse = (hex: string) => hex.match(/../g)?.reverse().join("") ?? "";
+  return (reverse(parts[0]) + reverse(parts[1]) + reverse(parts[2]) + parts[3] + parts[4]).toUpperCase();
+}
+
 describe("parseData", () => {
   it("parses forms, suppressions, and cross-form references from a verbose IFR dump", async () => {
     const files = await buildFixtureFiles();
@@ -158,6 +164,65 @@ describe("parseData", () => {
     ]);
     // The Ref's own opcode offset, exactly as the dump prints it.
     expect(data.singleFormSetNavigation?.pages[1].ifrReferenceOffset).toBe("0x00000016");
+  });
+
+  it("keeps a whole SetupData page list together across an unidentified slot", async () => {
+    // Real firmware (an HP IPISB-CH2 image) has an 11-slot SetupData page
+    // list where one slot's FormSet GUID matches nothing parseSetupTxt
+    // extracted, splitting the run at exactly one record-width-too-many
+    // instead of the usual +40. Reproduced minimally with two FormSets and
+    // a 3-slot list (0, 1, [unidentified], 2) at a 40 hex-char/20-byte
+    // stride: the unidentified slot must not truncate the run down to
+    // whichever side of it happens to be longer.
+    const guidA = "AAAAAAAA-1111-2222-3333-444444444444";
+    const guidB = "BBBBBBBB-1111-2222-3333-444444444444";
+    const files = await buildFixtureFiles({
+      lines: [
+        `0x00000010: FormSet Guid: ${guidA}, Title: "Setup A", Help: "help"`,
+        `0x00000012: Form FormId: 0x1, Title: "Setup A" { 01 86 }`,
+        `0x00000014: End { 29 02 }`,
+        `0x00000016: FormSet Guid: ${guidB}, Title: "Setup B", Help: "help"`,
+        `0x00000018: Form FormId: 0x2, Title: "Setup B" { 01 86 }`,
+        `0x0000001A: End { 29 02 }`,
+      ],
+      setupdataBin:
+        "01000000" + guidToUefiHex(guidA) +
+        "02000000" + guidToUefiHex(guidB) +
+        "FFFFFFFF" + "00000000000000000000000000000000" + // unidentified slot, same 20-byte width
+        "03000000" + guidToUefiHex(guidA),
+    });
+
+    const data = await parseData(files);
+
+    expect(data.menu).toEqual([
+      {
+        name: "Setup A",
+        formId: "0x1",
+        offset: null,
+        formSetGuid: guidA,
+        source: "setupdata",
+        pageMask: "0x1",
+        pageInfoOffset: "0x0",
+      },
+      {
+        name: "Setup B",
+        formId: "0x2",
+        offset: null,
+        formSetGuid: guidB,
+        source: "setupdata",
+        pageMask: "0x2",
+        pageInfoOffset: "0x14",
+      },
+      {
+        name: "Setup A",
+        formId: "0x1",
+        offset: null,
+        formSetGuid: guidA,
+        source: "setupdata",
+        pageMask: "0x3",
+        pageInfoOffset: "0x3C",
+      },
+    ]);
   });
 
   it("matches the AMITSE executable menu table regardless of hex casing", async () => {

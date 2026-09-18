@@ -94,6 +94,24 @@ function discoverSetupDataMenu(formSetRoots: Menu, setupData: string): Menu {
     }
   }
 
+  // Each page-list slot is a fixed-width (20-byte, 40 hex-char) record, but
+  // not every slot names a FormSet this dump's formSetRoots recognizes - a
+  // real HP image (IPISB-CH2) has one unidentified slot in the middle of an
+  // otherwise-regular 11-entry list, which only ever shows up here as a gap
+  // of exactly one record width too many. Requiring an exact +40 between
+  // consecutive candidates split that single list into a run of 5 and a run
+  // of 6 and kept only the longer one, silently dropping the other 5 roots.
+  // A small positive multiple of the stride still belongs to the same list
+  // - it just skips over a slot or two this scan has no candidate for - so
+  // runs merge across those gaps instead of breaking there. The tolerance
+  // stays small on purpose: several other real images (E7752IMS, K01_0308,
+  // K56CBAS, SABERTOOTH-Z97) have a single unrelated, coincidental GUID hit
+  // (from some other SetupData structure, not the page list) that happens
+  // to land tens or hundreds of stride-widths before or after the real
+  // list - accepting large multiples merges that noise straight into the
+  // result as a spurious extra root.
+  const PAGE_LIST_RECORD_STRIDE = 40;
+  const MAX_PAGE_LIST_GAP_MULTIPLE = 3;
   candidates.sort((left, right) => left.start - right.start);
   const runs: (typeof candidates)[] = [];
   for (const candidate of candidates) {
@@ -103,7 +121,12 @@ function discoverSetupDataMenu(formSetRoots: Menu, setupData: string): Menu {
     }
     const current = runs[runs.length - 1];
     const previous = current[current.length - 1];
-    if (candidate.start === previous.start + 40) {
+    const gap = candidate.start - previous.start;
+    if (
+      gap > 0 &&
+      gap % PAGE_LIST_RECORD_STRIDE === 0 &&
+      gap / PAGE_LIST_RECORD_STRIDE <= MAX_PAGE_LIST_GAP_MULTIPLE
+    ) {
       current.push(candidate);
     } else {
       runs.push([candidate]);
