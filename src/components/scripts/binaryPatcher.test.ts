@@ -443,6 +443,200 @@ describe("downloadModifiedFiles", () => {
     expect(await changelogText()).toContain('Moved Advanced from "Chipset" to "Setup"');
   });
 
+  // A minimal single-Form fixture for the same-hub tab visibility case: the
+  // hub holds both the live Ref to Advanced AND, inside its own constant-true
+  // SuppressIf scope, nothing else at all - the scope is reusable purely by
+  // sitting there, with no seed required (see findVisibilityHost's own
+  // comment on why a seed is no longer needed). Hide/Show never move this
+  // Ref to a different Form, only to a different position inside the SAME
+  // one - exactly the case detectRefMoves' pristineOwner comparison alone
+  // cannot see, which repositionedWithinForm exists to say explicitly.
+  function buildSameHubTabVisibilityFixture(options: { alreadyHidden?: boolean } = {}) {
+    const parts: number[] = [];
+    const marks = new Map<string, number>();
+    const push = (mark: string | null, values: number[]) => {
+      if (mark) marks.set(mark, parts.length);
+      parts.push(...values);
+    };
+    const writeUint24 = (offset: number, value: number) => {
+      parts[offset] = value & 0xff;
+      parts[offset + 1] = (value >>> 8) & 0xff;
+      parts[offset + 2] = (value >>> 16) & 0xff;
+    };
+    const END = [0x29, 0x02];
+    const SUPPRESS_IF_TRUE = [0x0a, 0x82, 0x46, 0x02];
+    const guidBytes = (guid: string) => {
+      const segments = guid.split("-");
+      const reverse = (hex: string) => hex.match(/../g)?.reverse().join("") ?? "";
+      const encoded =
+        reverse(segments[0]) + reverse(segments[1]) + reverse(segments[2]) + segments[3] + segments[4];
+      return Array.from(encoded.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+    };
+    const formSet = (guid: string) => [0x0e, 0x97, ...guidBytes(guid), 0, 0, 0, 0, 0];
+    const form = (id: number) => [0x01, 0x86, id & 0xff, id >> 8, 0, 0];
+    const ref = (targetId: number) => [0x0f, 0x0f, ...new Array<number>(11).fill(0), targetId & 0xff, targetId >> 8];
+
+    push("list", new Array<number>(20).fill(0));
+    const packageAStart = parts.length;
+    push("packageA", [0, 0, 0, 0x02]);
+    push(null, formSet(TAB_VISIBILITY_GUID));
+    push("form1", form(1));
+    if (!options.alreadyHidden) push("refAdvanced", ref(2));
+    push("suppressIf", SUPPRESS_IF_TRUE);
+    if (options.alreadyHidden) push("refAdvanced", ref(2));
+    push("suppressEnd", END);
+    push("form1End", END);
+    push("form2", form(2));
+    push("form2End", END);
+    push(null, END);
+    writeUint24(packageAStart, parts.length - packageAStart);
+    push(null, [4, 0, 0, 0xdf]);
+    const listLength = parts.length;
+    parts[16] = listLength & 0xff;
+    parts[17] = (listLength >>> 8) & 0xff;
+    parts[18] = (listLength >>> 16) & 0xff;
+    parts[19] = 0;
+
+    const at = (mark: string) => {
+      const offset = marks.get(mark);
+      if (offset === undefined) throw new Error(`fixture mark ${mark} missing`);
+      return offset;
+    };
+    const hex = (value: number) => `0x${value.toString(16).toUpperCase()}`;
+
+    const refAdvanced: RefPrompt = {
+      name: "Advanced",
+      description: "",
+      type: "Ref",
+      questionId: "0x0001",
+      varStoreId: "0x0001",
+      formId: "0x2",
+      formIdOffset: hex(at("refAdvanced") + 13),
+      pageId: null,
+      accessLevel: null,
+      failsafe: null,
+      optimal: null,
+      offsets: null,
+      sctOffset: hex(at("refAdvanced")),
+      conditions: options.alreadyHidden ? [hex(at("suppressIf"))] : undefined,
+      suppressIf: options.alreadyHidden ? [hex(at("suppressIf"))] : undefined,
+    };
+
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: [],
+      forms: [
+        {
+          name: "Setup",
+          type: "Form",
+          formId: "0x1",
+          formSetGuid: TAB_VISIBILITY_GUID,
+          referencedIn: [],
+          children: [refAdvanced],
+          endOffset: hex(at("form1End")),
+        },
+        {
+          name: "Advanced",
+          type: "Form",
+          formId: "0x2",
+          formSetGuid: TAB_VISIBILITY_GUID,
+          referencedIn: ["0x1"],
+          children: [],
+          endOffset: hex(at("form2End")),
+        },
+      ],
+      varStores: [],
+      suppressions: [
+        {
+          offset: hex(at("suppressIf")),
+          active: true,
+          start: hex(at("suppressIf")),
+          end: hex(at("suppressEnd")),
+          kind: "SuppressIf",
+          constant: true,
+          source: "constant",
+          expression: "True",
+          varStoreNames: [],
+          formSetGuid: TAB_VISIBILITY_GUID,
+        },
+      ],
+      version: "test",
+      hashes: { setupTxt: "", setupSct: "", amitseSct: "", setupdataBin: "", offsetChecksum: "" },
+    };
+
+    return {
+      bytes: Uint8Array.from(parts),
+      data,
+      offsets: { refAdvanced: at("refAdvanced"), form1End: at("form1End"), suppressEnd: at("suppressEnd") },
+    };
+  }
+
+  it("hides a top-level tab into the hub's own SuppressIf scope, without leaving the Ref's bytes untouched", async () => {
+    // The scope lives directly inside the hub (Setup) itself - the same Form
+    // the Ref already belongs to - so this is the one case
+    // detectRefMoves' plain pristineOwner-vs-current-Form comparison cannot
+    // tell apart from no move at all. Without repositionedWithinForm this
+    // Ref's bytes would stay exactly where they started even though the
+    // declarative model says it's hidden now.
+    const { bytes, data, offsets } = buildSameHubTabVisibilityFixture();
+    const hub = data.forms[0];
+
+    const [hidden] = hub.children.splice(0, 1) as [RefPrompt];
+    hidden.conditions = [data.suppressions[0].offset];
+    hidden.suppressIf = [data.suppressions[0].offset];
+    hidden.hiddenByTabToggle = data.suppressions[0].offset;
+    hidden.repositionedWithinForm = true;
+    hub.children.push(hidden);
+    const files = moveFixtureFiles(bytes);
+
+    saveAsMock.mockClear();
+    downloadModifiedFiles(data, files);
+
+    // The bare 15-byte Ref opcode relocates forward, from right after
+    // form1's header to right before the scope's own End - the scope's
+    // wrapper itself (SuppressIf...End) never moves.
+    const expected = [...bytes];
+    const refBytes = expected.splice(offsets.refAdvanced, REF_LENGTH);
+    expected.splice(offsets.suppressEnd - REF_LENGTH, 0, ...refBytes);
+    expect(Array.from(await savedBytes("Setup.sct"))).toEqual(expected);
+    expect(await changelogText()).toContain(
+      'Hid top-level tab Advanced inside an existing SuppressIf scope in "Setup"',
+    );
+  });
+
+  it("shows a same-hub tab back out of the hub's own SuppressIf scope", async () => {
+    // Starts from the pristine shape a vendor-hidden (or earlier-session-
+    // hidden) same-hub tab has: the Ref's bytes already sit inside the
+    // hub's own SuppressIf scope, and hiddenByTabToggle is never set (see
+    // buildTabVisibilityFixture's own comment on why a parse alone can
+    // never recover it). Show reads the Ref's live conditions/suppressIf
+    // instead, exactly as it does for the cross-Form case.
+    const { bytes, data, offsets } = buildSameHubTabVisibilityFixture({ alreadyHidden: true });
+    const hub = data.forms[0];
+    const parkedIndex = hub.children.findIndex(
+      (child) => child.type === "Ref" && child.formId === "0x2",
+    );
+    const [shown] = hub.children.splice(parkedIndex, 1) as [RefPrompt];
+    delete shown.conditions;
+    delete shown.suppressIf;
+    shown.repositionedWithinForm = true;
+    hub.children.push(shown);
+    const files = moveFixtureFiles(bytes);
+
+    saveAsMock.mockClear();
+    downloadModifiedFiles(data, files);
+
+    // The Ref leaves its spot inside the SuppressIf scope - the scope's own
+    // wrapper closes up around the gap exactly as an ordinary move would -
+    // and lands right before the hub's own End, with no live sibling to
+    // anchor next to.
+    const expected = [...bytes];
+    const refBytes = expected.splice(offsets.refAdvanced, REF_LENGTH);
+    expected.splice(offsets.form1End - REF_LENGTH, 0, ...refBytes);
+    expect(Array.from(await savedBytes("Setup.sct"))).toEqual(expected);
+    expect(await changelogText()).toContain('Showed top-level tab Advanced back on "Setup"');
+  });
+
   it("remaps an unrelated suppression caught in the gap a move shifts, so a same-download unsuppress still finds its End marker", async () => {
     // Main pristinely holds the Ref followed by an unrelated SuppressIf-
     // wrapped Subtitle. Moving the Ref forward into Sub shifts that whole

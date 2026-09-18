@@ -56,11 +56,20 @@ function hubGraph() {
       makeRef({ name: "Advanced", formId: "0x2725", sctOffset: "0x110", questionId: "0x2" }),
       makeRef({ name: "Boot", formId: "0x271F", sctOffset: "0x120", questionId: "0x3" }),
     ],
+    endOffset: "0x130",
   });
-  const main = makeForm({ name: "Main", formId: "0x2714", referencedIn: ["0x2711"] });
-  const advanced = makeForm({ name: "Advanced", formId: "0x2725", referencedIn: ["0x2711"] });
-  const boot = makeForm({ name: "Boot", formId: "0x271F", referencedIn: ["0x2711"] });
-  const legacyTarget = makeForm({ name: "Legacy", formId: "0x2730" });
+  const main = makeForm({ name: "Main", formId: "0x2714", referencedIn: ["0x2711"], endOffset: "0x140" });
+  const advanced = makeForm({
+    name: "Advanced",
+    formId: "0x2725",
+    referencedIn: ["0x2711"],
+    endOffset: "0x150",
+  });
+  const boot = makeForm({ name: "Boot", formId: "0x271F", referencedIn: ["0x2711"], endOffset: "0x160" });
+  // Chipset's own SuppressIf scope (0x170-0x190) already parks one Ref
+  // ("Legacy") pristinely - a genuine, reusable parking bin elsewhere in
+  // the FormSet, distinct from the same-hub scopes exercised below.
+  const legacyTarget = makeForm({ name: "Legacy", formId: "0x2730", endOffset: "0x1B0" });
   const chipset = makeForm({
     name: "Chipset",
     formId: "0x2721",
@@ -68,20 +77,21 @@ function hubGraph() {
       makeRef({
         name: "Legacy",
         formId: "0x2730",
-        sctOffset: "0x200",
+        sctOffset: "0x180",
         questionId: "0x4",
-        conditions: ["0x9000"],
-        suppressIf: ["0x9000"],
+        conditions: ["0x170"],
+        suppressIf: ["0x170"],
       }),
     ],
+    endOffset: "0x1A0",
   });
   const forms = [hub, main, advanced, boot, chipset, legacyTarget];
   const suppressions: Suppression[] = [
     {
-      offset: "0x9000",
+      offset: "0x170",
       active: true,
-      start: "0x9000",
-      end: "0x9010",
+      start: "0x170",
+      end: "0x190",
       kind: "SuppressIf",
       constant: true,
       formSetGuid: GUID,
@@ -127,6 +137,221 @@ function findPage(data: Data, formId: string): AmiSingleFormSetPage {
   if (!page) throw new Error(`Page ${formId} missing from the report`);
   return page;
 }
+
+// A Setup hub whose only constant-true SuppressIf scope is itself a direct
+// child of the hub (a vendor-shipped "Chipset" tab already hidden that way,
+// like several ASRock/Gigabyte X870 and Z890 boards) - no scope exists
+// anywhere else in the FormSet, so Hide can only succeed by reusing this
+// same-hub scope.
+function sameHubGraph() {
+  const hub = makeForm({
+    name: "Setup",
+    formId: "0x2711",
+    children: [
+      makeRef({ name: "Main", formId: "0x2714", sctOffset: "0x100", questionId: "0x1" }),
+      makeRef({ name: "Advanced", formId: "0x2725", sctOffset: "0x110", questionId: "0x2" }),
+      makeRef({
+        name: "Chipset",
+        formId: "0x2713",
+        sctOffset: "0x130",
+        questionId: "0x3",
+        conditions: ["0x120"],
+        suppressIf: ["0x120"],
+      }),
+    ],
+    endOffset: "0x150",
+  });
+  const main = makeForm({ name: "Main", formId: "0x2714", referencedIn: ["0x2711"], endOffset: "0x160" });
+  const advanced = makeForm({
+    name: "Advanced",
+    formId: "0x2725",
+    referencedIn: ["0x2711"],
+    endOffset: "0x170",
+  });
+  const chipsetTarget = makeForm({ name: "Chipset", formId: "0x2713", endOffset: "0x180" });
+  const forms = [hub, main, advanced, chipsetTarget];
+  const suppressions: Suppression[] = [
+    {
+      offset: "0x120",
+      active: true,
+      start: "0x120",
+      end: "0x140",
+      kind: "SuppressIf",
+      constant: true,
+      formSetGuid: GUID,
+    },
+  ];
+  const registrations: Menu = forms.map((form, index) => ({
+    name: form.name,
+    formId: form.formId,
+    formSetGuid: GUID,
+    offset: `0x${(0x300 + index * 0x20).toString(16).toUpperCase()}`,
+    source: "amitse",
+  }));
+  const formSetRoots: Menu = [
+    { name: "Setup", formId: "0x2711", offset: null, formSetGuid: GUID, source: "formset" },
+  ];
+  return { forms, suppressions, registrations, formSetRoots };
+}
+
+function sameHubData(): Data {
+  const { forms, suppressions, registrations, formSetRoots } = sameHubGraph();
+  const report = inspectSingleFormSetNavigation(
+    formSetRoots,
+    forms,
+    registrations,
+    undefined,
+    suppressions,
+  );
+  return {
+    firmwareFamily: "aptio-v",
+    menu: singleFormSetHubMenu(report),
+    formSetRoots,
+    forms,
+    varStores: [],
+    suppressions,
+    singleFormSetNavigation: report,
+    version: "test",
+    hashes: { setupTxt: "", setupSct: "", amitseSct: "", setupdataBin: "", offsetChecksum: "" },
+  };
+}
+
+describe("same-hub SuppressIf reuse", () => {
+  it("finds a same-hub scope to reuse when nothing elsewhere in the FormSet qualifies", () => {
+    const data = sameHubData();
+    const advanced = findPage(data, "0x2725");
+
+    const result = analyzeTabVisibilityToggle(
+      data,
+      buildMenuTree(data),
+      advanced,
+      "hide",
+      HUB_FORM_INDEX,
+    );
+
+    expect(result).toMatchObject({ available: true, sourceFormIndex: 0, childIndex: 1 });
+    expect(result.reason).toContain("Setup");
+  });
+
+  it("hides a tab into the hub's own SuppressIf scope and shows it back in order", () => {
+    const data = sameHubData();
+    const advanced = findPage(data, "0x2725");
+    const hide = analyzeTabVisibilityToggle(data, buildMenuTree(data), advanced, "hide", HUB_FORM_INDEX);
+    if (hide.sourceFormIndex === undefined || hide.childIndex === undefined) {
+      throw new Error("Advanced tab did not resolve to a location");
+    }
+
+    applyTabVisibilityToggle(data, HUB_FORM_INDEX, hide.sourceFormIndex, hide.childIndex, "hide");
+
+    const hub = data.forms[HUB_FORM_INDEX];
+    // Same-hub Hide never leaves hub.children at all - it lands the parked
+    // Ref at the array's own end, past Chipset, rather than moving it to a
+    // different Form's children.
+    expect(hub.children.map((child) => (child as RefPrompt).formId)).toEqual([
+      "0x2714",
+      "0x2713",
+      "0x2725",
+    ]);
+    const parked = hub.children.find(
+      (child) => child.type === "Ref" && child.formId === "0x2725",
+    ) as RefPrompt | undefined;
+    expect(parked).toMatchObject({ conditions: ["0x120"], suppressIf: ["0x120"] });
+    expect(findPage(data, "0x2725")).toMatchObject({ role: "suppressed-tab", suppressionOffset: "0x120" });
+
+    const suppressed = findPage(data, "0x2725");
+    const show = analyzeTabVisibilityToggle(data, buildMenuTree(data), suppressed, "show", HUB_FORM_INDEX);
+    expect(show.available).toBe(true);
+    if (show.sourceFormIndex === undefined || show.childIndex === undefined) {
+      throw new Error("Suppressed tab did not resolve to a location");
+    }
+
+    applyTabVisibilityToggle(data, HUB_FORM_INDEX, show.sourceFormIndex, show.childIndex, "show");
+
+    // Chipset is still the only other tab, and it's suppressed - not a live
+    // direct-tab neighbor orderPreservingIndex will anchor to - so Advanced
+    // safely falls back to the hub's own end rather than guessing.
+    expect(hub.children.map((child) => (child as RefPrompt).formId)).toEqual([
+      "0x2714",
+      "0x2713",
+      "0x2725",
+    ]);
+    expect(findPage(data, "0x2725").role).toBe("direct-tab");
+  });
+
+  it("shows the vendor's own hub-owned suppressed tab back to its pristine position, not the hub's end", () => {
+    // Regression fixture for the same-array index staleness Show must
+    // correct for: Chipset sits BETWEEN two live tabs (Main, Boot) at its
+    // own pristine position - never touched by Hide - so orderPreservingIndex
+    // finds a real anchor (Boot) rather than falling back to the hub's end,
+    // and the just-removed Chipset shifts every later index down by one
+    // before that anchor's own current index is read.
+    const hub = makeForm({
+      name: "Setup",
+      formId: "0x2711",
+      children: [
+        makeRef({ name: "Main", formId: "0x2714", sctOffset: "0x100", questionId: "0x1" }),
+        makeRef({
+          name: "Chipset",
+          formId: "0x2713",
+          sctOffset: "0x120",
+          questionId: "0x2",
+          conditions: ["0x110"],
+          suppressIf: ["0x110"],
+        }),
+        makeRef({ name: "Boot", formId: "0x271F", sctOffset: "0x140", questionId: "0x3" }),
+      ],
+      endOffset: "0x150",
+    });
+    const main = makeForm({ name: "Main", formId: "0x2714", referencedIn: ["0x2711"], endOffset: "0x160" });
+    const chipsetTarget = makeForm({ name: "Chipset", formId: "0x2713", endOffset: "0x170" });
+    const boot = makeForm({ name: "Boot", formId: "0x271F", referencedIn: ["0x2711"], endOffset: "0x180" });
+    const forms = [hub, main, chipsetTarget, boot];
+    const suppressions: Suppression[] = [
+      {
+        offset: "0x110",
+        active: true,
+        start: "0x110",
+        end: "0x130",
+        kind: "SuppressIf",
+        constant: true,
+        formSetGuid: GUID,
+      },
+    ];
+    const formSetRoots: Menu = [
+      { name: "Setup", formId: "0x2711", offset: null, formSetGuid: GUID, source: "formset" },
+    ];
+    const report = inspectSingleFormSetNavigation(formSetRoots, forms, [], undefined, suppressions);
+    const data: Data = {
+      firmwareFamily: "aptio-v",
+      menu: singleFormSetHubMenu(report),
+      formSetRoots,
+      forms,
+      varStores: [],
+      suppressions,
+      singleFormSetNavigation: report,
+      version: "test",
+      hashes: { setupTxt: "", setupSct: "", amitseSct: "", setupdataBin: "", offsetChecksum: "" },
+    };
+
+    const chipset = findPage(data, "0x2713");
+    expect(chipset.role).toBe("suppressed-tab");
+
+    const show = analyzeTabVisibilityToggle(data, buildMenuTree(data), chipset, "show", HUB_FORM_INDEX);
+    expect(show.available).toBe(true);
+    if (show.sourceFormIndex === undefined || show.childIndex === undefined) {
+      throw new Error("Chipset did not resolve to a location");
+    }
+
+    applyTabVisibilityToggle(data, HUB_FORM_INDEX, show.sourceFormIndex, show.childIndex, "show");
+
+    expect(hub.children.map((child) => (child as RefPrompt).formId)).toEqual([
+      "0x2714",
+      "0x2713",
+      "0x271F",
+    ]);
+    expect(findPage(data, "0x2713").role).toBe("direct-tab");
+  });
+});
 
 describe("analyzeTabVisibilityToggle", () => {
   it("finds an existing constant-true SuppressIf scope to reuse for hiding a tab", () => {
@@ -198,9 +423,9 @@ describe("analyzeTabVisibilityToggle", () => {
       formId: "0x2714",
       sctOffset: "0x210",
       questionId: "0x5",
-      conditions: ["0x9000"],
-      suppressIf: ["0x9000"],
-      hiddenByTabToggle: "0x9000",
+      conditions: ["0x170"],
+      suppressIf: ["0x170"],
+      hiddenByTabToggle: "0x170",
     });
     chipset.children.push(parkedDuplicate);
     const fakeSuppressedPage: AmiSingleFormSetPage = {
@@ -211,7 +436,7 @@ describe("analyzeTabVisibilityToggle", () => {
       registeredInAmitse: true,
       registrationOffsets: [],
       ifrReferenceOffset: "0x210",
-      suppressionOffset: "0x9000",
+      suppressionOffset: "0x170",
       parentFormIds: ["0x2721"],
     };
 
@@ -254,13 +479,13 @@ describe("applyTabVisibilityToggle", () => {
       (child) => child.type === "Ref" && child.formId === "0x2725",
     ) as RefPrompt | undefined;
     expect(parked).toMatchObject({
-      conditions: ["0x9000"],
-      suppressIf: ["0x9000"],
-      hiddenByTabToggle: "0x9000",
+      conditions: ["0x170"],
+      suppressIf: ["0x170"],
+      hiddenByTabToggle: "0x170",
     });
     expect(findPage(data, "0x2725")).toMatchObject({
       role: "suppressed-tab",
-      suppressionOffset: "0x9000",
+      suppressionOffset: "0x170",
     });
   });
 
@@ -318,8 +543,8 @@ describe("applyTabVisibilityToggle", () => {
       (child) => child.type === "Ref" && child.formId === "0x2725",
     );
     const [advancedRef] = hub.children.splice(advancedIndex, 1) as [RefPrompt];
-    advancedRef.conditions = ["0x9000"];
-    advancedRef.suppressIf = ["0x9000"];
+    advancedRef.conditions = ["0x170"];
+    advancedRef.suppressIf = ["0x170"];
     chipset.children.push(advancedRef);
     refreshSingleFormSetNavigation(data);
     expect(advancedRef.hiddenByTabToggle).toBeUndefined();

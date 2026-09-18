@@ -242,8 +242,104 @@ describe("inspectSingleFormSetNavigation", () => {
       parentFormIds: ["0x2718"],
     });
     expect(report.reason).toContain(
-      "1 registered page is currently parked inside a constant-true SuppressIf scope",
+      "and 1 hub Ref sits inside a constant-true SuppressIf scope",
     );
+  });
+
+  it("classifies a hub-owned suppressed Ref as a suppressed tab even when its target isn't registered in AMITSE at all", () => {
+    // The real gap this closes: a vendor already ships a hub child hidden
+    // behind its own constant-true SuppressIf (e.g. "Chipset"/"Security" on
+    // several ASRock/Gigabyte X870 and Z890 boards), and that page is not
+    // independently registered in AMITSE - the hub Ref is itself first-
+    // party evidence and must not depend on registration to be surfaced.
+    const hub = makeForm({
+      name: "Setup",
+      formId: "0x1",
+      children: [
+        makeRef({ formId: "0x2", questionId: "0x1" }),
+        makeRef({ formId: "0x3", questionId: "0x2" }),
+        makeRef({
+          name: "Chipset",
+          formId: "0x4",
+          questionId: "0x3",
+          sctOffset: "0x50",
+          conditions: ["0x60"],
+          suppressIf: ["0x60"],
+        }),
+      ],
+    });
+    const forms = [
+      hub,
+      makeForm({ formId: "0x2", referencedIn: ["0x1"] }),
+      makeForm({ formId: "0x3", referencedIn: ["0x1"] }),
+      makeForm({ name: "Chipset", formId: "0x4" }),
+    ];
+    const suppressions: Suppression[] = [
+      { offset: "0x60", active: true, start: "0x60", end: "0x70", kind: "SuppressIf", constant: true },
+    ];
+
+    const report = inspectSingleFormSetNavigation(
+      [formSetRoot("0x1")],
+      forms,
+      [],
+      undefined,
+      suppressions,
+    );
+
+    expect(report.status).toBe("detected");
+    expect(report.pages.filter((page) => page.role === "direct-tab")).toHaveLength(2);
+    expect(report.pages.find((page) => page.formId === "0x4")).toMatchObject({
+      role: "suppressed-tab",
+      suppressionOffset: "0x60",
+      registeredInAmitse: false,
+      parentFormIds: ["0x1"],
+    });
+    expect(report.reason).toContain("and 1 hub Ref sits inside a constant-true SuppressIf scope");
+  });
+
+  it("leaves an ambiguous hub-owned suppression unclassified when two hub Refs suppress the same target", () => {
+    const hub = makeForm({
+      name: "Setup",
+      formId: "0x1",
+      children: [
+        makeRef({ formId: "0x2", questionId: "0x1" }),
+        makeRef({ formId: "0x3", questionId: "0x2" }),
+        makeRef({
+          formId: "0x4",
+          questionId: "0x3",
+          sctOffset: "0x50",
+          conditions: ["0x60"],
+          suppressIf: ["0x60"],
+        }),
+        makeRef({
+          formId: "0x4",
+          questionId: "0x4",
+          sctOffset: "0x80",
+          conditions: ["0x90"],
+          suppressIf: ["0x90"],
+        }),
+      ],
+    });
+    const forms = [
+      hub,
+      makeForm({ formId: "0x2", referencedIn: ["0x1"] }),
+      makeForm({ formId: "0x3", referencedIn: ["0x1"] }),
+      makeForm({ formId: "0x4" }),
+    ];
+    const suppressions: Suppression[] = [
+      { offset: "0x60", active: true, start: "0x60", end: "0x70", kind: "SuppressIf", constant: true },
+      { offset: "0x90", active: true, start: "0x90", end: "0xA0", kind: "SuppressIf", constant: true },
+    ];
+
+    const report = inspectSingleFormSetNavigation(
+      [formSetRoot("0x1")],
+      forms,
+      [],
+      undefined,
+      suppressions,
+    );
+
+    expect(report.pages.find((page) => page.formId === "0x4")).toBeUndefined();
   });
 
   it("falls back to registered-only when two Refs suppress the same target", () => {

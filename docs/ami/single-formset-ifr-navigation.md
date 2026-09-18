@@ -66,14 +66,17 @@ makes the result ambiguous, which disables the stronger classification.
 
 ## Suppressed tabs
 
-A registered page whose only IFR path in is a Ref sitting inside a
-constant-true `SuppressIf` scope elsewhere in the FormSet is reported as
-`suppressed-tab`, not `registered-only`: nothing live currently reaches it
+A page whose only IFR path in is a Ref, owned by the hub itself, sitting
+inside a constant-true `SuppressIf` scope is reported as `suppressed-tab`,
+not `registered-only` or invisible: nothing live currently reaches it
 through the hub's own fan-out, but the exact scope hiding it
 (`suppressionOffset`) is known, so it is one Show away from being a direct
-tab again (see Hide/Show visibility toggle below). More than one such
-suppressed Ref naming the same page makes "the" suppressed reference
-ambiguous, so the page falls back to `registered-only` instead.
+tab again (see Hide/Show visibility toggle below). This holds whether or not
+the page is separately registered in AMITSE - registration is corroborating
+evidence, never a requirement, since the hub Ref itself is first-party proof
+of what once was (or could again be) a direct tab. More than one hub Ref
+suppressing the same target makes "the" suppressed reference ambiguous, so
+the page is left unclassified instead.
 
 This role is not specific to the toggle: `W790-WS_12.01.ROM` (see
 [`setupdata-control-flags.md`](setupdata-control-flags.md)'s corpus) ships
@@ -81,6 +84,16 @@ with `Chipset` (`0x2713`) already parked this way, reachable only through a
 Ref inside a constant-true `SuppressIf` scope from the factory - a genuine,
 independent confirmation of the classification against a layout this editor
 never edited.
+
+A later ten-board Aptio V batch surfaced the sharper case: on four boards
+(two ASRock X870 models, an ASRock/ASUS Z890 pair) the vendor's own
+`Chipset`/`Security` pages are parked inside a constant-true `SuppressIf`
+scope that is itself a direct child of the hub - there is no other
+constant-true scope anywhere else in the FormSet, and the parked Ref was the
+scope's only occupant, so there was no pre-existing "seed" Ref to key off
+either. Both the classification and the Hide-destination search (below) had
+to stop assuming "elsewhere in the FormSet" and "some existing occupant"
+were required, since on these four boards neither holds.
 
 ## Effective state
 
@@ -121,15 +134,21 @@ without any HII resize:
 
 - **Hide** moves the bare Ref opcode - never a new `SuppressIf` wrapper -
   from the hub into an existing, already-active constant-true `SuppressIf`
-  scope elsewhere in the FormSet: the lowest-offset scope that already parks
-  at least one other Ref, so it is a genuine, reusable parking spot rather
-  than merely constant-true by coincidence. The scope itself never moves and
-  may already be shared with other hidden tabs, or gain more later.
+  scope anywhere in the FormSet, including one that is itself a direct child
+  of the hub, and including one with no pre-existing occupant: the lowest-
+  offset such scope that doesn't already park this exact tab. Ownership of a
+  candidate scope is read from byte offsets alone (the Form whose own `End`
+  is the first to close after the scope's own start), the same rule that
+  finds a moved Ref's pristine home, since neither an existing seed nor a
+  Form other than the hub is required for the scope to be a genuine, reusable
+  parking spot. The scope itself never moves and may already be shared with
+  other hidden tabs, or gain more later.
 - **Show** moves the bare Ref opcode back out to the hub and clears the
   condition it picked up. It lands next to the direct tab it used to sit
   beside, from the tab inventory's last-known order, rather than always at
-  the end - unless that neighbor's own Ref also moved in the same export, in
-  which case it falls back to the hub's own end.
+  the end - unless that neighbor's own Ref also moved in the same export, or
+  is itself hidden rather than a live direct tab, in which case it falls back
+  to the hub's own end.
 
 Both directions are fixed-size and share their byte-relocation machinery with
 the generic Move feature. Show's own availability, and the byte-safe bare-
@@ -148,3 +167,19 @@ Move dialog refuses a Ref currently sharing a live constant-true `SuppressIf`
 scope outright - with or without that marker - and points at Show instead:
 moving only the bare opcode away from a scope it doesn't own would either
 strand the scope hiding whatever lands there next, or leave it empty.
+
+### Same-hub reuse
+
+When the reused scope is itself a direct child of the hub, Hide and Show
+never actually move the Ref out of the hub's own `children` array - only its
+position inside that array, and its condition, change. That is the one case
+the generic Move feature's own "did this Ref move" test cannot see on its
+own: it decides purely by comparing a Ref's current Form to the Form its
+pristine block offset belongs to, and a same-hub reposition leaves that
+comparison unchanged either way. `RefPrompt.repositionedWithinForm` is set
+for the one export cycle a same-hub Hide or Show performs, telling the
+export step to relocate the bytes anyway even though Form identity alone
+says nothing moved. Without it, a same-hub toggle would be fully correct in
+the declarative model and the tab inventory, yet silently produce a
+byte-identical export - the bug the four-board Aptio V batch above exposed
+and this marker exists to close.

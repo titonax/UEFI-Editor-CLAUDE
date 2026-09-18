@@ -240,6 +240,19 @@ export interface RefPrompt extends FormChild {
   // showing a tab hidden in an earlier session still works after
   // reopening an export or a data.json that never carried this marker.
   hiddenByTabToggle?: string;
+  // Set for one export cycle whenever the tab visibility toggle relocates
+  // this Ref within the SAME Form it already pristinely belonged to: a
+  // same-hub Hide (parked in a SuppressIf scope that's itself a hub child)
+  // or a same-hub Show (a vendor-hidden hub tab returned to the hub).
+  // detectRefMoves (binaryPatcher.ts) only notices a move by comparing a
+  // Ref's current Form to its pristine one; when both are the hub, that
+  // comparison alone can't tell a genuine reposition from no move at all,
+  // so this says so explicitly. Harmless to leave set indefinitely, exactly
+  // like hiddenByTabToggle: every export recomputes every patch fresh
+  // against the original pristine bytes, so a stale marker just means this
+  // Ref's (unchanged) current position keeps being confirmed, not reapplied
+  // twice.
+  repositionedWithinForm?: true;
 }
 
 export interface NumericPrompt extends FormChild {

@@ -277,8 +277,36 @@ export function inspectSingleFormSetNavigation(
   };
 
   addPage(hub, "hub", hub.name || root.name);
-  for (const { ref, targets } of directTargets) {
-    addPage(targets[0], "direct-tab", ref.name || targets[0].name, ref.sctOffset);
+  const directKeySet = new Set(directKeys);
+  for (const ref of refsOf(hub)) {
+    if (!staysInFormSet(ref, hub, formSetGuid)) continue;
+    const direct = directTargets.find((target) => target.ref === ref);
+    if (direct) {
+      addPage(direct.targets[0], "direct-tab", ref.name || direct.targets[0].name, ref.sctOffset);
+      continue;
+    }
+    // A Ref that's a direct child of the hub itself is first-party evidence
+    // of its own children, registered in AMITSE or not - the hub proves it,
+    // the same way a live direct Ref does. Ambiguous only if the hub
+    // carries more than one such Ref suppressing the same target (which
+    // scope is "the" one then becomes unclear).
+    const targets = formsMatching(forms, ref.formId, formSetGuid);
+    if (targets.length !== 1) continue;
+    const key = formKey(targets[0].formId, formSetGuid);
+    if (directKeySet.has(key)) continue;
+    const hubSuppressed = (suppressedTargets.get(key) ?? []).filter(
+      ({ owner }) => formKey(owner.formId, formSetGuid) === formKey(hub.formId, formSetGuid),
+    );
+    const current = hubSuppressed.find((entry) => entry.ref === ref);
+    if (!current || hubSuppressed.length !== 1) continue;
+    addPage(
+      targets[0],
+      "suppressed-tab",
+      ref.name || targets[0].name,
+      ref.sctOffset,
+      [hub.formId],
+      current.suppressionOffset,
+    );
   }
   const represented = new Set(pages.map((page) => formKey(page.formId, formSetGuid)));
   for (const [key, registration] of registrations) {
@@ -322,7 +350,7 @@ export function inspectSingleFormSetNavigation(
     mechanism: "single-formset-ifr-hub",
     confidence:
       tabs.length > 0 && corroboratedTabs === tabs.length ? "corroborated" : "ifr-only",
-    reason: `The FormSet entry ${hub.name || hub.formId} (${hub.formId}) is the IFR navigation hub: ${String(tabs.length)} direct Ref${tabs.length === 1 ? "" : "s"} define the current top-level tabs.${suppressedTabs > 0 ? ` ${String(suppressedTabs)} registered page${suppressedTabs === 1 ? " is" : "s are"} currently parked inside a constant-true SuppressIf scope.` : ""} AMITSE corroborates ${String(corroboratedTabs)} of the current tabs and contains ${String(registeredNonTabs)} other registered page${registeredNonTabs === 1 ? "" : "s"}; registration alone is not treated as tab visibility.`,
+    reason: `The FormSet entry ${hub.name || hub.formId} (${hub.formId}) is the IFR navigation hub: ${String(tabs.length)} direct Ref${tabs.length === 1 ? "" : "s"} define the current top-level tabs${suppressedTabs > 0 ? `, and ${String(suppressedTabs)} hub Ref${suppressedTabs === 1 ? " sits" : "s sit"} inside a constant-true SuppressIf scope` : ""}. AMITSE corroborates ${String(corroboratedTabs)} of the current tabs and contains ${String(registeredNonTabs)} other registered page${registeredNonTabs === 1 ? "" : "s"}; registration alone is not treated as tab visibility.`,
     formSetGuid,
     hubFormId: hub.formId,
     hubName: hub.name || root.name,

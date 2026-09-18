@@ -1,4 +1,4 @@
-import { sameGuidOrBothUndefined, sameHexId } from "../scripts/hexId";
+import { parseHexId, sameGuidOrBothUndefined, sameHexId } from "../scripts/hexId";
 import {
   constantTrueSuppressionOffsets,
   refreshSingleFormSetNavigation,
@@ -16,11 +16,12 @@ import { movableNodeForPage } from "./tabPlacement";
 // A top-level tab hub can hide/show one of its own direct Refs without a
 // generic Move: instead of synthesizing a brand new SuppressIf wrapper (an
 // HII resize) it reuses an existing, already-active constant-true SuppressIf
-// scope elsewhere in the FormSet as a "parking bin" for the bare Ref opcode.
-// Hide moves the Ref into that scope; Show moves it back to the hub. Both are
-// fixed-size - see computeRefBlock/detectRefMoves in binaryPatcher.ts for how
-// the actual byte relocation mirrors the generic Move feature's own
-// machinery.
+// scope anywhere in the FormSet - including one that's a direct child of the
+// hub itself, alongside other tabs a vendor already shipped hidden that way -
+// as a "parking bin" for the bare Ref opcode. Hide moves the Ref into that
+// scope; Show moves it back to the hub. Both are fixed-size - see
+// computeRefBlock/detectRefMoves in binaryPatcher.ts for how the actual byte
+// relocation mirrors the generic Move feature's own machinery.
 //
 // Show's own availability is read straight from the Ref's current
 // conditions/suppressIf against data.suppressions - the same live evidence
@@ -45,44 +46,41 @@ interface VisibilityHost {
   suppressionOffset: string;
 }
 
-// An existing, reused parking bin for a hidden tab: a constant-true
-// SuppressIf scope that already parks at least one Ref (proof it is a real,
-// safe-to-share wrapper, not merely constant-true by coincidence), outside
-// both the tab's current Form and its own target Form, and not already
-// parking a Ref to that same target (two such Refs would make "the"
-// suppressed reference for that page ambiguous - see
-// collectSuppressedTargets in singleFormSetNavigation.ts). The lowest-offset
-// candidate wins, so repeated Hides land deterministically.
+// The Form that pristinely owns a suppression scope: the first Form (in
+// physical/array order, which parseData always preserves) whose own closing
+// End sits after the scope's own opening offset - the same rule
+// findPristineOwnerFormIndex in binaryPatcher.ts uses for a moved Ref's
+// block, since a Suppression's offset is just as pristine and untouched.
+// Needs no existing child referencing the scope: a constant-true SuppressIf
+// is a valid, reusable parking bin purely by being there, seed or not.
+function suppressionOwnerFormIndex(data: Data, suppressionOffset: string) {
+  const offset = parseHexId(suppressionOffset);
+  const formIndex = data.forms.findIndex((form) => parseHexId(form.endOffset) > offset);
+  return formIndex < 0 ? undefined : formIndex;
+}
+
+// An existing, reused parking bin for a hidden tab: any currently active,
+// constant-true SuppressIf scope in the same FormSet, other than the tab's
+// own target Form - including one that's a direct child of the hub itself
+// (a same-hub scope is exactly as safe to share as one anywhere else: the
+// wrapper never moves, whoever else it hides). Not already parking a Ref to
+// that same target (two such Refs would make "the" suppressed reference for
+// that page ambiguous - see collectSuppressedTargets in
+// singleFormSetNavigation.ts). The lowest-offset candidate wins, so repeated
+// Hides land deterministically.
 function findVisibilityHost(
   data: Data,
-  excludedFormIndex: number,
+  formSetGuid: string | undefined,
   targetFormId: string,
   targetFormSetGuid: string | undefined,
 ): VisibilityHost | undefined {
-  const excluded = data.forms[excludedFormIndex];
-
-  const seedFormIndexByOffset = new Map<string, number>();
-  data.forms.forEach((form, formIndex) => {
-    for (const child of form.children) {
-      const offset = child.conditions?.[0];
-      if (offset !== undefined && !seedFormIndexByOffset.has(offset)) {
-        seedFormIndexByOffset.set(offset, formIndex);
-      }
-    }
-  });
-
+  const hiddenOffsets = constantTrueSuppressionOffsets(data.suppressions);
   const candidates: VisibilityHost[] = [];
   for (const suppression of data.suppressions) {
-    const formIndex = seedFormIndexByOffset.get(suppression.offset);
-    if (formIndex === undefined || formIndex === excludedFormIndex) continue;
-    if (
-      (suppression.kind ?? "SuppressIf") !== "SuppressIf" ||
-      !suppression.active ||
-      suppression.constant !== true ||
-      !sameGuidOrBothUndefined(suppression.formSetGuid, excluded.formSetGuid)
-    ) {
-      continue;
-    }
+    if (!hiddenOffsets.has(suppression.offset)) continue;
+    if (!sameGuidOrBothUndefined(suppression.formSetGuid, formSetGuid)) continue;
+    const formIndex = suppressionOwnerFormIndex(data, suppression.offset);
+    if (formIndex === undefined) continue;
     const host = data.forms[formIndex];
     if (
       sameHexId(host.formId, targetFormId) &&
@@ -163,7 +161,7 @@ export function analyzeTabVisibilityToggle(
     }
     const host = findVisibilityHost(
       data,
-      hubFormIndex,
+      sourceForm.formSetGuid,
       ref.formId,
       ref.targetFormSetGuid ?? sourceForm.formSetGuid,
     );
@@ -171,7 +169,7 @@ export function analyzeTabVisibilityToggle(
       return {
         available: false,
         reason:
-          "No existing constant-true SuppressIf scope elsewhere in this FormSet can be reused to park this tab.",
+          "No existing constant-true SuppressIf scope in this FormSet can be reused to park this tab.",
         ...located,
       };
     }
@@ -271,7 +269,7 @@ export function applyTabVisibilityToggle(
     }
     const host = findVisibilityHost(
       draft,
-      hubFormIndex,
+      hub.formSetGuid,
       ref.formId,
       ref.targetFormSetGuid ?? hub.formSetGuid,
     );
@@ -282,6 +280,13 @@ export function applyTabVisibilityToggle(
     ref.conditions = [host.suppressionOffset];
     ref.suppressIf = [host.suppressionOffset];
     ref.hiddenByTabToggle = host.suppressionOffset;
+    // A same-hub host never actually leaves the hub's own children array -
+    // detectRefMoves (binaryPatcher.ts) only notices a move by comparing a
+    // Ref's current Form to its pristine one, which same-hub reuse can't
+    // tell apart from no move at all without this.
+    if (host.formIndex === hubFormIndex) {
+      ref.repositionedWithinForm = true;
+    }
     draft.forms[host.formIndex].children.push(ref);
   } else {
     const source = draft.forms[sourceFormIndex];
@@ -300,11 +305,24 @@ export function applyTabVisibilityToggle(
       navigation?.status === "detected"
         ? orderPreservingIndex(navigation, hub, ref)
         : hub.children.length;
+    // Same-hub Show (a vendor-hidden hub tab, or one this same session
+    // hid into a same-hub scope) never leaves the hub's own children array
+    // either - same reasoning as Hide's own marker above.
+    if (sourceFormIndex === hubFormIndex) {
+      ref.repositionedWithinForm = true;
+    }
     source.children.splice(childIndex, 1);
     delete ref.conditions;
     delete ref.suppressIf;
     delete ref.hiddenByTabToggle;
-    hub.children.splice(insertAt, 0, ref);
+    // The Ref could already have been a hub child (a same-hub Hide never
+    // moved it out - see findVisibilityHost). Removing it above just
+    // shifted every later index in this same array down by one, so an
+    // insertAt computed against the pre-removal array needs the same
+    // correction, or Show lands the tab one slot too far.
+    const adjustedInsertAt =
+      sourceFormIndex === hubFormIndex && childIndex < insertAt ? insertAt - 1 : insertAt;
+    hub.children.splice(adjustedInsertAt, 0, ref);
   }
   refreshSingleFormSetNavigation(draft);
 }

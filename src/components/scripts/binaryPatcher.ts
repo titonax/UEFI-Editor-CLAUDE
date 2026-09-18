@@ -171,10 +171,14 @@ function stationaryDestinationAnchor(
 
 // A Ref has been moved (in the declarative `data` model, immediately on the
 // UI action - see relocating.ts's applyMoveToDraft) when the Form that
-// currently lists it isn't the Form its pristine block position belongs to.
-// Sorted by pristine block start so multiple simultaneous moves apply in a
-// stable, deterministic order (see applyRefMoves for why the order itself
-// doesn't affect the final byte layout).
+// currently lists it isn't the Form its pristine block position belongs to
+// - or, for the tab visibility toggle's same-hub Hide/Show, when it stayed
+// in that same Form but repositionedWithinForm says its place inside it
+// changed anyway (see that field's comment on RefPrompt for why Form
+// identity alone can't tell the two apart). Sorted by pristine block start
+// so multiple simultaneous moves apply in a stable, deterministic order
+// (see applyRefMoves for why the order itself doesn't affect the final
+// byte layout).
 export function detectRefMoves(
   data: Data,
   bytes: Uint8Array,
@@ -193,7 +197,7 @@ export function detectRefMoves(
         data,
         parseHexId(child.sctOffset),
       );
-      if (pristineOwner === formIndex) {
+      if (pristineOwner === formIndex && child.repositionedWithinForm !== true) {
         return;
       }
       const destinationOffsetOverride =
@@ -496,9 +500,11 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
     setupSctChangeLog +=
       move.ref.hiddenByTabToggle !== undefined
         ? `Hid top-level tab ${move.ref.name || "Ref"} inside an existing SuppressIf scope in "${destinationForm.name}"\n`
-        : `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"${
-            crossPackageMoves.has(move) ? " across HII Forms Packages" : ""
-          }\n`;
+        : sourceForm === destinationForm
+          ? `Showed top-level tab ${move.ref.name || "Ref"} back on "${destinationForm.name}"\n`
+          : `Moved ${move.ref.name || "Ref"} from "${sourceForm.name}" to "${destinationForm.name}"${
+              crossPackageMoves.has(move) ? " across HII Forms Packages" : ""
+            }\n`;
     wasSetupSctModified = true;
   }
 
