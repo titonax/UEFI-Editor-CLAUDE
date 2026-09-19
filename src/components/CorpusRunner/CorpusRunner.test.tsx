@@ -138,6 +138,11 @@ describe("CorpusRunner", () => {
         exact: false,
       }),
     ).not.toHaveLength(0);
+    // The richer per-file summary: size/container/generation, form/ref
+    // counts, and a reconstruction-trace badge, not just a bare pass/fail.
+    expect(screen.getByText(/forms .* refs/)).toBeInTheDocument();
+    expect(screen.getByText(/reconstruction (traced|blocked)/)).toBeInTheDocument();
+    expect(screen.getAllByText(/\d+(\.\d+)? (B|KiB|MiB)/).length).toBeGreaterThan(0);
     expect(screen.getByText("Download corpus-report.json")).toBeInTheDocument();
     expect(extractFirmwareInWorker).toHaveBeenCalledTimes(2);
   });

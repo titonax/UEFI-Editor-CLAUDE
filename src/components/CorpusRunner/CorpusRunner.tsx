@@ -1,13 +1,28 @@
 import React from "react";
-import { Alert, Badge, Button, FileInput, Group, Progress, Stack, Table, Text } from "@mantine/core";
+import {
+  Accordion,
+  Alert,
+  Badge,
+  Button,
+  FileInput,
+  Group,
+  List,
+  Progress,
+  Stack,
+  Table,
+  Text,
+} from "@mantine/core";
 import { IconDownload, IconStack2 } from "@tabler/icons-react";
 import { saveAs } from "file-saver";
 import {
   inspectAmiFirmwareBytes,
   inspectAmiSetupProfile,
   reconcileAmiGeneration,
+  type AmiGenerationAssessment,
+  type FirmwareContainer,
 } from "../scripts/amiFirmwareImage";
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
+import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
 import { parseData } from "../scripts/ifrParser";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
 import { buildCorpusReport, type CorpusReport } from "../scripts/corpusReport";
@@ -17,8 +32,38 @@ const MAX_FIRMWARE_BYTES = 512 * 1024 * 1024;
 interface CorpusRunEntry {
   label: string;
   status: "running" | "done" | "failed";
+  sizeBytes?: number;
+  container?: FirmwareContainer;
+  generation?: AmiGenerationAssessment;
+  reconstructionComplete?: boolean;
+  reconstructionBlockers?: string[];
   report?: CorpusReport;
   error?: string;
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${String(bytes)} B`;
+  const units = ["KiB", "MiB", "GiB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function generationLabel(assessment?: AmiGenerationAssessment) {
+  if (!assessment) return "—";
+  if (assessment.conflict) return "conflicting";
+  if (assessment.generation === "unresolved") return "unresolved";
+  return `${assessment.generation} (${assessment.confidence})`;
+}
+
+function statusColor(status: CorpusRunEntry["status"]) {
+  if (status === "done") return "green";
+  if (status === "failed") return "red";
+  return "blue";
 }
 
 // A browser-local batch runner over several real firmware images at once:
@@ -57,16 +102,32 @@ export default function CorpusRunner() {
         }
         const extracted = await extractFirmwareInWorker(file);
         const profile = inspectAmiSetupProfile(extracted.hii, extracted.setupData);
-        const generation = reconcileAmiGeneration(preflight, profile).generation;
-        const populated = buildPopulatedFilesFromArtifacts(extracted, file.name, generation);
+        const generation = reconcileAmiGeneration(preflight, profile);
+        const populated = buildPopulatedFilesFromArtifacts(
+          extracted,
+          file.name,
+          generation.generation,
+        );
         const data = await parseData(populated);
-        data.firmwareFamily = generation === "unresolved" ? "ami-aptio" : generation;
+        data.firmwareFamily =
+          generation.generation === "unresolved" ? "ami-aptio" : generation.generation;
         const report = buildCorpusReport(data, file.name);
-        result = { label: file.name, status: "done", report };
+        const reconstruction = assessFirmwareReconstruction(extracted.provenance);
+        result = {
+          label: file.name,
+          status: "done",
+          sizeBytes: file.size,
+          container: preflight.container,
+          generation,
+          reconstructionComplete: reconstruction.traceComplete,
+          reconstructionBlockers: reconstruction.blockers,
+          report,
+        };
       } catch (error) {
         result = {
           label: file.name,
           status: "failed",
+          sizeBytes: file.size,
           error: error instanceof Error ? error.message : String(error),
         };
       }
@@ -115,56 +176,141 @@ export default function CorpusRunner() {
               animated={doneCount < entries.length}
             />
           )}
-          <Table striped withColumnBorders>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>File</Table.Th>
-                <Table.Th>Status</Table.Th>
-                <Table.Th>Navigation</Table.Th>
-                <Table.Th>Direct / suppressed tabs</Table.Th>
-                <Table.Th>Hide blocked</Table.Th>
-                <Table.Th>Show blocked</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {entries.map((entry) => {
-                const report = entry.report;
-                const hideBlocked = report?.tabOperations.filter(
-                  (op) => op.role === "direct-tab" && !op.hide.available,
-                ).length;
-                const showBlocked = report?.tabOperations.filter(
-                  (op) => op.role === "suppressed-tab" && !op.show.available,
-                ).length;
-                return (
-                  <Table.Tr key={entry.label}>
-                    <Table.Td>{entry.label}</Table.Td>
-                    <Table.Td>
-                      <Badge
-                        variant="light"
-                        color={
-                          entry.status === "done"
-                            ? "green"
-                            : entry.status === "failed"
-                              ? "red"
-                              : "blue"
-                        }
-                      >
-                        {entry.status === "running" ? "analysing…" : entry.status}
-                      </Badge>
-                    </Table.Td>
-                    <Table.Td>{report?.navigation.status ?? (entry.error ?? "—")}</Table.Td>
-                    <Table.Td>
-                      {report
-                        ? `${String(report.navigation.directTabs)} / ${String(report.navigation.suppressedTabs)}`
-                        : "—"}
-                    </Table.Td>
-                    <Table.Td>{hideBlocked ?? "—"}</Table.Td>
-                    <Table.Td>{showBlocked ?? "—"}</Table.Td>
-                  </Table.Tr>
-                );
-              })}
-            </Table.Tbody>
-          </Table>
+          <Accordion variant="separated" multiple>
+            {entries.map((entry, entryIndex) => {
+              const report = entry.report;
+              const hideOps = report?.tabOperations.filter((op) => op.role === "direct-tab");
+              const showOps = report?.tabOperations.filter(
+                (op) => op.role === "suppressed-tab",
+              );
+              const hideAvailable = hideOps?.filter((op) => op.hide.available).length;
+              const showAvailable = showOps?.filter((op) => op.show.available).length;
+              return (
+                <Accordion.Item value={`${entry.label}:${String(entryIndex)}`} key={`${entry.label}:${String(entryIndex)}`}>
+                  <Accordion.Control>
+                    <Group justify="space-between" wrap="nowrap">
+                      <Stack gap={0}>
+                        <Text fw={600} size="sm">
+                          {entry.label}
+                        </Text>
+                        <Text size="xs" c="dimmed">
+                          {entry.sizeBytes !== undefined ? formatBytes(entry.sizeBytes) : "—"}
+                          {" · "}
+                          {entry.container ?? "—"}
+                          {" · "}
+                          {generationLabel(entry.generation)}
+                        </Text>
+                      </Stack>
+                      <Group gap="xs" wrap="nowrap">
+                        {report && (
+                          <Badge variant="light">
+                            {String(report.counts.forms)} forms · {String(report.counts.refs)}{" "}
+                            refs
+                          </Badge>
+                        )}
+                        {report && (
+                          <Badge color="blue" variant="light">
+                            {report.navigation.status}
+                          </Badge>
+                        )}
+                        {report && (hideOps?.length ?? 0) + (showOps?.length ?? 0) > 0 && (
+                          <Badge color="teal" variant="light">
+                            Hide {String(hideAvailable ?? 0)}/{String(hideOps?.length ?? 0)} ·
+                            Show {String(showAvailable ?? 0)}/{String(showOps?.length ?? 0)}
+                          </Badge>
+                        )}
+                        {entry.reconstructionComplete !== undefined && (
+                          <Badge
+                            color={entry.reconstructionComplete ? "gray" : "orange"}
+                            variant="light"
+                          >
+                            reconstruction {entry.reconstructionComplete ? "traced" : "blocked"}
+                          </Badge>
+                        )}
+                        <Badge color={statusColor(entry.status)}>
+                          {entry.status === "running" ? "analysing…" : entry.status}
+                        </Badge>
+                      </Group>
+                    </Group>
+                  </Accordion.Control>
+                  <Accordion.Panel>
+                    {entry.error && (
+                      <Alert color="red" title="Could not analyse this image">
+                        {entry.error}
+                      </Alert>
+                    )}
+                    {report && (
+                      <Stack gap="xs">
+                        <Text size="sm">
+                          <Text span fw={600}>
+                            Navigation:{" "}
+                          </Text>
+                          {report.navigation.mechanism ?? "n/a"}
+                          {report.navigation.confidence
+                            ? ` (${report.navigation.confidence})`
+                            : ""}{" "}
+                          - {String(report.navigation.directTabs)} direct /{" "}
+                          {String(report.navigation.suppressedTabs)} suppressed /{" "}
+                          {String(report.navigation.descendants)} descendant /{" "}
+                          {String(report.navigation.registeredOnly)} registered-only
+                        </Text>
+                        {report.navigation.reason && (
+                          <Text size="xs" c="dimmed">
+                            {report.navigation.reason}
+                          </Text>
+                        )}
+                        {entry.reconstructionBlockers && entry.reconstructionBlockers.length > 0 && (
+                          <List size="xs" spacing={2}>
+                            {entry.reconstructionBlockers.map((blocker) => (
+                              <List.Item key={blocker}>{blocker}</List.Item>
+                            ))}
+                          </List>
+                        )}
+                        {report.tabOperations.length > 0 && (
+                          <Table striped withColumnBorders>
+                            <Table.Thead>
+                              <Table.Tr>
+                                <Table.Th>Page</Table.Th>
+                                <Table.Th>Role</Table.Th>
+                                <Table.Th>Hide</Table.Th>
+                                <Table.Th>Show</Table.Th>
+                              </Table.Tr>
+                            </Table.Thead>
+                            <Table.Tbody>
+                              {report.tabOperations.map((op) => (
+                                <Table.Tr key={`${op.formId}-${op.name}`}>
+                                  <Table.Td>{op.name}</Table.Td>
+                                  <Table.Td>{op.role}</Table.Td>
+                                  <Table.Td>
+                                    <Badge
+                                      size="xs"
+                                      color={op.hide.available ? "green" : "gray"}
+                                      variant="light"
+                                    >
+                                      {op.hide.available ? "available" : "blocked"}
+                                    </Badge>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Badge
+                                      size="xs"
+                                      color={op.show.available ? "green" : "gray"}
+                                      variant="light"
+                                    >
+                                      {op.show.available ? "available" : "blocked"}
+                                    </Badge>
+                                  </Table.Td>
+                                </Table.Tr>
+                              ))}
+                            </Table.Tbody>
+                          </Table>
+                        )}
+                      </Stack>
+                    )}
+                  </Accordion.Panel>
+                </Accordion.Item>
+              );
+            })}
+          </Accordion>
           {reports.length > 0 && (
             <Group>
               <Button
@@ -176,14 +322,6 @@ export default function CorpusRunner() {
                 Download corpus-report.json
               </Button>
             </Group>
-          )}
-          {entries.some((entry) => entry.status === "failed") && (
-            <Alert color="orange" title="Some images could not be analysed">
-              {entries
-                .filter((entry) => entry.status === "failed")
-                .map((entry) => `${entry.label}: ${entry.error ?? "unknown error"}`)
-                .join(" · ")}
-            </Alert>
           )}
         </Stack>
       )}
