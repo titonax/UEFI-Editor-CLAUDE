@@ -27,6 +27,7 @@ import { saveAs } from "file-saver";
 import {
   inspectAmiFirmwareBytes,
   inspectAmiSetupProfile,
+  legacyFrameworkHiiGuess,
   reconcileAmiGeneration,
   sniffNonAmiFailure,
   type AmiGenerationAssessment,
@@ -505,14 +506,21 @@ export default function CorpusRunner() {
           stages.push({ id, status: "not-run", detail: "Not reached." });
         }
       }
-      // No firmware volumes at all, or valid UEFI volumes with no AMI Setup
-      // module, are both structurally-understood "this just isn't AMI
-      // Aptio" outcomes - worth a vendor guess and "unsupported" rather
-      // than a blanket "failed", which stays for genuinely unexpected
-      // errors (a truncated file, an extraction-worker crash, the size cap).
+      // No firmware volumes at all, valid UEFI volumes with no AMI Setup
+      // module, or a Setup module that decoded as legacy Framework rather
+      // than UEFI HII, are all structurally-understood "this just isn't
+      // (usable) AMI Aptio" outcomes - worth a vendor guess and
+      // "unsupported" rather than a blanket "failed", which stays for
+      // genuinely unexpected errors (a truncated file, an extraction-worker
+      // crash, the size cap).
       const knownNonAmi =
         preflight !== undefined &&
         (preflight.firmwareVolumes.length === 0 || sniffNonAmiFailure(message));
+      const vendorGuess = knownNonAmi
+        ? message.includes("Only UEFI is supported.")
+          ? legacyFrameworkHiiGuess
+          : preflight?.vendorGuess
+        : undefined;
       return {
         fileName: file.name,
         size: file.size,
@@ -523,7 +531,7 @@ export default function CorpusRunner() {
         reconstructionBlockers: [],
         stages,
         failureMessage: message,
-        vendorGuess: knownNonAmi ? preflight?.vendorGuess : undefined,
+        vendorGuess,
       };
     }
   };

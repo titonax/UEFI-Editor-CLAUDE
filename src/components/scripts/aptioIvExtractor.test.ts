@@ -75,6 +75,19 @@ function pe32Section(payload: Uint8Array) {
   return section;
 }
 
+// A GUID-Defined Section (type 0x02): headerSize(4) + definitionGuid(16) +
+// dataOffset(2) + attributes(2), then the payload at dataOffset.
+function guidDefinedSection(definitionGuid: string, payload: Uint8Array) {
+  const dataOffset = 4 + 16 + 2 + 2;
+  const section = new Uint8Array(dataOffset + payload.length);
+  writeUint24(section, 0, section.length);
+  section[3] = 0x02;
+  writeGuid(section, 4, definitionGuid);
+  new DataView(section.buffer).setUint16(4 + 16, dataOffset, true);
+  section.set(payload, dataOffset);
+  return section;
+}
+
 function setupVolume(hii: Uint8Array) {
   return firmwareVolumeWithFile(setupGuid, freeformSection(hiiGuid, hii));
 }
@@ -194,6 +207,31 @@ describe("extractAptioIvArtifacts", () => {
       kind: "setup-hii",
       payloadStart: 0x48 + 24 + 4,
     });
+  });
+
+  it("names the failing section's definition GUID, owning file and location when decompression rejects a stream", async () => {
+    const lzmaGuid = "EE4E5898-3914-4259-9D6E-DC7BD79403CF";
+    const hii = freeformSection(hiiGuid, new Uint8Array([0x01, 0x02, 0x03]));
+    const image = firmwareVolumeWithFile(setupGuid, guidDefinedSection(lzmaGuid, hii));
+    const failingDecompress = () =>
+      Promise.reject(new Error("LZMA decompression rejected the stream"));
+
+    // A bare "decompression rejected the stream" is useless across a real
+    // 16-32 MiB image with dozens of firmware volumes; this should be
+    // locatable directly in a byte-level tool instead of hand-scanned for.
+    let thrown: unknown;
+    try {
+      await extractAptioIvBytes(image, () => Promise.resolve(""), failingDecompress);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toContain("Failed to decompress a lzma");
+    expect(message).toContain(lzmaGuid);
+    expect(message).toContain(`FFS file ${setupGuid}`);
+    expect(message).toContain("buffer 0, depth 0");
+    expect(message).toContain("LZMA decompression rejected the stream");
   });
 
   it("keeps duplicated firmware slots coherent and selects them explicitly", async () => {

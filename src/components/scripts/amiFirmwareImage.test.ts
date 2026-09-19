@@ -3,7 +3,9 @@ import {
   inspectAmiFirmwareBytes,
   inspectAmiFirmwareImage,
   inspectAmiSetupProfile,
+  legacyFrameworkHiiGuess,
   reconcileAmiGeneration,
+  sniffNonAmiFailure,
 } from "./amiFirmwareImage";
 
 function hexBytes(value: string) {
@@ -280,6 +282,31 @@ describe("inspectAmiFirmwareBytes", () => {
       label: "Unrecognized firmware",
       evidence: [],
     });
+  });
+});
+
+describe("sniffNonAmiFailure", () => {
+  it("recognizes all three structurally-understood non-AMI extraction failures", () => {
+    expect(
+      sniffNonAmiFailure("Setup FFS was not found after recursive decompression."),
+    ).toBe(true);
+    expect(
+      sniffNonAmiFailure(
+        "No Setup context contains a usable HII package or Setup PE32 section.",
+      ),
+    ).toBe(true);
+    // ifrParser.ts's parseData throws this exact message for a Setup module
+    // IFRExtractor-RS decoded as legacy Framework HII rather than UEFI HII
+    // (seen on a pre-UEFI2.0 early-2010s ultrabook in the real corpus).
+    expect(sniffNonAmiFailure("Only UEFI is supported.")).toBe(true);
+  });
+
+  it("does not flag an unrelated/unexpected error message", () => {
+    expect(sniffNonAmiFailure("Extraction timed out after 90s.")).toBe(false);
+  });
+
+  it("exposes a distinct vendor guess for the legacy Framework HII case", () => {
+    expect(legacyFrameworkHiiGuess.family).toBe("legacy-framework-hii");
   });
 });
 

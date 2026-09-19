@@ -350,10 +350,28 @@ async function decodeEncapsulation(
 
   const encapsulated = encapsulatedFirmwareSection(parent.bytes, section);
   if (!encapsulated) return null;
-  const decoded =
-    encapsulated.compression === "none"
-      ? encapsulated.bytes
-      : await graph.decompress(encapsulated.bytes, encapsulated.compression);
+  let decoded: Uint8Array;
+  if (encapsulated.compression === "none") {
+    decoded = encapsulated.bytes;
+  } else {
+    try {
+      decoded = await graph.decompress(encapsulated.bytes, encapsulated.compression);
+    } catch (error) {
+      // A bare "decompression rejected the stream" is nearly useless across
+      // a 16-32 MiB image with dozens of firmware volumes: name exactly
+      // which section failed (its GUID-defined definition when it has one,
+      // the owning FFS file, and its offset/size in its parent buffer) so a
+      // real corpus failure can be located directly in a byte-level tool
+      // instead of hand-scanned for.
+      const cause = error instanceof Error ? error.message : String(error);
+      const definition = encapsulated.definitionGuid ? ` ${encapsulated.definitionGuid}` : "";
+      const owner = ownerFile ? ` in FFS file ${ownerFile.guid}` : "";
+      throw new Error(
+        `Failed to decompress a ${encapsulated.compression}${definition} section${owner} ` +
+          `(buffer ${String(parent.id)}, depth ${String(parent.depth)}, offset 0x${section.start.toString(16).toUpperCase()}, size 0x${(section.end - section.start).toString(16).toUpperCase()}): ${cause}`,
+      );
+    }
+  }
   const node: FirmwareBufferNode = {
     id: graph.nextId++,
     bytes: decoded,

@@ -30,6 +30,7 @@ export type FirmwareVendorFamily =
   | "insyde"
   | "uefi-generic"
   | "embedded-non-bios"
+  | "legacy-framework-hii"
   | "unknown";
 
 export interface FirmwareVendorGuess {
@@ -37,6 +38,20 @@ export interface FirmwareVendorGuess {
   label: string;
   evidence: string[];
 }
+
+// Not a byte-signature guess: IFRExtractor-RS itself reports its "Extraction
+// mode" as UEFI or Framework once it has actually decoded the HII, and
+// ifrParser.ts rejects the latter outright (this editor only ever speaks PI/
+// UEFI HII). A real corpus still carries pre-UEFI2.0 machines (seen on an
+// early-2010s ultrabook) whose Setup module is genuine EFI 1.10 "Framework"
+// HII - correctly out of scope, not a bug, so it gets the same
+// "Unsupported" + guess treatment as an unrecognized vendor rather than a
+// blanket "Failed". sniffNonAmiFailure below is what a caller checks first.
+export const legacyFrameworkHiiGuess: FirmwareVendorGuess = {
+  family: "legacy-framework-hii",
+  label: 'Legacy EFI 1.10 "Framework" HII (pre-UEFI2.0, not supported)',
+  evidence: [],
+};
 
 // What a shallow, read-only pass over the raw image bytes can tell before
 // anything is decompressed: which structures are visible at the top level,
@@ -620,15 +635,20 @@ export function formatHexOffset(offset: number) {
   return `0x${offset.toString(16).toUpperCase().padStart(6, "0")}`;
 }
 
-// extractAptioIvBytes throws exactly these two messages once it has walked
-// every firmware volume and encapsulation layer without ever finding an AMI
-// Setup module - a structurally-understood "this just isn't AMI Aptio", not
-// a bug or a corrupt image. A corpus runner uses this to label such a
-// failure "unsupported" (with its best vendorGuess attached) instead of a
+// extractAptioIvBytes throws the first two once it has walked every
+// firmware volume and encapsulation layer without ever finding an AMI Setup
+// module; ifrParser.ts's parseData throws the third once IFRExtractor-RS
+// reports the decoded HII as legacy Framework rather than UEFI (see
+// legacyFrameworkHiiGuess above). All three are structurally-understood
+// "this just isn't (usable) AMI Aptio", not a bug or a corrupt image. A
+// corpus runner uses this to label such a failure "unsupported" (with its
+// best vendorGuess attached - legacyFrameworkHiiGuess for the third,
+// otherwise the preflight's byte-signature vendorGuess) instead of a
 // blanket "failed", which is reserved for genuinely unexpected errors.
 const knownNonAmiExtractionFailures = [
   "Setup FFS was not found after recursive decompression.",
   "No Setup context contains a usable HII package or Setup PE32 section.",
+  "Only UEFI is supported.",
 ];
 
 export function sniffNonAmiFailure(message: string): boolean {

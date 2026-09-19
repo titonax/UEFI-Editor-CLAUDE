@@ -107,13 +107,21 @@ scripted regression runs against a fixed local corpus.
 
 A real-world folder of firmware dumps is never all AMI Aptio, so an image
 that isn't is labelled **Unsupported** with a best-effort vendor guess -
-Award/Phoenix-Award, Phoenix, Insyde H2O, some other/unbranded UEFI, or
-embedded Linux firmware that was never a PC BIOS at all (a router or
-appliance dump) - rather than the generic **Failed** reserved for a
-genuinely unexpected error (a truncated file, a worker crash, the 512 MiB
-safety cap). The guess comes from the same shallow byte-signature scan the AMI preflight
-already runs (`src/components/scripts/amiFirmwareImage.ts`); the image is
-never parsed further, so it stays a label, not a claim of support.
+Award/Phoenix-Award, Phoenix, Insyde H2O, some other/unbranded UEFI, legacy
+EFI 1.10 "Framework" HII (a pre-UEFI2.0 machine whose Setup module IFRExtractor
+itself reports as Framework rather than UEFI), or embedded Linux firmware
+that was never a PC BIOS at all (a router or appliance dump) - rather than
+the generic **Failed** reserved for a genuinely unexpected error (a
+truncated file, a worker crash, the 512 MiB safety cap). Most of these
+guesses come from the same shallow byte-signature scan the AMI preflight
+already runs (`src/components/scripts/amiFirmwareImage.ts`); none of them
+are ever parsed further, so a guess stays a label, not a claim of support.
+When an image genuinely is AMI Aptio but a compressed section still fails to
+decompress, the error names exactly which one - its GUID-defined
+decompression scheme (when it has one), the FFS file that owns it, and its
+buffer/depth/offset/size - instead of a bare "stream rejected", so a real
+corpus failure can be located directly in a byte-level tool like UEFITool
+rather than hand-scanned for across a multi-megabyte image.
 
 Once loaded, the sidebar shows the BIOS menu tree: the root menus proven by
 the AMITSE table and SetupData page list, every submenu under them, and any
