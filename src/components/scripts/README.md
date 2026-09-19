@@ -41,9 +41,9 @@ parked, pointing at Show instead.
 ## Why bytes, not hex strings
 
 Firmware files are carried through the app as uppercase hex strings (that's
-what the browser can read them as via `FileReader`/`Web Worker`, see
-`hexWorker.ts`), but every module in this list except the very edges
-(`FileUploads.tsx` reading files, `binaryPatcher.ts`'s `hexToBytes`/`Blob`
+what `PopulatedFiles.*Container.textContent` holds - `BiosImageUpload.tsx`'s
+own `toHex()` produces it from the extracted bytes), but every module in
+this list except the very edges (`binaryPatcher.ts`'s `hexToBytes`/`Blob`
 boundary) treats offsets and comparisons as bytes/numbers, not hex-string
 character positions. If you're adding a new patch, decode once at the
 boundary and index by byte offset - don't reintroduce string

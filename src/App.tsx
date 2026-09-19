@@ -1,9 +1,8 @@
 import React from "react";
 import s from "./App.module.css";
 import { useImmer, type Updater } from "use-immer";
-import { Alert, AppShell, Button, Divider, Group, Stack, Text } from "@mantine/core";
+import { AppShell, Button, Group, Stack } from "@mantine/core";
 import type { Data } from "./components/scripts/types";
-import FileUploads from "./components/FileUploads/FileUploads";
 import type { Files, PopulatedFiles } from "./components/FileUploads/fileModel";
 import FormUi from "./components/FormUi/FormUi";
 import Navigation from "./components/Navigation/Navigation";
@@ -52,10 +51,6 @@ export default function App({
   const [currentFormIndex, setCurrentFormIndex] = React.useState(
     TOP_LEVEL_MENU_VIEW,
   );
-  const [error, setError] = React.useState("");
-  const handleError = React.useCallback((message: string) => {
-    setError(message);
-  }, []);
 
   // Computed once here instead of independently inside Navigation, Header,
   // and FormUi - it's a non-trivial recursive walk of the whole form graph
@@ -71,19 +66,8 @@ export default function App({
   if (!data || !tree) {
     return (
       <Stack className={s.padding} gap="xl">
-        {error.length > 0 && (
-          <Alert color="red" title="The firmware could not be loaded">
-            {error}
-          </Alert>
-        )}
         <BiosImageUpload
           onExtracted={async (extractedFiles) => {
-            setError("");
-            // Parse first, then set `files` and `data` together. Setting
-            // `files` before `data` is ready would re-render FileUploads
-            // with all four slots already populated - its own effect would
-            // then kick off a second, redundant parseData() in parallel
-            // with this one, racing to overwrite whichever data lands last.
             const parsed = await parseData(extractedFiles);
             // The preflight is the only place the generation is assessed
             // from real evidence; the four-file parse has none.
@@ -94,17 +78,6 @@ export default function App({
             setFiles(extractedFiles);
             setLoadedData(parsed);
           }}
-        />
-        <Divider label="Or load previously extracted HII artefacts" />
-        <Text c="dimmed" size="sm" ta="center">
-          Manual compatibility mode for existing Setup, IFR, AMITSE and SetupData
-          files.
-        </Text>
-        <FileUploads
-          files={files}
-          setFiles={setFiles}
-          setData={setLoadedData}
-          onError={handleError}
         />
         <Group justify="center">
           <Button

@@ -62,37 +62,29 @@ byte values are. This editor:
 
 ## Using it
 
-There are two ways to get data in.
-
-**Complete AMI image** (top of the upload screen): select the firmware dump,
-whatever its file extension. The app first runs a read-only preflight in the
-browser - it locates the flash layout and firmware volumes, recursively
-decompresses LZMA/Tiano sections, extracts the Setup, AMITSE and SetupData
-modules, and runs IFRExtractor-RS via WebAssembly - and then reports what it
-found: the container kind, every volume, the compression path each artefact
-came through, how the Setup HII is laid out, and whether the image reads as
-Aptio IV or V (shared structures alone are never taken as proof, so an
-unresolved image stays marked as such). If the image carries more than one
-coherent Setup/AMITSE/SetupData context - a redundant/dual-BIOS layout, or
-several OEM navigation profiles side by side - the preflight lists every one
-and requires an explicit choice before continuing; see
+Select a complete firmware dump, whatever its file extension. The app first
+runs a read-only preflight in the browser - it locates the flash layout and
+firmware volumes, recursively decompresses LZMA/Tiano sections, extracts the
+Setup, AMITSE and SetupData modules, and runs IFRExtractor-RS via
+WebAssembly - and then reports what it found: the container kind, every
+volume, the compression path each artefact came through, how the Setup HII
+is laid out, and whether the image reads as Aptio IV or V (shared structures
+alone are never taken as proof, so an unresolved image stays marked as
+such). If the image carries more than one coherent Setup/AMITSE/SetupData
+context - a redundant/dual-BIOS layout, or several OEM navigation profiles
+side by side - the preflight lists every one and requires an explicit choice
+before continuing; see
 [`docs/ami/firmware-context-selection.md`](docs/ami/firmware-context-selection.md).
-Press **Start HII analysis** to open the menu tree. A modified Setup module
-cannot yet be reinserted into the image it came from, so the **UEFI files**
-export stays disabled in this mode; `data.json` export still works.
+Press **Start HII analysis** to open the menu tree.
 
-**Four separate files** (manual compatibility mode): extract these with
-[UEFITool](https://github.com/LongSoft/UEFITool) and
-[IFRExtractor-RS](https://github.com/LongSoft/IFRExtractor-RS) yourself,
-then upload. The **UEFI files** export works here for Aptio IV and V alike,
-since you reinsert the patched modules with UEFITool yourself:
-
-| File | What it is |
-| --- | --- |
-| Setup HII / SCT | The Setup module's PE32/SCT section |
-| IFR Extractor output TXT(s) | Run IFRExtractor-RS with `verbose` on the file above |
-| AMITSE PE32 / SCT | The AMITSE module's PE32/SCT section |
-| Setupdata BIN | The `SetupData` freeform section body |
+> The manual "four separate files" upload (paste in Setup/AMITSE/SetupData
+> already extracted with UEFITool + IFRExtractor-RS yourself) has been
+> removed, matching upstream. That was also the only path that ever enabled
+> **UEFI files** export (a modified Setup module still can't be reinserted
+> into the image it came from), so exporting patched extracted files is
+> presently unavailable from the UI; `data.json` still round-trips a full
+> session, and the corpus runner below still accepts the same four-file
+> shape directly for local diagnostics.
 
 Once loaded, the sidebar shows the BIOS menu tree: the root menus proven by
 the AMITSE table and SetupData page list, every submenu under them, and any
@@ -146,8 +138,8 @@ exporting extracted UEFI files is blocked while one is pending: the root byte
 lives inside the Setup PE32, which only the (not yet available) full-image
 reconstruction path can rewrite.
 
-The header names the loaded firmware (the image, or the Setup file in
-four-file mode) next to the breadcrumb of the page you are on.
+The header names the loaded firmware image next to the breadcrumb of the
+page you are on.
 
 The Access Level byte is really AMI's SetupData control flag byte, not a
 level; its tooltip decodes the bits that are set. Across 14 reference images
@@ -174,10 +166,10 @@ npm test         # vitest - parser, patching, hashing, firmware inspection and c
 npm run lint     # eslint
 ```
 
-The full-image path needs `public/ifrextractor.wasm`,
-`public/firmware-decompress.wasm` and `public/tiano-decompress.wasm`. They are
-built from source by `.github/workflows/deploy.yaml` and are ignored by git;
-without them a local dev server still offers the four-file mode.
+The app needs `public/ifrextractor.wasm`, `public/firmware-decompress.wasm`
+and `public/tiano-decompress.wasm` to do anything at all - they are built
+from source by `.github/workflows/deploy.yaml` and are ignored by git, and
+with the manual upload removed there is no local fallback without them.
 
 Deployment to GitHub Pages runs automatically on push to `main` via
 `.github/workflows/deploy.yaml`.
@@ -196,9 +188,10 @@ structured report per image instead of checking each by hand:
 CORPUS_DIR=/path/to/your/corpus npx vitest run src/components/scripts/corpusRunner.node.test.ts
 ```
 
-Each `<CORPUS_DIR>/<image-name>/` subdirectory holds the same four files the
-"Four separate files" mode above accepts, named `setup.sct`, `amitse.sct`,
-`setupdata.bin` and `setup.ifr.txt`. The run writes one JSON report per image
+Each `<CORPUS_DIR>/<image-name>/` subdirectory holds the four files
+`parseData`/`PopulatedFiles` accept directly (the Setup HII/SCT, IFR
+Extractor output, AMITSE PE32/SCT and SetupData BIN), named `setup.sct`,
+`amitse.sct`, `setupdata.bin` and `setup.ifr.txt`. The run writes one JSON report per image
 plus a `summary.txt` (both under `<CORPUS_DIR>/reports` by default, or
 `$CORPUS_OUT`) recording Form/Ref/condition counts, the single-FormSet
 navigation verdict, and - for every page in that inventory - whether Hide and

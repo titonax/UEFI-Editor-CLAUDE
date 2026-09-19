@@ -33,25 +33,3 @@ export interface PopulatedFiles {
   setupdataBinContainer: Required<FileContainer>;
   firmwareSource?: FirmwareSourceSession;
 }
-
-// Generic so a PopulatedFiles argument yields Required<FileContainer>[]
-// instead of losing the narrowing.
-export function fileContainers<T extends FileContainer>(files: {
-  setupSctContainer: T;
-  setupTxtContainer: T;
-  amitseSctContainer: T;
-  setupdataBinContainer: T;
-}): T[] {
-  return [
-    files.setupSctContainer,
-    files.setupTxtContainer,
-    files.amitseSctContainer,
-    files.setupdataBinContainer,
-  ];
-}
-
-export function isPopulatedFiles(files: Files): files is PopulatedFiles {
-  return fileContainers(files).every(
-    (container) => container.file !== undefined && !container.isWrongFile,
-  );
-}
