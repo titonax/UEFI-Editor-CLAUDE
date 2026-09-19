@@ -1,7 +1,7 @@
 import React from "react";
 import s from "./App.module.css";
 import { useImmer, type Updater } from "use-immer";
-import { AppShell, Button, Group, Stack } from "@mantine/core";
+import { AppShell, Button, Divider, Group, Stack } from "@mantine/core";
 import type { Data } from "./components/scripts/types";
 import type { Files, PopulatedFiles } from "./components/FileUploads/fileModel";
 import FormUi from "./components/FormUi/FormUi";
@@ -11,6 +11,7 @@ import Header from "./components/Header/Header";
 import Footer from "./components/Footer/Footer";
 import { IconBrandGithub } from "@tabler/icons-react";
 import BiosImageUpload from "./components/BiosImageUpload/BiosImageUpload";
+import CorpusRunner from "./components/CorpusRunner/CorpusRunner";
 import { parseData } from "./components/scripts/ifrParser";
 import { TOP_LEVEL_MENU_VIEW } from "./formNavigation";
 import { buildMenuTree } from "./components/Navigation/menuTree";
@@ -79,6 +80,8 @@ export default function App({
             setLoadedData(parsed);
           }}
         />
+        <Divider label="Or measure a local firmware corpus" />
+        <CorpusRunner />
         <Group justify="center">
           <Button
             variant="default"

@@ -83,8 +83,19 @@ Press **Start HII analysis** to open the menu tree.
 > **UEFI files** export (a modified Setup module still can't be reinserted
 > into the image it came from), so exporting patched extracted files is
 > presently unavailable from the UI; `data.json` still round-trips a full
-> session, and the corpus runner below still accepts the same four-file
-> shape directly for local diagnostics.
+> session, and the CLI corpus runner further down still accepts the same
+> four-file shape directly for local diagnostics.
+
+Below the single-image upload, **Local firmware corpus (optional)** lets you
+drop several real firmware images at once and get the same kind of
+read-only report - Form/Ref/condition counts, the navigation verdict, and
+per-page Hide/Show availability - for every one of them, entirely in the
+browser: nothing is patched, exported, or leaves the tab. It never opens
+any of them into the editor itself (a multi-context image is silently
+analysed at its default context rather than asking you to pick), and it's
+a separate tool from the CLI corpus runner further down - this one is for
+"how does this whole pile of firmware look right now," the CLI one is for
+scripted regression runs against a fixed local corpus.
 
 Once loaded, the sidebar shows the BIOS menu tree: the root menus proven by
 the AMITSE table and SetupData page list, every submenu under them, and any
@@ -177,9 +188,10 @@ Deployment to GitHub Pages runs automatically on push to `main` via
 See [`src/components/scripts/README.md`](src/components/scripts/README.md)
 for how the parsing/patching code is organized.
 
-### Corpus regression runner
+### CLI corpus regression runner
 
-If you have a local set of real firmware extracts (never commit them -
+For scripted/CI-style runs rather than the in-browser panel above: if you
+have a local set of real firmware extracts (never commit them -
 see [`docs/aptio-iv/README.md`](docs/aptio-iv/README.md)'s "Sample intake"),
 you can run every one of them through the parser and classifier and get a
 structured report per image instead of checking each by hand:

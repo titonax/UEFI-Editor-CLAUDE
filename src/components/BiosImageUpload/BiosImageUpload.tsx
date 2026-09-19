@@ -31,6 +31,7 @@ import {
   type FirmwareArtifactCoherence,
 } from "../scripts/firmwareProvenance";
 import type { FirmwareSectionCompression } from "../scripts/firmwareSections";
+import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 
 const MAX_FIRMWARE_BYTES = 512 * 1024 * 1024;
@@ -43,12 +44,6 @@ function outerModuleOffsets(values: number[]) {
   return values.length === 0
     ? "Not visible before deep scan"
     : values.map(formatHexOffset).join(", ");
-}
-
-function toHex(bytes: Uint8Array) {
-  return Array.from(bytes, (byte) =>
-    byte.toString(16).toUpperCase().padStart(2, "0"),
-  ).join("");
 }
 
 function detectionLabel(assessment: AmiGenerationAssessment) {
@@ -213,39 +208,13 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
     setError("");
     try {
       setStage("Decoding IFR and building the menu tree…");
-      const amitseBytes = artifacts.amitse ?? new Uint8Array();
-      const setupDataBytes = artifacts.setupData ?? new Uint8Array();
-      await onExtracted({
-        setupSctContainer: {
-          file: new File([artifacts.hii], "setup-ami-aptio.bin"),
-          textContent: toHex(artifacts.hii),
-          isWrongFile: false,
-        },
-        setupTxtContainer: {
-          file: new File([artifacts.ifrText], "setup-ami-aptio.ifr.txt", {
-            type: "text/plain",
-          }),
-          textContent: artifacts.ifrText,
-          isWrongFile: false,
-        },
-        amitseSctContainer: {
-          file: new File([amitseBytes], "amitse-ami-aptio.bin"),
-          textContent: toHex(amitseBytes),
-          isWrongFile: false,
-        },
-        setupdataBinContainer: {
-          file: new File([setupDataBytes], "setupdata-ami-aptio.bin"),
-          textContent: toHex(setupDataBytes),
-          isWrongFile: false,
-        },
-        firmwareSource: {
-          fileName: file?.name ?? "firmware.bin",
+      await onExtracted(
+        buildPopulatedFilesFromArtifacts(
           artifacts,
-          generation: report
-            ? reconcileAmiGeneration(report, profile).generation
-            : "unresolved",
-        },
-      });
+          file?.name ?? "firmware.bin",
+          report ? reconcileAmiGeneration(report, profile).generation : "unresolved",
+        ),
+      );
     } catch (reason: unknown) {
       if (currentOperation === operation.current) {
         setError(reason instanceof Error ? reason.message : String(reason));

@@ -22,7 +22,7 @@ export function extractFirmwareInWorker(
       worker.terminate();
       reject(
         new Error(
-          `Extraction timed out after ${String(EXTRACTION_TIMEOUT_MS / 1000)}s. This image may be too deeply nested/compressed to process automatically - try the four-file compatibility mode below instead (extract Setup HII/SCT, the IFR Extractor TXT, AMITSE PE32, and SetupData BIN yourself, e.g. with UEFITool + IFRExtractor-RS).`,
+          `Extraction timed out after ${String(EXTRACTION_TIMEOUT_MS / 1000)}s. This image may be too deeply nested/compressed to process automatically.`,
         ),
       );
     }, EXTRACTION_TIMEOUT_MS);
