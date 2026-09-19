@@ -210,6 +210,77 @@ describe("inspectAmiFirmwareBytes", () => {
     expect(report.size).toBe(0x180);
     expect(report.setupFfs).toEqual([0x40]);
   });
+
+  it("guesses AMI Aptio as the vendor once it is a candidate, regardless of other strings", () => {
+    const report = inspectAmiFirmwareBytes(classicAmiImage());
+
+    expect(report.vendorGuess).toEqual({ family: "ami-aptio", label: "AMI Aptio", evidence: [] });
+  });
+
+  it("recognizes an Award/Phoenix-Award BIOS that is never an AMI Aptio candidate", () => {
+    const bytes = new Uint8Array(0x60);
+    bytes.set(new TextEncoder().encode("AwardBIOS"), 0x10);
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.amiAptioCandidate).toBe(false);
+    expect(report.vendorGuess.family).toBe("award");
+    expect(report.vendorGuess.evidence).toContain("AwardBIOS");
+  });
+
+  it("recognizes a Phoenix BIOS", () => {
+    const bytes = new Uint8Array(0x60);
+    bytes.set(new TextEncoder().encode("Phoenix Technologies"), 0x10);
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.vendorGuess.family).toBe("phoenix");
+    expect(report.vendorGuess.evidence).toContain("Phoenix Technologies");
+  });
+
+  it("recognizes an Insyde H2O BIOS", () => {
+    const bytes = new Uint8Array(0x60);
+    bytes.set(new TextEncoder().encode("InsydeH2O"), 0x10);
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.vendorGuess.family).toBe("insyde");
+    expect(report.vendorGuess.evidence).toContain("InsydeH2O");
+  });
+
+  it("recognizes embedded Linux firmware (router/IoT) as never having been a PC BIOS", () => {
+    const bytes = new Uint8Array(0x60);
+    bytes.set(new TextEncoder().encode("U-Boot"), 0x10);
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.vendorGuess).toEqual({
+      family: "embedded-non-bios",
+      label: "Embedded Linux firmware (router/IoT, not a PC BIOS)",
+      evidence: ["U-Boot"],
+    });
+  });
+
+  it("falls back to generic UEFI when firmware volumes exist but no vendor string matches", () => {
+    const report = inspectAmiFirmwareBytes(firmwareVolumeImage());
+
+    expect(report.amiAptioCandidate).toBe(false);
+    expect(report.vendorGuess).toEqual({
+      family: "uefi-generic",
+      label: "Generic/unbranded UEFI (no AMI Aptio Setup found)",
+      evidence: [],
+    });
+  });
+
+  it("falls back to unknown when nothing at all is recognized", () => {
+    const report = inspectAmiFirmwareBytes(new Uint8Array(0x40));
+
+    expect(report.vendorGuess).toEqual({
+      family: "unknown",
+      label: "Unrecognized firmware",
+      evidence: [],
+    });
+  });
 });
 
 function guidBytes(value: string) {

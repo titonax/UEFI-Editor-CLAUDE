@@ -105,6 +105,16 @@ CLI corpus runner further down - this one is for
 "how does this whole pile of firmware look right now," the CLI one is for
 scripted regression runs against a fixed local corpus.
 
+A real-world folder of firmware dumps is never all AMI Aptio, so an image
+that isn't is labelled **Unsupported** with a best-effort vendor guess -
+Award/Phoenix-Award, Phoenix, Insyde H2O, some other/unbranded UEFI, or
+embedded Linux firmware that was never a PC BIOS at all (a router or
+appliance dump) - rather than the generic **Failed** reserved for a
+genuinely unexpected error (a truncated file, a worker crash, the 512 MiB
+safety cap). The guess comes from the same shallow byte-signature scan the AMI preflight
+already runs (`src/components/scripts/amiFirmwareImage.ts`); the image is
+never parsed further, so it stays a label, not a claim of support.
+
 Once loaded, the sidebar shows the BIOS menu tree: the root menus proven by
 the AMITSE table and SetupData page list, every submenu under them, and any
 page that no menu reaches. Each item is coloured by its effective state:

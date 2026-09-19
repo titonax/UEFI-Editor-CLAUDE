@@ -16,6 +16,28 @@ export interface FirmwareEvidence {
   strength: "strong" | "supporting" | "context";
 }
 
+// A coarse best-effort guess at what this image actually is when it isn't
+// an AMI Aptio candidate: this editor only ever parses/edits AMI Aptio, but
+// a real-world corpus mixes in Award/Phoenix-Award, Phoenix, Insyde, other
+// unbranded UEFI, and firmware that was never a PC BIOS at all (a router or
+// monitor dump). Naming which of those a rejected image looks like is far
+// more useful than a blanket "unsupported", even though none of them are
+// ever parsed further than this signature scan.
+export type FirmwareVendorFamily =
+  | "ami-aptio"
+  | "award"
+  | "phoenix"
+  | "insyde"
+  | "uefi-generic"
+  | "embedded-non-bios"
+  | "unknown";
+
+export interface FirmwareVendorGuess {
+  family: FirmwareVendorFamily;
+  label: string;
+  evidence: string[];
+}
+
 // What a shallow, read-only pass over the raw image bytes can tell before
 // anything is decompressed: which structures are visible at the top level,
 // and what (if anything) that says about the AMI generation.
@@ -33,6 +55,7 @@ export interface AmiFirmwareImageReport {
   nestedFirmwareCandidate: boolean;
   deepScanRequired: boolean;
   amiAptioCandidate: boolean;
+  vendorGuess: FirmwareVendorGuess;
   generation: AmiFirmwareGeneration;
   confidence: DetectionConfidence;
   evidence: FirmwareEvidence[];
@@ -95,6 +118,20 @@ const signatures: Signature[] = [
   { name: "aptio4", bytes: ascii("Aptio 4"), insensitiveAscii: true },
   { name: "aptioV", bytes: ascii("Aptio V"), insensitiveAscii: true },
   { name: "aptio5", bytes: ascii("Aptio 5"), insensitiveAscii: true },
+  // Non-AMI PC BIOS vendors: never parsed further, but naming them beats a
+  // blanket "unsupported" (see FirmwareVendorGuess below).
+  { name: "awardSoftware", bytes: ascii("Award Software"), insensitiveAscii: true },
+  { name: "awardBios", bytes: ascii("AwardBIOS"), insensitiveAscii: true },
+  { name: "phoenixAward", bytes: ascii("Phoenix - AwardBIOS"), insensitiveAscii: true },
+  { name: "phoenixTechnologies", bytes: ascii("Phoenix Technologies"), insensitiveAscii: true },
+  { name: "phoenixBios", bytes: ascii("PhoenixBIOS"), insensitiveAscii: true },
+  { name: "insydeCorp", bytes: ascii("Insyde Corp"), insensitiveAscii: true },
+  { name: "insydeH2o", bytes: ascii("InsydeH2O"), insensitiveAscii: true },
+  // Not a PC BIOS at all: an embedded-Linux blob (router/IoT/appliance).
+  { name: "uBoot", bytes: ascii("U-Boot") },
+  { name: "openWrt", bytes: ascii("OpenWrt"), insensitiveAscii: true },
+  { name: "squashFsMagic", bytes: ascii("hsqs") },
+  { name: "linuxVersion", bytes: ascii("Linux version") },
 ];
 
 const ffs2Guid = hexBytes("78E58C8C3D8A1C4F9935896185C32DD3");
@@ -231,6 +268,67 @@ function containerOf(
   return "unknown";
 }
 
+const vendorSignatureLabels: Record<string, string> = {
+  awardSoftware: "Award Software",
+  awardBios: "AwardBIOS",
+  phoenixAward: "Phoenix - AwardBIOS",
+  phoenixTechnologies: "Phoenix Technologies",
+  phoenixBios: "PhoenixBIOS",
+  insydeCorp: "Insyde Corp.",
+  insydeH2o: "InsydeH2O",
+  uBoot: "U-Boot",
+  openWrt: "OpenWrt",
+  squashFsMagic: "SquashFS magic",
+  linuxVersion: "Linux version string",
+};
+
+// Runs only once none of this editor's own AMI Aptio evidence matched -
+// what does the rest of the corpus's non-AMI signature evidence say this
+// image actually is? Award/Phoenix-Award, Phoenix and Insyde are checked
+// ahead of "some other UEFI" because their own strings are strong, specific
+// evidence; an embedded-Linux marker (router/IoT firmware, never a PC BIOS)
+// is checked before falling back to a bare "has firmware volumes" guess.
+function classifyFirmwareVendor(
+  has: (...names: string[]) => boolean,
+  amiAptioCandidate: boolean,
+  firmwareVolumeCount: number,
+): FirmwareVendorGuess {
+  const matched = (...names: string[]) => names.filter((name) => has(name));
+  const labelled = (names: string[]) => names.map((name) => vendorSignatureLabels[name]);
+
+  if (amiAptioCandidate) {
+    return { family: "ami-aptio", label: "AMI Aptio", evidence: [] };
+  }
+  const award = matched("awardSoftware", "awardBios", "phoenixAward");
+  if (award.length > 0) {
+    return { family: "award", label: "Award / Phoenix-Award BIOS", evidence: labelled(award) };
+  }
+  const phoenix = matched("phoenixTechnologies", "phoenixBios");
+  if (phoenix.length > 0) {
+    return { family: "phoenix", label: "Phoenix BIOS", evidence: labelled(phoenix) };
+  }
+  const insyde = matched("insydeCorp", "insydeH2o");
+  if (insyde.length > 0) {
+    return { family: "insyde", label: "Insyde H2O", evidence: labelled(insyde) };
+  }
+  const embedded = matched("uBoot", "openWrt", "squashFsMagic", "linuxVersion");
+  if (embedded.length > 0) {
+    return {
+      family: "embedded-non-bios",
+      label: "Embedded Linux firmware (router/IoT, not a PC BIOS)",
+      evidence: labelled(embedded),
+    };
+  }
+  if (firmwareVolumeCount > 0) {
+    return {
+      family: "uefi-generic",
+      label: "Generic/unbranded UEFI (no AMI Aptio Setup found)",
+      evidence: [],
+    };
+  }
+  return { family: "unknown", label: "Unrecognized firmware", evidence: [] };
+}
+
 export function inspectAmiFirmwareBytes(bytes: Uint8Array): AmiFirmwareImageReport {
   const found = scanSignatures(bytes);
   const offsets = (name: string) => found.get(name) ?? [];
@@ -268,6 +366,7 @@ export function inspectAmiFirmwareBytes(bytes: Uint8Array): AmiFirmwareImageRepo
       amitseFfs.length > 0 ||
       explicitIv ||
       explicitV);
+  const vendorGuess = classifyFirmwareVendor(has, amiAptioCandidate, firmwareVolumes.length);
 
   // An explicit generation string is only trusted when exactly one
   // generation is named; naming both says nothing.
@@ -386,6 +485,7 @@ export function inspectAmiFirmwareBytes(bytes: Uint8Array): AmiFirmwareImageRepo
     deepScanRequired:
       firmwareVolumes.length > 0 && (setupFfs.length === 0 || amitseFfs.length === 0),
     amiAptioCandidate,
+    vendorGuess,
     generation,
     confidence,
     evidence,
@@ -518,4 +618,19 @@ export function reconcileAmiGeneration(
 
 export function formatHexOffset(offset: number) {
   return `0x${offset.toString(16).toUpperCase().padStart(6, "0")}`;
+}
+
+// extractAptioIvBytes throws exactly these two messages once it has walked
+// every firmware volume and encapsulation layer without ever finding an AMI
+// Setup module - a structurally-understood "this just isn't AMI Aptio", not
+// a bug or a corrupt image. A corpus runner uses this to label such a
+// failure "unsupported" (with its best vendorGuess attached) instead of a
+// blanket "failed", which is reserved for genuinely unexpected errors.
+const knownNonAmiExtractionFailures = [
+  "Setup FFS was not found after recursive decompression.",
+  "No Setup context contains a usable HII package or Setup PE32 section.",
+];
+
+export function sniffNonAmiFailure(message: string): boolean {
+  return knownNonAmiExtractionFailures.some((known) => message.includes(known));
 }

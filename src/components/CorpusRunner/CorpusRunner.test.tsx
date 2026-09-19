@@ -145,21 +145,29 @@ describe("CorpusRunner", () => {
     });
     // board-a.bin parses but has no detected single-FormSet navigation (a
     // generic two-Form fixture, no hub) -> "Partial"; board-b.bin's
-    // extraction was rejected -> "Failed". Scoped to each file's own
-    // accordion item, since the summary metrics grid also has a "Partial"
-    // tile label.
+    // extraction was rejected with the exact message extractAptioIvBytes
+    // throws when no AMI Setup module is found, which the corpus runner
+    // recognizes as a structurally-understood non-AMI image -> "Unsupported"
+    // (not "Failed", which is reserved for genuinely unexpected errors).
+    // Scoped to each file's own accordion item, since the summary metrics
+    // grid also has "Partial"/"Unsupported" tile labels.
     const itemA = screen.getByText("board-a.bin").closest(".mantine-Accordion-item");
     const itemB = screen.getByText("board-b.bin").closest(".mantine-Accordion-item");
     if (!itemA || !itemB) throw new Error("expected both accordion items");
     await waitFor(() => {
       expect(within(itemA as HTMLElement).getByText("Partial")).toBeInTheDocument();
-      expect(within(itemB as HTMLElement).getByText("Failed")).toBeInTheDocument();
+      expect(within(itemB as HTMLElement).getByText("Unsupported")).toBeInTheDocument();
     });
     expect(
       screen.getAllByText("Setup FFS was not found after recursive decompression.", {
         exact: false,
       }),
     ).not.toHaveLength(0);
+    // board-b.bin has a valid FFS2 volume but no AMI markers at all, so the
+    // vendor sniffer's fallback applies: recognized as UEFI, just not AMI.
+    expect(
+      within(itemB as HTMLElement).getAllByText(/Generic\/unbranded UEFI/).length,
+    ).toBeGreaterThan(0);
     // The richer, GPT-matching per-file detail: size/container/generation,
     // form/ref counts, a stage table and a provenance badge, not just a
     // bare pass/fail chip.

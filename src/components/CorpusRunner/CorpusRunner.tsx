@@ -28,8 +28,10 @@ import {
   inspectAmiFirmwareBytes,
   inspectAmiSetupProfile,
   reconcileAmiGeneration,
+  sniffNonAmiFailure,
   type AmiGenerationAssessment,
   type FirmwareContainer,
+  type FirmwareVendorGuess,
 } from "../scripts/amiFirmwareImage";
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
 import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
@@ -69,6 +71,11 @@ interface CorpusRunEntry {
   stages: CorpusStageResult[];
   report?: CorpusReport;
   failureMessage?: string;
+  // Only set when this image was rejected for a structurally-understood
+  // reason (no firmware volumes at all, or valid UEFI volumes with no AMI
+  // Setup module) - this editor's best guess at what it actually is
+  // (Award/Phoenix/Insyde/other UEFI/not a PC BIOS), never a parse attempt.
+  vendorGuess?: FirmwareVendorGuess;
 }
 
 const corpusStatusLabels: Record<CorpusFileStatus, string> = {
@@ -121,7 +128,13 @@ function entryTotals(entry: CorpusRunEntry) {
 function summarizeRun(entries: CorpusRunEntry[]) {
   const hashes = entries.flatMap((entry) => (entry.sha256 ? [entry.sha256] : []));
   const uniqueFiles = new Set(hashes).size + entries.length - hashes.length;
-  const extracted = entries.filter((entry) => entry.status !== "failed").length;
+  // "unsupported" now covers images this editor correctly identified as not
+  // AMI Aptio (Award/Phoenix/Insyde/other UEFI/non-BIOS) - genuinely
+  // recognized, but never AMI-extracted, so it belongs with "failed" here,
+  // not with "recognized"/"partial".
+  const extracted = entries.filter(
+    (entry) => entry.status === "recognized" || entry.status === "partial",
+  ).length;
   const navigationResolved = entries.filter((entry) =>
     reportNavigationDetected(entry.report),
   ).length;
@@ -165,6 +178,8 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
     "hide_available",
     "show_available",
     "reconstruction_complete",
+    "vendor_guess",
+    "vendor_evidence",
     "failure",
   ];
   const rows = entries.map((entry) => {
@@ -184,6 +199,8 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
       totals.hide,
       totals.show,
       entry.reconstructionComplete === undefined ? "" : String(entry.reconstructionComplete),
+      entry.vendorGuess?.family ?? "",
+      entry.vendorGuess?.evidence.join("; ") ?? "",
       entry.failureMessage ?? "",
     ];
   });
@@ -241,9 +258,26 @@ function FileDetails({ entry }: { entry: CorpusRunEntry }) {
         </Table>
       </ScrollArea>
       {entry.failureMessage && (
-        <Alert color="red" title="failed">
+        <Alert
+          color={entry.status === "unsupported" ? "gray" : "red"}
+          title={entry.status === "unsupported" ? "not AMI Aptio" : "failed"}
+        >
           {entry.failureMessage}
         </Alert>
+      )}
+      {entry.vendorGuess && (
+        <Stack gap={4}>
+          <Group gap="xs">
+            <Badge variant="light" color="gray">
+              Vendor guess: {entry.vendorGuess.label}
+            </Badge>
+          </Group>
+          {entry.vendorGuess.evidence.length > 0 && (
+            <Text size="xs" c="dimmed">
+              Evidence: {entry.vendorGuess.evidence.join(", ")}
+            </Text>
+          )}
+        </Stack>
       )}
       {report && (
         <>
@@ -366,6 +400,11 @@ export default function CorpusRunner() {
   const analyseOne = async (file: File): Promise<CorpusRunEntry> => {
     const stages: CorpusStageResult[] = [];
     let sha256 = "";
+    // Hoisted so the catch block below can still run the vendor sniffer
+    // (see amiFirmwareImage.ts's classifyFirmwareVendor) once extraction
+    // fails for a structurally-understood, non-AMI reason - it needs the
+    // raw bytes and the preflight's firmware-volume count either way.
+    let preflight: ReturnType<typeof inspectAmiFirmwareBytes> | undefined;
     try {
       if (file.size > MAX_FIRMWARE_BYTES) {
         throw new Error("Exceeds the 512 MiB safety limit.");
@@ -373,7 +412,7 @@ export default function CorpusRunner() {
       const image = new Uint8Array(await file.arrayBuffer());
       sha256 = await sha256Hex(image);
 
-      const preflight = inspectAmiFirmwareBytes(image);
+      preflight = inspectAmiFirmwareBytes(image);
       if (preflight.firmwareVolumes.length === 0) {
         stages.push({
           id: "preflight",
@@ -466,15 +505,25 @@ export default function CorpusRunner() {
           stages.push({ id, status: "not-run", detail: "Not reached." });
         }
       }
+      // No firmware volumes at all, or valid UEFI volumes with no AMI Setup
+      // module, are both structurally-understood "this just isn't AMI
+      // Aptio" outcomes - worth a vendor guess and "unsupported" rather
+      // than a blanket "failed", which stays for genuinely unexpected
+      // errors (a truncated file, an extraction-worker crash, the size cap).
+      const knownNonAmi =
+        preflight !== undefined &&
+        (preflight.firmwareVolumes.length === 0 || sniffNonAmiFailure(message));
       return {
         fileName: file.name,
         size: file.size,
         sha256,
-        status: "failed",
+        status: knownNonAmi ? "unsupported" : "failed",
+        container: preflight?.container,
         contextCount: 0,
         reconstructionBlockers: [],
         stages,
         failureMessage: message,
+        vendorGuess: knownNonAmi ? preflight?.vendorGuess : undefined,
       };
     }
   };
@@ -663,6 +712,11 @@ export default function CorpusRunner() {
                         {totals.hide + totals.show > 0 && (
                           <Badge color="blue" variant="light">
                             H {String(totals.hide)} · S {String(totals.show)}
+                          </Badge>
+                        )}
+                        {entry.vendorGuess && (
+                          <Badge color="gray" variant="light">
+                            {entry.vendorGuess.label}
                           </Badge>
                         )}
                         <Badge color={statusColor(entry.status)}>
