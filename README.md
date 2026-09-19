@@ -86,17 +86,22 @@ Press **Start HII analysis** to open the menu tree.
 > session, and the CLI corpus runner further down still accepts the same
 > four-file shape directly for local diagnostics.
 
-Below the single-image upload, **Local firmware corpus (optional)** lets you
-drop several real firmware images at once and get a read-only report on
-every one of them, entirely in the browser: nothing is patched, exported,
-or leaves the tab. Each file's row expands into its size, container,
-detected generation, Form/Ref counts, the navigation verdict and reason,
-reconstruction-trace status with its blockers, and the full per-page
-Hide/Show availability table - the same underlying report the CLI runner
-below writes, just browsable per image instead of only as JSON. It never
-opens any of them into the editor itself (a multi-context image is silently
-analysed at its default context rather than asking you to pick), and it's
-a separate tool from the CLI corpus runner further down - this one is for
+Below the single-image upload, **Local firmware corpus runner** lets you
+select several real firmware images, press **Run local corpus analysis**,
+and get a read-only report on every one of them - entirely in the browser:
+nothing is patched, exported, or leaves the tab. A summary strip (files,
+unique-by-hash, recognized/partial/unsupported/failed counts, extraction/
+navigation/Hide-Show-editable rates) sits above a per-file accordion; each
+row's badges give size, container, detected generation, Form/Ref counts and
+status at a glance, and expanding it shows a per-stage pass/warning/failed/
+blocked table (preflight → extraction → HII → navigation → editability →
+reconstruction), the SHA-256, the navigation reason, and the full per-page
+Hide/Show availability table. **Cancel** stops a run after its current file
+and keeps whatever finished so far; **Clear** resets everything. Export the
+whole run as JSON or as a CSV summary. It never opens any image into the
+editor itself (a multi-context image is silently analysed at its default
+context rather than asking you to pick), and it's a separate tool from the
+CLI corpus runner further down - this one is for
 "how does this whole pile of firmware look right now," the CLI one is for
 scripted regression runs against a fixed local corpus.
 

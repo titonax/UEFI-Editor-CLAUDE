@@ -4,15 +4,25 @@ import {
   Alert,
   Badge,
   Button,
+  Divider,
   FileInput,
   Group,
-  List,
   Progress,
+  ScrollArea,
+  SimpleGrid,
   Stack,
   Table,
   Text,
+  Title,
 } from "@mantine/core";
-import { IconDownload, IconStack2 } from "@tabler/icons-react";
+import {
+  IconBinary,
+  IconDownload,
+  IconPlayerPlay,
+  IconPlayerStop,
+  IconTrash,
+  IconUpload,
+} from "@tabler/icons-react";
 import { saveAs } from "file-saver";
 import {
   inspectAmiFirmwareBytes,
@@ -23,47 +33,291 @@ import {
 } from "../scripts/amiFirmwareImage";
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
 import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
+import { sha256Hex } from "../scripts/hashing";
 import { parseData } from "../scripts/ifrParser";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
-import { buildCorpusReport, type CorpusReport } from "../scripts/corpusReport";
+import { buildCorpusReport, type CorpusReport, type CorpusTabOperation } from "../scripts/corpusReport";
+import s from "./CorpusRunner.module.css";
 
 const MAX_FIRMWARE_BYTES = 512 * 1024 * 1024;
 
+type CorpusStageId = "preflight" | "extraction" | "hii" | "navigation" | "editability" | "reconstruction";
+type CorpusStageStatus = "passed" | "warning" | "failed" | "blocked" | "not-run";
+type CorpusFileStatus = "recognized" | "partial" | "unsupported" | "failed";
+
+interface CorpusStageResult {
+  id: CorpusStageId;
+  status: CorpusStageStatus;
+  detail: string;
+}
+
 interface CorpusRunEntry {
-  label: string;
-  status: "running" | "done" | "failed";
-  sizeBytes?: number;
+  fileName: string;
+  size: number;
+  sha256: string;
+  status: CorpusFileStatus;
   container?: FirmwareContainer;
   generation?: AmiGenerationAssessment;
+  contextCount: number;
   reconstructionComplete?: boolean;
-  reconstructionBlockers?: string[];
+  reconstructionBlockers: string[];
+  stages: CorpusStageResult[];
   report?: CorpusReport;
-  error?: string;
+  failureMessage?: string;
+}
+
+const corpusStatusLabels: Record<CorpusFileStatus, string> = {
+  recognized: "Recognized",
+  partial: "Partial",
+  unsupported: "Unsupported",
+  failed: "Failed",
+};
+
+function statusColor(status: CorpusFileStatus) {
+  if (status === "recognized") return "green";
+  if (status === "partial") return "yellow";
+  if (status === "unsupported") return "gray";
+  return "red";
+}
+
+function stageColor(status: CorpusStageStatus) {
+  if (status === "passed") return "green";
+  if (status === "warning") return "yellow";
+  if (status === "failed") return "red";
+  if (status === "blocked") return "orange";
+  return "gray";
 }
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${String(bytes)} B`;
-  const units = ["KiB", "MiB", "GiB"];
-  let value = bytes / 1024;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex++;
-  }
-  return `${value.toFixed(1)} ${units[unitIndex]}`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function generationLabel(assessment?: AmiGenerationAssessment) {
-  if (!assessment) return "—";
-  if (assessment.conflict) return "conflicting";
-  if (assessment.generation === "unresolved") return "unresolved";
-  return `${assessment.generation} (${assessment.confidence})`;
+function generationLabel(entry: CorpusRunEntry) {
+  const assessment = entry.generation;
+  if (!assessment) return "generation unresolved";
+  if (assessment.conflict) return "generation conflict";
+  if (assessment.generation === "aptio-iv") return "probable Aptio IV";
+  if (assessment.generation === "aptio-v") return "probable Aptio V";
+  return "generation unresolved";
 }
 
-function statusColor(status: CorpusRunEntry["status"]) {
-  if (status === "done") return "green";
-  if (status === "failed") return "red";
-  return "blue";
+function entryTotals(entry: CorpusRunEntry) {
+  const ops = entry.report?.tabOperations ?? [];
+  return {
+    forms: entry.report?.counts.forms ?? 0,
+    refs: entry.report?.counts.refs ?? 0,
+    hide: ops.filter((op) => op.hide.available).length,
+    show: ops.filter((op) => op.show.available).length,
+  };
+}
+
+function summarizeRun(entries: CorpusRunEntry[]) {
+  const hashes = entries.flatMap((entry) => (entry.sha256 ? [entry.sha256] : []));
+  const uniqueFiles = new Set(hashes).size + entries.length - hashes.length;
+  const extracted = entries.filter((entry) => entry.status !== "failed").length;
+  const navigationResolved = entries.filter(
+    (entry) => entry.report?.navigation.status === "detected",
+  ).length;
+  const hiiEditable = entries.filter((entry) => {
+    const totals = entryTotals(entry);
+    return totals.hide + totals.show > 0;
+  }).length;
+  const percentage = (numerator: number, denominator: number) =>
+    denominator === 0 ? 0 : Math.round((numerator / denominator) * 1000) / 10;
+  return {
+    files: entries.length,
+    uniqueFiles,
+    recognized: entries.filter((entry) => entry.status === "recognized").length,
+    partial: entries.filter((entry) => entry.status === "partial").length,
+    unsupported: entries.filter((entry) => entry.status === "unsupported").length,
+    failed: entries.filter((entry) => entry.status === "failed").length,
+    extractionRate: percentage(extracted, entries.length),
+    navigationRate: percentage(navigationResolved, extracted),
+    hiiEditRate: percentage(hiiEditable, extracted),
+  };
+}
+
+function csvCell(value: string | number) {
+  const text = String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function entriesToCsv(entries: CorpusRunEntry[]) {
+  const header = [
+    "file",
+    "sha256",
+    "bytes",
+    "status",
+    "container",
+    "generation",
+    "contexts",
+    "forms",
+    "refs",
+    "navigation_status",
+    "hide_available",
+    "show_available",
+    "reconstruction_complete",
+    "failure",
+  ];
+  const rows = entries.map((entry) => {
+    const totals = entryTotals(entry);
+    return [
+      entry.fileName,
+      entry.sha256,
+      entry.size,
+      entry.status,
+      entry.container ?? "",
+      entry.generation?.generation ?? "",
+      entry.contextCount,
+      totals.forms,
+      totals.refs,
+      entry.report?.navigation.status ?? "",
+      totals.hide,
+      totals.show,
+      entry.reconstructionComplete === undefined ? "" : String(entry.reconstructionComplete),
+      entry.failureMessage ?? "",
+    ];
+  });
+  return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function Metric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className={s.summary}>
+      <Text size="xs" c="dimmed">
+        {label}
+      </Text>
+      <Text fw={700}>{value}</Text>
+    </div>
+  );
+}
+
+function tabOperationRows(operations: CorpusTabOperation[]) {
+  return operations.flatMap((op) => [
+    { page: op.name, formId: op.formId, kind: "hide" as const, result: op.hide },
+    { page: op.name, formId: op.formId, kind: "show" as const, result: op.show },
+  ]);
+}
+
+function FileDetails({ entry }: { entry: CorpusRunEntry }) {
+  const report = entry.report;
+  const totals = entryTotals(entry);
+  return (
+    <Stack gap="md">
+      <Text size="xs" c="dimmed" className={s.hash}>
+        SHA-256: {entry.sha256 || "not calculated"}
+      </Text>
+      <ScrollArea>
+        <Table striped withColumnBorders className={s.detailsTable}>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Stage</Table.Th>
+              <Table.Th>Status</Table.Th>
+              <Table.Th>Detail</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {entry.stages.map((stage) => (
+              <Table.Tr key={stage.id}>
+                <Table.Td>{stage.id}</Table.Td>
+                <Table.Td>
+                  <Badge variant="light" color={stageColor(stage.status)}>
+                    {stage.status}
+                  </Badge>
+                </Table.Td>
+                <Table.Td>{stage.detail}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </ScrollArea>
+      {entry.failureMessage && (
+        <Alert color="red" title="failed">
+          {entry.failureMessage}
+        </Alert>
+      )}
+      {report && (
+        <>
+          <Divider />
+          <Stack gap="sm">
+            <Group gap="xs">
+              <Badge
+                variant="light"
+                color={report.navigation.status === "detected" ? "green" : "yellow"}
+              >
+                {report.navigation.mechanism ?? report.navigation.status}
+              </Badge>
+              <Badge
+                variant="light"
+                color={entry.reconstructionComplete ? "blue" : "orange"}
+              >
+                provenance {entry.reconstructionComplete ? "complete" : "incomplete"}
+              </Badge>
+            </Group>
+            <SimpleGrid cols={{ base: 2, sm: 4, lg: 7 }} spacing="xs">
+              <Metric label="Forms" value={report.counts.forms} />
+              <Metric label="FormSets" value={report.counts.formSets} />
+              <Metric label="Refs" value={report.counts.refs} />
+              <Metric label="Conditions" value={report.counts.conditions} />
+              <Metric label="Direct tabs" value={report.navigation.directTabs} />
+              <Metric label="Suppressed tabs" value={report.navigation.suppressedTabs} />
+              <Metric label="Registered only" value={report.navigation.registeredOnly} />
+            </SimpleGrid>
+            {report.navigation.reason && (
+              <Text size="xs" c="dimmed">
+                Single-FormSet navigation: {report.navigation.status} — {report.navigation.reason}
+              </Text>
+            )}
+            {report.tabOperations.length > 0 && (
+              <ScrollArea>
+                <Table striped withColumnBorders className={s.detailsTable}>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>Page</Table.Th>
+                      <Table.Th>Operation</Table.Th>
+                      <Table.Th>Availability</Table.Th>
+                      <Table.Th>Reason</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {tabOperationRows(report.tabOperations).map((row, index) => (
+                      <Table.Tr key={`${row.formId}:${row.kind}:${String(index)}`}>
+                        <Table.Td>
+                          {row.page}{" "}
+                          <Text span c="dimmed" size="xs">
+                            {row.formId}
+                          </Text>
+                        </Table.Td>
+                        <Table.Td>{row.kind}</Table.Td>
+                        <Table.Td>
+                          <Badge color={row.result.available ? "green" : "gray"} variant="light">
+                            {row.result.available ? "available" : "blocked"}
+                          </Badge>
+                        </Table.Td>
+                        <Table.Td>
+                          <Text size="xs">{row.result.reason}</Text>
+                        </Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </ScrollArea>
+            )}
+            {totals.hide + totals.show === 0 && (
+              <Text size="xs" c="dimmed">
+                No Hide/Show operations are available for this image.
+              </Text>
+            )}
+            <Alert color="gray" title="Full-image output remains blocked">
+              {entry.reconstructionBlockers.join(" ")}
+            </Alert>
+          </Stack>
+        </>
+      )}
+    </Stack>
+  );
 }
 
 // A browser-local batch runner over several real firmware images at once:
@@ -81,249 +335,323 @@ function statusColor(status: CorpusRunEntry["status"]) {
 // ambiguous still shows up as a warning in that image's own report.
 export default function CorpusRunner() {
   const operation = React.useRef(0);
+  const cancelRequested = React.useRef(false);
+  const [files, setFiles] = React.useState<File[]>([]);
   const [entries, setEntries] = React.useState<CorpusRunEntry[]>([]);
   const [running, setRunning] = React.useState(false);
+  const [progress, setProgress] = React.useState(0);
+  const [progressText, setProgressText] = React.useState("");
+  const [cancelled, setCancelled] = React.useState(false);
 
-  const runFiles = async (files: File[]) => {
-    const currentOperation = ++operation.current;
-    setRunning(true);
-    setEntries(files.map((file) => ({ label: file.name, status: "running" })));
+  const analyseOne = async (file: File): Promise<CorpusRunEntry> => {
+    const stages: CorpusStageResult[] = [];
+    let sha256 = "";
+    try {
+      if (file.size > MAX_FIRMWARE_BYTES) {
+        throw new Error("Exceeds the 512 MiB safety limit.");
+      }
+      const image = new Uint8Array(await file.arrayBuffer());
+      sha256 = await sha256Hex(image);
 
-    for (const [index, file] of files.entries()) {
-      let result: CorpusRunEntry;
-      try {
-        if (file.size > MAX_FIRMWARE_BYTES) {
-          throw new Error("Exceeds the 512 MiB safety limit.");
-        }
-        const image = new Uint8Array(await file.arrayBuffer());
-        const preflight = inspectAmiFirmwareBytes(image);
-        if (preflight.firmwareVolumes.length === 0) {
-          throw new Error("No valid UEFI firmware volumes were found.");
-        }
-        const extracted = await extractFirmwareInWorker(file);
-        const profile = inspectAmiSetupProfile(extracted.hii, extracted.setupData);
-        const generation = reconcileAmiGeneration(preflight, profile);
-        const populated = buildPopulatedFilesFromArtifacts(
-          extracted,
-          file.name,
-          generation.generation,
-        );
-        const data = await parseData(populated);
-        data.firmwareFamily =
-          generation.generation === "unresolved" ? "ami-aptio" : generation.generation;
-        const report = buildCorpusReport(data, file.name);
-        const reconstruction = assessFirmwareReconstruction(extracted.provenance);
-        result = {
-          label: file.name,
-          status: "done",
-          sizeBytes: file.size,
-          container: preflight.container,
-          generation,
-          reconstructionComplete: reconstruction.traceComplete,
-          reconstructionBlockers: reconstruction.blockers,
-          report,
-        };
-      } catch (error) {
-        result = {
-          label: file.name,
+      const preflight = inspectAmiFirmwareBytes(image);
+      if (preflight.firmwareVolumes.length === 0) {
+        stages.push({
+          id: "preflight",
           status: "failed",
-          sizeBytes: file.size,
-          error: error instanceof Error ? error.message : String(error),
-        };
+          detail: "No valid UEFI firmware volumes were found.",
+        });
+        throw new Error("No valid UEFI firmware volumes were found.");
+      }
+      stages.push({
+        id: "preflight",
+        status: "passed",
+        detail: `${String(preflight.firmwareVolumes.length)} firmware volume(s), ${preflight.container}.`,
+      });
+
+      const extracted = await extractFirmwareInWorker(file);
+      stages.push({
+        id: "extraction",
+        status: "passed",
+        detail: `${String(extracted.artifactSets.length)} coherent context(s).`,
+      });
+
+      const profile = inspectAmiSetupProfile(extracted.hii, extracted.setupData);
+      const generation = reconcileAmiGeneration(preflight, profile);
+      const populated = buildPopulatedFilesFromArtifacts(
+        extracted,
+        file.name,
+        generation.generation,
+      );
+      const data = await parseData(populated);
+      data.firmwareFamily =
+        generation.generation === "unresolved" ? "ami-aptio" : generation.generation;
+      const report = buildCorpusReport(data, file.name);
+      stages.push({
+        id: "hii",
+        status: "passed",
+        detail: `${String(report.counts.forms)} form(s), ${String(report.counts.refs)} ref(s).`,
+      });
+
+      const navigationDetected = report.navigation.status === "detected";
+      stages.push({
+        id: "navigation",
+        status: navigationDetected ? "passed" : "warning",
+        detail: report.navigation.reason ?? report.navigation.status,
+      });
+
+      const hideAvailable = report.tabOperations.filter((op) => op.hide.available).length;
+      const showAvailable = report.tabOperations.filter((op) => op.show.available).length;
+      stages.push({
+        id: "editability",
+        status: hideAvailable + showAvailable > 0 ? "passed" : "warning",
+        detail: `Hide available on ${String(hideAvailable)}, Show available on ${String(showAvailable)} page(s).`,
+      });
+
+      // writeEnabled is always false right now (see assessFirmwareReconstruction),
+      // so this stage is always "blocked" regardless of trace completeness -
+      // the detail line still distinguishes a complete trace waiting on
+      // recompression/rebuild support from one that's missing a link.
+      const reconstruction = assessFirmwareReconstruction(extracted.provenance);
+      stages.push({
+        id: "reconstruction",
+        status: "blocked",
+        detail: reconstruction.blockers[0] ?? "Full-image writing is not implemented.",
+      });
+
+      const status: CorpusFileStatus = navigationDetected ? "recognized" : "partial";
+      return {
+        fileName: file.name,
+        size: file.size,
+        sha256,
+        status,
+        container: preflight.container,
+        generation,
+        contextCount: extracted.artifactSets.length,
+        reconstructionComplete: reconstruction.traceComplete,
+        reconstructionBlockers: reconstruction.blockers,
+        stages,
+        report,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const id of ["extraction", "hii", "navigation", "editability", "reconstruction"] as const) {
+        if (!stages.some((stage) => stage.id === id)) {
+          stages.push({ id, status: "not-run", detail: "Not reached." });
+        }
+      }
+      return {
+        fileName: file.name,
+        size: file.size,
+        sha256,
+        status: "failed",
+        contextCount: 0,
+        reconstructionBlockers: [],
+        stages,
+        failureMessage: message,
+      };
+    }
+  };
+
+  const start = () => {
+    if (files.length === 0 || running) return;
+    const currentOperation = ++operation.current;
+    cancelRequested.current = false;
+    setEntries([]);
+    setCancelled(false);
+    setProgress(0);
+    setProgressText("Starting local analysis…");
+    setRunning(true);
+
+    void (async () => {
+      const collected: CorpusRunEntry[] = [];
+      for (const [index, file] of files.entries()) {
+        if (cancelRequested.current) break;
+        setProgressText(`${file.name} · analysing…`);
+        const entry = await analyseOne(file);
+        if (currentOperation !== operation.current) return;
+        collected.push(entry);
+        setEntries([...collected]);
+        setProgress(((index + 1) / files.length) * 100);
       }
       if (currentOperation !== operation.current) return;
-      setEntries((current) =>
-        current.map((entry, entryIndex) => (entryIndex === index ? result : entry)),
+      const wasCancelled = cancelRequested.current;
+      setRunning(false);
+      setCancelled(wasCancelled);
+      setProgress(wasCancelled ? 0 : 100);
+      setProgressText(
+        wasCancelled ? "Analysis cancelled." : "Corpus analysis complete.",
       );
-    }
-    if (currentOperation === operation.current) setRunning(false);
+    })();
   };
 
-  const reports = entries.flatMap((entry) => (entry.report ? [entry.report] : []));
-  const doneCount = entries.filter((entry) => entry.status !== "running").length;
-
-  const downloadReports = () => {
-    saveAs(
-      new Blob([JSON.stringify(reports, null, 2)], { type: "application/json" }),
-      "corpus-report.json",
-    );
+  const cancel = () => {
+    cancelRequested.current = true;
+    setProgressText("Cancellation requested; finishing the current safe step…");
   };
+
+  const reset = () => {
+    operation.current++;
+    cancelRequested.current = false;
+    setFiles([]);
+    setEntries([]);
+    setRunning(false);
+    setProgress(0);
+    setProgressText("");
+    setCancelled(false);
+  };
+
+  const summary = summarizeRun(entries);
 
   return (
-    <Stack>
+    <Stack className={s.root} gap="md">
       <Group gap="xs">
-        <IconStack2 />
-        <Text fw={700}>Local firmware corpus (optional)</Text>
+        <IconBinary />
+        <div>
+          <Title order={3}>Local firmware corpus runner</Title>
+          <Text size="sm" c="dimmed">
+            Batch-measure extraction, HII navigation and Hide/Show availability.
+          </Text>
+        </div>
       </Group>
+      <Alert color="blue" title="Local-only by design">
+        Firmware files stay in this browser. Exported reports contain filenames, SHA-256
+        hashes, structural metrics and diagnostic reasons, but no firmware bytes.
+      </Alert>
       <FileInput
+        leftSection={<IconUpload />}
+        size="lg"
         multiple
-        leftSection={<IconStack2 size={16} />}
-        placeholder="Select several firmware images to analyse in a batch"
+        clearable
+        placeholder="Select multiple BIOS/firmware images"
+        value={files}
         disabled={running}
-        onChange={(files) => {
-          if (files.length > 0) void runFiles(files);
+        onChange={(selected) => {
+          setFiles(selected);
+          setEntries([]);
+          setCancelled(false);
         }}
       />
-      <Text size="xs" c="dimmed">
-        Diagnostic only: every image is analysed the same read-only way as the single-image
-        preflight above, entirely in this browser. Nothing is patched, exported, or uploaded.
-      </Text>
-      {entries.length > 0 && (
+      {files.length > 0 && (
+        <Text size="sm">
+          {String(files.length)} file(s) selected ·{" "}
+          {formatBytes(files.reduce((total, file) => total + file.size, 0))} total
+        </Text>
+      )}
+      <Group>
+        <Button
+          leftSection={<IconPlayerPlay />}
+          disabled={files.length === 0 || running}
+          onClick={start}
+        >
+          Run local corpus analysis
+        </Button>
+        {running && (
+          <Button color="orange" variant="light" leftSection={<IconPlayerStop />} onClick={cancel}>
+            Cancel
+          </Button>
+        )}
+        <Button
+          variant="default"
+          leftSection={<IconTrash />}
+          disabled={running || (files.length === 0 && entries.length === 0)}
+          onClick={reset}
+        >
+          Clear
+        </Button>
+      </Group>
+      {(running || progressText) && (
         <Stack gap="xs">
-          {running && (
-            <Progress
-              value={(doneCount / entries.length) * 100}
-              animated={doneCount < entries.length}
-            />
-          )}
+          <Progress value={progress} animated={running} />
+          <Text size="sm">{progressText}</Text>
+        </Stack>
+      )}
+      {cancelled && entries.length > 0 && (
+        <Alert color="yellow" title="Partial report">
+          The run was cancelled. Completed firmware results remain available for export.
+        </Alert>
+      )}
+      {entries.length > 0 && (
+        <>
+          <SimpleGrid cols={{ base: 2, sm: 4, lg: 8 }} spacing="xs">
+            <Metric label="Files" value={summary.files} />
+            <Metric label="Unique" value={summary.uniqueFiles} />
+            <Metric label="Recognized" value={summary.recognized} />
+            <Metric label="Partial" value={summary.partial} />
+            <Metric label="Unsupported" value={summary.unsupported} />
+            <Metric label="Extraction" value={`${String(summary.extractionRate)}%`} />
+            <Metric label="Navigation" value={`${String(summary.navigationRate)}%`} />
+            <Metric label="HII editable" value={`${String(summary.hiiEditRate)}%`} />
+          </SimpleGrid>
+          <Group>
+            <Button
+              variant="default"
+              leftSection={<IconDownload />}
+              onClick={() => {
+                saveAs(
+                  new Blob([JSON.stringify(entries, null, 2)], {
+                    type: "application/json",
+                  }),
+                  "uefi-editor-corpus-report.json",
+                );
+              }}
+            >
+              Export JSON report
+            </Button>
+            <Button
+              variant="default"
+              leftSection={<IconDownload />}
+              onClick={() => {
+                saveAs(
+                  new Blob([entriesToCsv(entries)], { type: "text/csv" }),
+                  "uefi-editor-corpus-report.csv",
+                );
+              }}
+            >
+              Export CSV summary
+            </Button>
+          </Group>
           <Accordion variant="separated" multiple>
             {entries.map((entry, entryIndex) => {
-              const report = entry.report;
-              const hideOps = report?.tabOperations.filter((op) => op.role === "direct-tab");
-              const showOps = report?.tabOperations.filter(
-                (op) => op.role === "suppressed-tab",
-              );
-              const hideAvailable = hideOps?.filter((op) => op.hide.available).length;
-              const showAvailable = showOps?.filter((op) => op.show.available).length;
+              const totals = entryTotals(entry);
               return (
-                <Accordion.Item value={`${entry.label}:${String(entryIndex)}`} key={`${entry.label}:${String(entryIndex)}`}>
+                <Accordion.Item
+                  value={`${entry.sha256 || entry.fileName}:${String(entryIndex)}`}
+                  key={`${entry.fileName}:${String(entryIndex)}`}
+                >
                   <Accordion.Control>
                     <Group justify="space-between" wrap="nowrap">
-                      <Stack gap={0}>
-                        <Text fw={600} size="sm">
-                          {entry.label}
-                        </Text>
+                      <div className={s.fileName}>
+                        <Text fw={600}>{entry.fileName}</Text>
                         <Text size="xs" c="dimmed">
-                          {entry.sizeBytes !== undefined ? formatBytes(entry.sizeBytes) : "—"}
-                          {" · "}
-                          {entry.container ?? "—"}
-                          {" · "}
-                          {generationLabel(entry.generation)}
+                          {formatBytes(entry.size)} · {entry.container ?? "unknown"} ·{" "}
+                          {generationLabel(entry)} · {String(entry.contextCount)} context(s)
                         </Text>
-                      </Stack>
+                      </div>
                       <Group gap="xs" wrap="nowrap">
-                        {report && (
+                        {entry.report && (
                           <Badge variant="light">
-                            {String(report.counts.forms)} forms · {String(report.counts.refs)}{" "}
-                            refs
+                            {String(totals.forms)} forms · {String(totals.refs)} refs
                           </Badge>
                         )}
-                        {report && (
+                        {totals.hide + totals.show > 0 && (
                           <Badge color="blue" variant="light">
-                            {report.navigation.status}
-                          </Badge>
-                        )}
-                        {report && (hideOps?.length ?? 0) + (showOps?.length ?? 0) > 0 && (
-                          <Badge color="teal" variant="light">
-                            Hide {String(hideAvailable ?? 0)}/{String(hideOps?.length ?? 0)} ·
-                            Show {String(showAvailable ?? 0)}/{String(showOps?.length ?? 0)}
-                          </Badge>
-                        )}
-                        {entry.reconstructionComplete !== undefined && (
-                          <Badge
-                            color={entry.reconstructionComplete ? "gray" : "orange"}
-                            variant="light"
-                          >
-                            reconstruction {entry.reconstructionComplete ? "traced" : "blocked"}
+                            H {String(totals.hide)} · S {String(totals.show)}
                           </Badge>
                         )}
                         <Badge color={statusColor(entry.status)}>
-                          {entry.status === "running" ? "analysing…" : entry.status}
+                          {corpusStatusLabels[entry.status]}
                         </Badge>
                       </Group>
                     </Group>
                   </Accordion.Control>
                   <Accordion.Panel>
-                    {entry.error && (
-                      <Alert color="red" title="Could not analyse this image">
-                        {entry.error}
-                      </Alert>
-                    )}
-                    {report && (
-                      <Stack gap="xs">
-                        <Text size="sm">
-                          <Text span fw={600}>
-                            Navigation:{" "}
-                          </Text>
-                          {report.navigation.mechanism ?? "n/a"}
-                          {report.navigation.confidence
-                            ? ` (${report.navigation.confidence})`
-                            : ""}{" "}
-                          - {String(report.navigation.directTabs)} direct /{" "}
-                          {String(report.navigation.suppressedTabs)} suppressed /{" "}
-                          {String(report.navigation.descendants)} descendant /{" "}
-                          {String(report.navigation.registeredOnly)} registered-only
-                        </Text>
-                        {report.navigation.reason && (
-                          <Text size="xs" c="dimmed">
-                            {report.navigation.reason}
-                          </Text>
-                        )}
-                        {entry.reconstructionBlockers && entry.reconstructionBlockers.length > 0 && (
-                          <List size="xs" spacing={2}>
-                            {entry.reconstructionBlockers.map((blocker) => (
-                              <List.Item key={blocker}>{blocker}</List.Item>
-                            ))}
-                          </List>
-                        )}
-                        {report.tabOperations.length > 0 && (
-                          <Table striped withColumnBorders>
-                            <Table.Thead>
-                              <Table.Tr>
-                                <Table.Th>Page</Table.Th>
-                                <Table.Th>Role</Table.Th>
-                                <Table.Th>Hide</Table.Th>
-                                <Table.Th>Show</Table.Th>
-                              </Table.Tr>
-                            </Table.Thead>
-                            <Table.Tbody>
-                              {report.tabOperations.map((op) => (
-                                <Table.Tr key={`${op.formId}-${op.name}`}>
-                                  <Table.Td>{op.name}</Table.Td>
-                                  <Table.Td>{op.role}</Table.Td>
-                                  <Table.Td>
-                                    <Badge
-                                      size="xs"
-                                      color={op.hide.available ? "green" : "gray"}
-                                      variant="light"
-                                    >
-                                      {op.hide.available ? "available" : "blocked"}
-                                    </Badge>
-                                  </Table.Td>
-                                  <Table.Td>
-                                    <Badge
-                                      size="xs"
-                                      color={op.show.available ? "green" : "gray"}
-                                      variant="light"
-                                    >
-                                      {op.show.available ? "available" : "blocked"}
-                                    </Badge>
-                                  </Table.Td>
-                                </Table.Tr>
-                              ))}
-                            </Table.Tbody>
-                          </Table>
-                        )}
-                      </Stack>
-                    )}
+                    <FileDetails entry={entry} />
                   </Accordion.Panel>
                 </Accordion.Item>
               );
             })}
           </Accordion>
-          {reports.length > 0 && (
-            <Group>
-              <Button
-                size="xs"
-                variant="default"
-                leftSection={<IconDownload size={16} />}
-                onClick={downloadReports}
-              >
-                Download corpus-report.json
-              </Button>
-            </Group>
-          )}
-        </Stack>
+        </>
       )}
     </Stack>
   );

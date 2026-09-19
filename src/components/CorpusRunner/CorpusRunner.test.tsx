@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MantineProvider } from "@mantine/core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import CorpusRunner from "./CorpusRunner";
@@ -100,6 +100,16 @@ beforeAll(() => {
       removeEventListener: vi.fn(),
     }),
   );
+  // Mantine's ScrollArea (used for the stage/editability detail tables)
+  // observes its own size; jsdom has no ResizeObserver implementation.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+    },
+  );
 });
 
 afterEach(() => {
@@ -124,26 +134,40 @@ describe("CorpusRunner", () => {
     fireEvent.change(input, {
       target: { files: [firmwareFile("board-a.bin"), firmwareFile("board-b.bin")] },
     });
+    await waitFor(() => {
+      expect(screen.getByText("2 file(s) selected · 768 B total")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run local corpus analysis" }));
 
     await waitFor(() => {
       expect(screen.getByText("board-a.bin")).toBeInTheDocument();
       expect(screen.getByText("board-b.bin")).toBeInTheDocument();
     });
+    // board-a.bin parses but has no detected single-FormSet navigation (a
+    // generic two-Form fixture, no hub) -> "Partial"; board-b.bin's
+    // extraction was rejected -> "Failed". Scoped to each file's own
+    // accordion item, since the summary metrics grid also has a "Partial"
+    // tile label.
+    const itemA = screen.getByText("board-a.bin").closest(".mantine-Accordion-item");
+    const itemB = screen.getByText("board-b.bin").closest(".mantine-Accordion-item");
+    if (!itemA || !itemB) throw new Error("expected both accordion items");
     await waitFor(() => {
-      expect(screen.getAllByText("done")).toHaveLength(1);
-      expect(screen.getAllByText("failed")).toHaveLength(1);
+      expect(within(itemA as HTMLElement).getByText("Partial")).toBeInTheDocument();
+      expect(within(itemB as HTMLElement).getByText("Failed")).toBeInTheDocument();
     });
     expect(
       screen.getAllByText("Setup FFS was not found after recursive decompression.", {
         exact: false,
       }),
     ).not.toHaveLength(0);
-    // The richer per-file summary: size/container/generation, form/ref
-    // counts, and a reconstruction-trace badge, not just a bare pass/fail.
+    // The richer, GPT-matching per-file detail: size/container/generation,
+    // form/ref counts, a stage table and a provenance badge, not just a
+    // bare pass/fail chip.
     expect(screen.getByText(/forms .* refs/)).toBeInTheDocument();
-    expect(screen.getByText(/reconstruction (traced|blocked)/)).toBeInTheDocument();
+    expect(screen.getByText(/provenance (complete|incomplete)/)).toBeInTheDocument();
     expect(screen.getAllByText(/\d+(\.\d+)? (B|KiB|MiB)/).length).toBeGreaterThan(0);
-    expect(screen.getByText("Download corpus-report.json")).toBeInTheDocument();
+    expect(screen.getByText("Export JSON report")).toBeInTheDocument();
+    expect(screen.getByText("Export CSV summary")).toBeInTheDocument();
     expect(extractFirmwareInWorker).toHaveBeenCalledTimes(2);
   });
 });

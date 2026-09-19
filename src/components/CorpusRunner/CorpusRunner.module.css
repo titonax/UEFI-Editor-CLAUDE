@@ -1,0 +1,26 @@
+.root {
+  border: 1px solid var(--mantine-color-dark-4);
+  border-radius: var(--mantine-radius-md);
+  padding: var(--mantine-spacing-lg);
+  background: color-mix(in srgb, var(--mantine-color-dark-7) 88%, transparent);
+}
+
+.summary {
+  border: 1px solid var(--mantine-color-dark-4);
+  border-radius: var(--mantine-radius-sm);
+  padding: var(--mantine-spacing-sm);
+}
+
+.fileName {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hash {
+  font-family: var(--mantine-font-family-monospace);
+  overflow-wrap: anywhere;
+}
+
+.detailsTable {
+  min-width: 50rem;
+}
