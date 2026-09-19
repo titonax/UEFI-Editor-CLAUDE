@@ -136,6 +136,21 @@ export function buildCorpusReport(data: Data, label: string): CorpusReport {
   };
 }
 
+// Two independent, mutually-applicable navigation mechanisms exist: the
+// single-FormSet IFR hub (report.navigation) and the multi-FormSet AMITSE
+// root vector (report.rootVisibility). Most older Aptio IV reference
+// boards only ever use the second one, so report.navigation.status
+// correctly reads "not-applicable" there - that must not be read as
+// "navigation unresolved" by anything deciding whether an image was
+// successfully classified (see CorpusRunner.tsx's own recognized/partial
+// status and its "Navigation" rate, both of which use this).
+export function reportNavigationDetected(report: CorpusReport | undefined) {
+  return (
+    report?.navigation.status === "detected" ||
+    report?.rootVisibility?.status === "detected"
+  );
+}
+
 // A one-line-per-image console table, so a whole corpus run's shape is
 // readable without opening every individual JSON report.
 export function summarizeCorpusReports(reports: CorpusReport[]): string {

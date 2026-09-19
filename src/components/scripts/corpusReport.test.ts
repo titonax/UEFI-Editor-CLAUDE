@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCorpusReport, summarizeCorpusReports } from "./corpusReport";
+import { buildCorpusReport, reportNavigationDetected, summarizeCorpusReports } from "./corpusReport";
 import { parseData } from "./ifrParser";
 import { buildFixtureFiles } from "./testFixtures";
 import type { Data, RefPrompt } from "./types";
@@ -138,6 +138,59 @@ function sameHubData(): Data {
     },
   };
 }
+
+// Most older Aptio IV reference boards never have a single-FormSet IFR hub
+// at all - they gate navigation through the multi-FormSet AMITSE root byte
+// vector instead, so singleFormSetNavigation is absent/not-applicable while
+// rootVisibility.status is "detected". This is the exact shape that made
+// the corpus runner misreport 14/15 real boards as "Partial": it only ever
+// checked report.navigation.status.
+function rootVectorOnlyData(): Data {
+  const data = sameHubData();
+  data.singleFormSetNavigation = undefined;
+  data.rootVisibility = {
+    status: "detected",
+    mechanism: "setup-pe32-root-byte-vector",
+    confidence: "corroborated",
+    reason: "test fixture",
+    entries: [
+      {
+        rootIndex: 0,
+        name: "Setup",
+        formId: "0x1",
+        formSetGuid: GUID,
+        value: 1,
+        visible: true,
+        bufferOffset: 0x200,
+      },
+    ],
+  };
+  return data;
+}
+
+describe("reportNavigationDetected", () => {
+  it("is true when only the root-visibility vector is detected and the single-FormSet hub is not applicable", () => {
+    const report = buildCorpusReport(rootVectorOnlyData(), "root-vector-board");
+
+    expect(report.navigation.status).not.toBe("detected");
+    expect(report.rootVisibility?.status).toBe("detected");
+    expect(reportNavigationDetected(report)).toBe(true);
+  });
+
+  it("is true when only the single-FormSet hub is detected", () => {
+    const report = buildCorpusReport(sameHubData(), "same-hub-board");
+
+    expect(reportNavigationDetected(report)).toBe(true);
+  });
+
+  it("is false when neither mechanism is detected", async () => {
+    const data = await parseData(await buildFixtureFiles());
+
+    const report = buildCorpusReport(data, "fixture");
+
+    expect(reportNavigationDetected(report)).toBe(false);
+  });
+});
 
 describe("buildCorpusReport", () => {
   it("reports counts and a not-applicable navigation status for a sample with no single-FormSet hub", async () => {

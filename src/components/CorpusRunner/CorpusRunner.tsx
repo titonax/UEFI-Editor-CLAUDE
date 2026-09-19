@@ -36,7 +36,12 @@ import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
 import { sha256Hex } from "../scripts/hashing";
 import { parseData } from "../scripts/ifrParser";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
-import { buildCorpusReport, type CorpusReport, type CorpusTabOperation } from "../scripts/corpusReport";
+import {
+  buildCorpusReport,
+  reportNavigationDetected,
+  type CorpusReport,
+  type CorpusTabOperation,
+} from "../scripts/corpusReport";
 import s from "./CorpusRunner.module.css";
 
 const MAX_FIRMWARE_BYTES = 512 * 1024 * 1024;
@@ -117,8 +122,8 @@ function summarizeRun(entries: CorpusRunEntry[]) {
   const hashes = entries.flatMap((entry) => (entry.sha256 ? [entry.sha256] : []));
   const uniqueFiles = new Set(hashes).size + entries.length - hashes.length;
   const extracted = entries.filter((entry) => entry.status !== "failed").length;
-  const navigationResolved = entries.filter(
-    (entry) => entry.report?.navigation.status === "detected",
+  const navigationResolved = entries.filter((entry) =>
+    reportNavigationDetected(entry.report),
   ).length;
   const hiiEditable = entries.filter((entry) => {
     const totals = entryTotals(entry);
@@ -155,7 +160,8 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
     "contexts",
     "forms",
     "refs",
-    "navigation_status",
+    "single_formset_navigation_status",
+    "root_visibility_status",
     "hide_available",
     "show_available",
     "reconstruction_complete",
@@ -174,6 +180,7 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
       totals.forms,
       totals.refs,
       entry.report?.navigation.status ?? "",
+      entry.report?.rootVisibility?.status ?? "",
       totals.hide,
       totals.show,
       entry.reconstructionComplete === undefined ? "" : String(entry.reconstructionComplete),
@@ -247,8 +254,16 @@ function FileDetails({ entry }: { entry: CorpusRunEntry }) {
                 variant="light"
                 color={report.navigation.status === "detected" ? "green" : "yellow"}
               >
-                {report.navigation.mechanism ?? report.navigation.status}
+                single-FormSet: {report.navigation.mechanism ?? report.navigation.status}
               </Badge>
+              {report.rootVisibility && (
+                <Badge
+                  variant="light"
+                  color={report.rootVisibility.status === "detected" ? "green" : "yellow"}
+                >
+                  root vector: {report.rootVisibility.status}
+                </Badge>
+              )}
               <Badge
                 variant="light"
                 color={entry.reconstructionComplete ? "blue" : "orange"}
@@ -268,6 +283,11 @@ function FileDetails({ entry }: { entry: CorpusRunEntry }) {
             {report.navigation.reason && (
               <Text size="xs" c="dimmed">
                 Single-FormSet navigation: {report.navigation.status} — {report.navigation.reason}
+              </Text>
+            )}
+            {report.rootVisibility && (
+              <Text size="xs" c="dimmed">
+                Root visibility: {report.rootVisibility.status} — {report.rootVisibility.reason}
               </Text>
             )}
             {report.tabOperations.length > 0 && (
@@ -392,11 +412,18 @@ export default function CorpusRunner() {
         detail: `${String(report.counts.forms)} form(s), ${String(report.counts.refs)} ref(s).`,
       });
 
-      const navigationDetected = report.navigation.status === "detected";
+      const singleFormSetDetected = report.navigation.status === "detected";
+      const rootVisibilityDetected = report.rootVisibility?.status === "detected";
+      const navigationDetected = reportNavigationDetected(report);
+      const navigationDetail = singleFormSetDetected
+        ? (report.navigation.reason ?? report.navigation.status)
+        : rootVisibilityDetected
+          ? (report.rootVisibility?.reason ?? "Multi-FormSet root visibility vector detected.")
+          : (report.navigation.reason ?? report.navigation.status);
       stages.push({
         id: "navigation",
         status: navigationDetected ? "passed" : "warning",
-        detail: report.navigation.reason ?? report.navigation.status,
+        detail: navigationDetail,
       });
 
       const hideAvailable = report.tabOperations.filter((op) => op.hide.available).length;
