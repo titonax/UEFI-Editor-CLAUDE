@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { extractAptioIvArtifacts, extractAptioIvBytes } from "./aptioIvExtractor";
 
 const setupGuid = "899407D7-99FE-43D8-9A21-79EC328CAC21";
+const amitseGuid = "B1DA0ADF-4F77-4070-A88E-BFFE1C60529A";
 const hiiGuid = "97E409E6-4CC1-11D9-81F6-000000000000";
+const setupDataGuid = "FE612B72-203C-47B1-8560-A66D946EB371";
 
 function writeGuid(bytes: Uint8Array, offset: number, guid: string) {
   const [data1, data2, data3, data4, data5] = guid.split("-");
@@ -24,32 +26,71 @@ function writeUint24(bytes: Uint8Array, offset: number, value: number) {
   bytes[offset + 2] = (value >>> 16) & 0xff;
 }
 
-// A minimal firmware volume holding exactly one FFS file whose body is
-// `section`. The volume header is 0x48 bytes; the extractor only needs the
+// A minimal firmware volume holding one or more FFS files whose bodies are
+// `section`s. The volume header is 0x48 bytes; the extractor only needs the
 // _FVH signature, the 64-bit length and the header length to accept it.
-function firmwareVolumeWithFile(fileGuid: string, section: Uint8Array) {
+function firmwareVolumeWithFiles(files: { guid: string; section: Uint8Array }[]) {
   const headerSize = 0x48;
-  const fileStart = headerSize;
-  const fileSize = 24 + section.length;
-  const volumeSize = 0x80 + fileSize;
+  const aligned = (value: number) => (value + 7) & ~7;
+  const offsets: number[] = [];
+  let cursor = headerSize;
+  for (const file of files) {
+    offsets.push(cursor);
+    cursor = aligned(cursor + 24 + file.section.length);
+  }
+  const volumeSize = aligned(cursor + 0x40);
   const bytes = new Uint8Array(volumeSize);
   const view = new DataView(bytes.buffer);
   view.setBigUint64(0x20, BigInt(volumeSize), true);
   bytes.set([0x5f, 0x46, 0x56, 0x48], 0x28);
   view.setUint16(0x30, headerSize, true);
-  writeGuid(bytes, fileStart, fileGuid);
-  writeUint24(bytes, fileStart + 20, fileSize);
-  bytes.set(section, fileStart + 24);
+  for (const [index, file] of files.entries()) {
+    const fileStart = offsets[index];
+    const fileSize = 24 + file.section.length;
+    writeGuid(bytes, fileStart, file.guid);
+    writeUint24(bytes, fileStart + 20, fileSize);
+    bytes.set(file.section, fileStart + 24);
+  }
   return bytes;
 }
 
-function setupVolume(hii: Uint8Array) {
-  const section = new Uint8Array(4 + 16 + hii.length);
+function firmwareVolumeWithFile(fileGuid: string, section: Uint8Array) {
+  return firmwareVolumeWithFiles([{ guid: fileGuid, section }]);
+}
+
+function freeformSection(sectionGuid: string, payload: Uint8Array) {
+  const section = new Uint8Array(4 + 16 + payload.length);
   writeUint24(section, 0, section.length);
   section[3] = 0x18;
-  writeGuid(section, 4, hiiGuid);
-  section.set(hii, 20);
-  return firmwareVolumeWithFile(setupGuid, section);
+  writeGuid(section, 4, sectionGuid);
+  section.set(payload, 20);
+  return section;
+}
+
+function pe32Section(payload: Uint8Array) {
+  const section = new Uint8Array(4 + payload.length);
+  writeUint24(section, 0, section.length);
+  section[3] = 0x10;
+  section.set(payload, 4);
+  return section;
+}
+
+function setupVolume(hii: Uint8Array) {
+  return firmwareVolumeWithFile(setupGuid, freeformSection(hiiGuid, hii));
+}
+
+// A whole firmware slot: Setup, AMITSE and SetupData, each carrying `marker`
+// as their first byte so two contexts concatenated into one image can be
+// told apart by which bytes actually got selected.
+function artifactContext(marker: number) {
+  return firmwareVolumeWithFiles([
+    { guid: setupGuid, section: freeformSection(hiiGuid, new Uint8Array([marker, 0x01])) },
+    { guid: amitseGuid, section: pe32Section(new Uint8Array([marker, 0x02])) },
+    {
+      guid: setupDataGuid,
+      section: freeformSection(setupDataGuid, new Uint8Array([marker, 0x03])),
+    },
+  ]);
 }
 
 function binaryFile(bytes: Uint8Array): File {
@@ -95,7 +136,7 @@ describe("extractAptioIvArtifacts", () => {
           volumeEnd: image.length,
           fileStart: 0x48,
           bodyStart: 0x48 + 24,
-          end: image.length - 0x80 + 0x48,
+          end: 0x48 + 24 + 20 + hii.length,
           headerSize: 24,
         },
       },
@@ -153,5 +194,41 @@ describe("extractAptioIvArtifacts", () => {
       kind: "setup-hii",
       payloadStart: 0x48 + 24 + 4,
     });
+  });
+
+  it("keeps duplicated firmware slots coherent and selects them explicitly", async () => {
+    const firstContext = artifactContext(0xa1);
+    const secondContext = artifactContext(0xb2);
+    const image = new Uint8Array(firstContext.length + secondContext.length);
+    image.set(firstContext);
+    image.set(secondContext, firstContext.length);
+    const extractIfr = (hii: Uint8Array) =>
+      Promise.resolve(`FormSet Guid: marker-${String(hii[0])}`);
+
+    const first = await extractAptioIvBytes(image, extractIfr);
+
+    expect(first.artifactSets).toHaveLength(2);
+    expect(first.hii).toEqual(new Uint8Array([0xa1, 0x01]));
+    expect(first.amitse).toEqual(new Uint8Array([0xa1, 0x02]));
+    expect(first.setupData).toEqual(new Uint8Array([0xa1, 0x03]));
+    expect(first.artifactSets[0]).toMatchObject({
+      coherence: "same-firmware-volume",
+      warnings: [],
+    });
+    expect(first.artifactSets[0].setupFile.volumeStart).toBe(
+      first.artifactSets[0].amitseFile?.volumeStart,
+    );
+    expect(first.artifactSets[0].setupFile.volumeStart).toBe(
+      first.artifactSets[0].setupDataFile?.volumeStart,
+    );
+
+    const secondId = first.artifactSets[1].id;
+    const second = await extractAptioIvBytes(image, extractIfr, undefined, {
+      artifactSetId: secondId,
+    });
+    expect(second.selectedArtifactSetId).toBe(secondId);
+    expect(second.hii).toEqual(new Uint8Array([0xb2, 0x01]));
+    expect(second.amitse).toEqual(new Uint8Array([0xb2, 0x02]));
+    expect(second.setupData).toEqual(new Uint8Array([0xb2, 0x03]));
   });
 });

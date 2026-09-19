@@ -1,4 +1,4 @@
-import type { AptioIvArtifacts } from "./aptioIvExtractor";
+import type { AptioIvArtifacts, AptioIvExtractionOptions } from "./aptioIvExtractor";
 import type { AptioIvExtractorWorkerResult } from "./aptioIvExtractorWorker";
 
 // Recursive nested-volume decompression + IFRExtractor both run as
@@ -9,7 +9,10 @@ import type { AptioIvExtractorWorkerResult } from "./aptioIvExtractorWorker";
 // setTimeout can't preempt a synchronous computation that never yields).
 export const EXTRACTION_TIMEOUT_MS = 90_000;
 
-export function extractFirmwareInWorker(file: File): Promise<AptioIvArtifacts> {
+export function extractFirmwareInWorker(
+  file: File,
+  options: AptioIvExtractionOptions = {},
+): Promise<AptioIvArtifacts> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(
       new URL("./aptioIvExtractorWorker.ts", import.meta.url),
@@ -38,6 +41,6 @@ export function extractFirmwareInWorker(file: File): Promise<AptioIvArtifacts> {
       worker.terminate();
       reject(new Error(event.message || "The extraction worker crashed."));
     };
-    worker.postMessage(file);
+    worker.postMessage({ file, options });
   });
 }

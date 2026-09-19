@@ -56,6 +56,16 @@ function setupDataProfile() {
 
 function artifactsFor(sourceImage: Uint8Array): AptioIvArtifacts {
   const hii = unifiedFormsPackage();
+  const setupFile = {
+    bufferId: 0,
+    guid: "899407D7-99FE-43D8-9A21-79EC328CAC21",
+    volumeStart: 0,
+    volumeEnd: 0x100,
+    fileStart: 0x28,
+    bodyStart: 0x40,
+    end: 0x100,
+    headerSize: 24,
+  };
   return {
     hii,
     ifrText: "verbose IFR",
@@ -63,6 +73,16 @@ function artifactsFor(sourceImage: Uint8Array): AptioIvArtifacts {
     setupData: setupDataProfile(),
     formPackageCount: 1,
     extractionDepth: 2,
+    artifactSets: [
+      {
+        id: "buffer-0-fv-0-ffs-28",
+        label: "Firmware context 1 · layer 0 · buffer 0 · FV 0x0",
+        coherence: "same-firmware-volume",
+        setupFile,
+        warnings: [],
+      },
+    ],
+    selectedArtifactSetId: "buffer-0-fv-0-ffs-28",
     provenance: {
       rootBufferId: 0,
       sourceSize: sourceImage.length,
@@ -165,6 +185,79 @@ describe("BiosImageUpload", () => {
       ).join(""),
     );
     expect(files.setupTxtContainer.textContent).toBe("verbose IFR");
+    expect(extractFirmwareInWorker).toHaveBeenCalledOnce();
+  });
+
+  it("requires an explicit slot choice when repeated Setup contexts exist", async () => {
+    const hii = unifiedFormsPackage();
+    const sourceImage = validFirmwareVolumeImage();
+    const setupFile = {
+      bufferId: 0,
+      guid: "899407D7-99FE-43D8-9A21-79EC328CAC21",
+      volumeStart: 0,
+      volumeEnd: 0x100,
+      fileStart: 0x28,
+      bodyStart: 0x40,
+      end: 0x100,
+      headerSize: 24,
+    };
+    extractFirmwareInWorker.mockResolvedValueOnce({
+      hii,
+      ifrText: "verbose IFR",
+      formPackageCount: 1,
+      extractionDepth: 2,
+      artifactSets: [
+        {
+          id: "slot-1",
+          label: "Firmware context 1 · layer 2 · buffer 4 · FV 0x0",
+          coherence: "same-firmware-volume",
+          setupFile,
+          warnings: [],
+        },
+        {
+          id: "slot-2",
+          label: "Firmware context 2 · layer 2 · buffer 9 · FV 0x0",
+          coherence: "same-firmware-volume",
+          setupFile: { ...setupFile, bufferId: 9 },
+          warnings: [],
+        },
+      ],
+      selectedArtifactSetId: "slot-1",
+      provenance: {
+        rootBufferId: 0,
+        sourceSize: sourceImage.length,
+        buffers: [{ id: 0, bytes: sourceImage, depth: 0 }],
+        artifacts: [
+          {
+            kind: "setup-hii",
+            bufferId: 0,
+            payloadStart: 0x40,
+            payloadEnd: 0x40 + hii.length,
+            sourceFile: setupFile,
+          },
+        ],
+      },
+    });
+    const onExtracted = vi
+      .fn<(files: PopulatedFiles) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const input = renderUpload(onExtracted);
+
+    fireEvent.change(input, { target: { files: [imageFile(sourceImage, "dual-slot.bin")] } });
+
+    expect(
+      await screen.findByText("Multiple firmware contexts detected"),
+    ).toBeInTheDocument();
+    const start = screen.getByText("Start HII analysis").closest("button");
+    if (!start) throw new Error("Expected the Start HII analysis button.");
+    expect(start).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Firmware context / slot"), {
+      target: { value: "slot-1" },
+    });
+    await waitFor(() => expect(start).toBeEnabled());
+    // slot-1 is already the extraction's own selectedArtifactSetId, so
+    // choosing it back is a no-op that never re-invokes the worker.
     expect(extractFirmwareInWorker).toHaveBeenCalledOnce();
   });
 

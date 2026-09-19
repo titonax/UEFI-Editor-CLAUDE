@@ -11,8 +11,10 @@ import {
   type FirmwareSection,
 } from "./firmwareSections";
 import type {
+  FirmwareArtifactCoherence,
   FirmwareArtifactKind,
   FirmwareArtifactLocation,
+  FirmwareArtifactSetSummary,
   FirmwareBufferNode,
   FirmwareFileReference,
   FirmwareProvenanceGraph,
@@ -30,10 +32,20 @@ export interface AptioIvArtifacts {
   setupData?: Uint8Array;
   formPackageCount: number;
   extractionDepth: number;
+  // Every coherent Setup/AMITSE/SetupData context this image contains (see
+  // locateArtifactSets), and which one these artifacts came from. A modern
+  // image can carry more than one firmware slot under the same AMI GUIDs -
+  // GUID identity alone never proves two files belong to the same slot.
+  artifactSets: FirmwareArtifactSetSummary[];
+  selectedArtifactSetId: string;
   // Every decoded buffer on the way from the source image to each artifact,
   // kept so the root-visibility detector can read the Setup PE32 in place
   // and so a future full-image rebuild knows exactly what to put back where.
   provenance: FirmwareProvenanceGraph;
+}
+
+export interface AptioIvExtractionOptions {
+  artifactSetId?: string;
 }
 
 function u24(bytes: Uint8Array, offset: number) {
@@ -316,11 +328,9 @@ function* filesInVolumes(node: FirmwareBufferNode): Generator<LocatedFile> {
 }
 
 function findFiles(node: FirmwareBufferNode, wantedGuids: Set<string>) {
-  const found = new Map<string, LocatedFile>();
+  const found: LocatedFile[] = [];
   for (const file of filesInVolumes(node)) {
-    if (wantedGuids.has(file.guid) && !found.has(file.guid)) {
-      found.set(file.guid, file);
-    }
+    if (wantedGuids.has(file.guid)) found.push(file);
   }
   return found;
 }
@@ -383,8 +393,10 @@ async function nestedBuffers(graph: ExtractionGraph, node: FirmwareBufferNode) {
 }
 
 // Breadth-first through the image and every buffer decoded out of it,
-// looking for all wanted FFS files at once so a shared nested volume is
-// only decompressed once no matter how many files live in it.
+// looking for every occurrence of the wanted FFS files (not just the first
+// of each GUID - a modern image can carry more than one firmware slot under
+// the same AMI GUIDs, so every candidate has to survive long enough for
+// locateArtifactSets to tell them apart by provenance, not GUID identity).
 async function locateFirmwareFiles(
   image: Uint8Array,
   wantedGuids: string[],
@@ -394,18 +406,134 @@ async function locateFirmwareFiles(
   const root = graph.nodes.get(0);
   if (!root) throw new Error("Source image is unavailable.");
   const queue = [root];
-  const remaining = new Set(wantedGuids);
-  const located = new Map<string, LocatedFile>();
+  const wanted = new Set(wantedGuids);
+  const located = new Map<string, LocatedFile[]>(
+    wantedGuids.map((fileGuid) => [fileGuid, []]),
+  );
   for (let index = 0; index < queue.length && index < 64; index++) {
     const current = queue[index];
-    for (const [fileGuid, file] of findFiles(current, remaining)) {
-      located.set(fileGuid, file);
-      remaining.delete(fileGuid);
+    for (const file of findFiles(current, wanted)) {
+      located.get(file.guid)?.push(file);
     }
-    if (remaining.size === 0) break;
     queue.push(...(await nestedBuffers(graph, current)));
   }
   return { graph, located };
+}
+
+interface CompanionMatch {
+  file?: LocatedFile;
+  coherence?: Exclude<FirmwareArtifactCoherence, "setup-only">;
+  warning?: string;
+}
+
+const coherenceRank: Record<Exclude<FirmwareArtifactCoherence, "setup-only">, number> = {
+  "same-firmware-volume": 0,
+  "same-decoded-buffer": 1,
+  "shared-encapsulation-branch": 2,
+};
+
+// The chain of buffer ids from the source image (buffer 0) down to
+// `bufferId`, following each buffer's own single parent edge.
+function bufferLineage(graph: ExtractionGraph, bufferId: number) {
+  const lineage: number[] = [];
+  const visited = new Set<number>();
+  let currentId = bufferId;
+  while (!visited.has(currentId)) {
+    visited.add(currentId);
+    lineage.push(currentId);
+    const parent = graph.nodes.get(currentId)?.parent;
+    if (!parent) break;
+    currentId = parent.parentBufferId;
+  }
+  return lineage.reverse();
+}
+
+// How far two buffers' lineages agree before diverging - 0 means they only
+// share the source image itself.
+function sharedLineageDepth(graph: ExtractionGraph, leftBufferId: number, rightBufferId: number) {
+  const left = bufferLineage(graph, leftBufferId);
+  const right = bufferLineage(graph, rightBufferId);
+  let depth = 0;
+  while (depth < left.length && depth < right.length && left[depth] === right[depth]) {
+    depth++;
+  }
+  return depth;
+}
+
+function companionRelationship(graph: ExtractionGraph, setup: LocatedFile, candidate: LocatedFile) {
+  if (setup.bufferId === candidate.bufferId && setup.volumeStart === candidate.volumeStart) {
+    return { coherence: "same-firmware-volume" as const, sharedDepth: Number.MAX_SAFE_INTEGER };
+  }
+  if (setup.bufferId === candidate.bufferId) {
+    return { coherence: "same-decoded-buffer" as const, sharedDepth: Number.MAX_SAFE_INTEGER };
+  }
+  return {
+    coherence: "shared-encapsulation-branch" as const,
+    sharedDepth: sharedLineageDepth(graph, setup.bufferId, candidate.bufferId),
+  };
+}
+
+// Picks this Setup context's AMITSE/SetupData companion out of every
+// occurrence found anywhere in the image: the closest-provenance candidate
+// (same FV, then same decoded buffer, then the deepest shared encapsulation
+// branch), refusing anything that only shares the source image itself (a
+// "shared branch" of depth <= 1) since that's not evidence of belonging to
+// the same slot. Two equally close candidates are left unattached rather
+// than guessed between - see docs/ami/firmware-context-selection.md.
+function selectCompanion(
+  graph: ExtractionGraph,
+  setup: LocatedFile,
+  candidates: LocatedFile[],
+  label: string,
+): CompanionMatch {
+  if (candidates.length === 0) {
+    return { warning: `${label} was not found for this Setup context.` };
+  }
+  const ranked = candidates
+    .map((file) => ({ file, ...companionRelationship(graph, setup, file) }))
+    .filter(
+      (candidate) =>
+        candidate.coherence !== "shared-encapsulation-branch" || candidate.sharedDepth > 1,
+    )
+    .sort(
+      (left, right) =>
+        coherenceRank[left.coherence] - coherenceRank[right.coherence] ||
+        right.sharedDepth - left.sharedDepth,
+    );
+  if (ranked.length === 0) {
+    return {
+      warning: `${label} does not share a decoded buffer or encapsulation branch with this Setup context.`,
+    };
+  }
+  const best = ranked[0];
+  const tied = ranked.filter(
+    (candidate) => candidate.coherence === best.coherence && candidate.sharedDepth === best.sharedDepth,
+  );
+  if (tied.length !== 1) {
+    return {
+      warning: `${label} has ${String(tied.length)} equally plausible matches; none was attached across firmware contexts.`,
+    };
+  }
+  return {
+    file: best.file,
+    coherence: best.coherence,
+    warning:
+      best.coherence === "same-decoded-buffer"
+        ? `${label} is the only buffer-level match outside this Setup firmware volume; verify the selected firmware context before editing.`
+        : best.coherence === "shared-encapsulation-branch"
+          ? `${label} is the only branch-level match; verify the selected firmware context before editing.`
+          : undefined,
+  };
+}
+
+function artifactSetId(file: LocatedFile) {
+  return `buffer-${String(file.bufferId)}-fv-${file.volumeStart.toString(16)}-ffs-${file.fileStart.toString(16)}`;
+}
+
+function artifactSetCoherence(matches: CompanionMatch[]): FirmwareArtifactCoherence {
+  const relationships = matches.flatMap((match) => (match.coherence ? [match.coherence] : []));
+  if (relationships.length === 0) return "setup-only";
+  return relationships.sort((left, right) => coherenceRank[right] - coherenceRank[left])[0];
 }
 
 type SectionPayloadLocator = (bytes: Uint8Array, section: FirmwareSection) => number | null;
@@ -514,6 +642,86 @@ function locatePe32(
   return locateSectionPayload(graph, file, artifactKind, pe32Locator);
 }
 
+interface LocatedArtifactSet {
+  summary: FirmwareArtifactSetSummary;
+  setup: LocatedFile;
+  hii: LocatedPayload;
+  amitse: LocatedPayload | null;
+  setupData: LocatedPayload | null;
+}
+
+// Every usable Setup occurrence in the image, each paired with its best
+// AMITSE/SetupData companion (see selectCompanion) and labelled with how
+// confidently those companions were matched - one entry per coherent
+// firmware context/slot, not one per GUID.
+async function locateArtifactSets(graph: ExtractionGraph, files: Map<string, LocatedFile[]>) {
+  const setups = [...(files.get(setupGuid) ?? [])].sort(
+    (left, right) =>
+      left.depth - right.depth ||
+      left.bufferId - right.bufferId ||
+      left.volumeStart - right.volumeStart ||
+      left.fileStart - right.fileStart,
+  );
+  const sets: LocatedArtifactSet[] = [];
+  for (const setup of setups) {
+    const hii = (await locateHii(graph, setup)) ?? (await locatePe32(graph, setup, "setup-hii"));
+    if (!hii) continue;
+
+    const amitseMatch = selectCompanion(graph, setup, files.get(amitseGuid) ?? [], "AMITSE");
+    let setupDataMatch = selectCompanion(
+      graph,
+      setup,
+      files.get(setupDataGuid) ?? [],
+      "SetupData",
+    );
+    const warnings = [amitseMatch.warning].filter((warning): warning is string =>
+      Boolean(warning),
+    );
+    const amitse = amitseMatch.file ? await locatePe32(graph, amitseMatch.file, "amitse") : null;
+    if (amitseMatch.file && !amitse) {
+      warnings.push("The paired AMITSE FFS does not contain a PE32 section.");
+    }
+    // SetupData is usually a freeform section inside the AMITSE FFS file,
+    // but some images give it its own FFS file under the same GUID instead
+    // - try the matched SetupData file first and fall back to AMITSE's.
+    let setupData = setupDataMatch.file
+      ? await locateSetupData(graph, setupDataMatch.file)
+      : null;
+    if (!setupData && amitseMatch.file) {
+      const embedded = await locateSetupData(graph, amitseMatch.file);
+      if (embedded) {
+        setupData = embedded;
+        setupDataMatch = { file: amitseMatch.file, coherence: amitseMatch.coherence };
+      }
+    }
+    if (setupDataMatch.warning) warnings.push(setupDataMatch.warning);
+    if (setupDataMatch.file && !setupData) {
+      warnings.push("The paired SetupData source does not contain the expected freeform section.");
+    }
+    const id = artifactSetId(setup);
+    const coherence = artifactSetCoherence([amitseMatch, setupDataMatch]);
+    sets.push({
+      summary: {
+        id,
+        label: "",
+        coherence,
+        setupFile: fileReference(setup),
+        amitseFile: amitse ? amitse.location.sourceFile : undefined,
+        setupDataFile: setupData ? setupData.location.sourceFile : undefined,
+        warnings,
+      },
+      setup,
+      hii,
+      amitse,
+      setupData,
+    });
+  }
+  for (const [index, set] of sets.entries()) {
+    set.summary.label = `Firmware context ${String(index + 1)} · layer ${String(set.setup.depth)} · buffer ${String(set.setup.bufferId)} · FV 0x${set.setup.volumeStart.toString(16).toUpperCase()}`;
+  }
+  return sets;
+}
+
 async function runIfrExtractor(hii: Uint8Array) {
   const directory = new Map<string, WasiFile>();
   directory.set("setup.bin", new WasiFile(hii));
@@ -577,51 +785,56 @@ export async function extractAptioIvBytes(
   image: Uint8Array,
   extractIfr: (hii: Uint8Array) => Promise<string> = runIfrExtractor,
   decompress: FirmwareDecompressor = firmwareDecompress,
+  options: AptioIvExtractionOptions = {},
 ): Promise<AptioIvArtifacts> {
   const { graph, located: files } = await locateFirmwareFiles(
     image,
     [setupGuid, amitseGuid, setupDataGuid],
     decompress,
   );
-  const setup = files.get(setupGuid);
-  if (!setup) {
+  if ((files.get(setupGuid) ?? []).length === 0) {
     throw new Error("Setup FFS was not found after recursive decompression.");
   }
-  // Some images store the Setup module's IFR data as a freeform HII body
-  // (the common case); others wrap it as a PE32 executable instead, which
-  // IFRExtractor can also parse directly (see docs/ami/sample-corpus.md's
-  // image2.bin regression, "Setup FFS -> PE32").
-  const hii =
-    (await locateHii(graph, setup)) ?? (await locatePe32(graph, setup, "setup-hii"));
-  if (!hii) {
-    throw new Error("Neither a Setup HII package nor a Setup PE32 section was found.");
+  const sets = await locateArtifactSets(graph, files);
+  if (sets.length === 0) {
+    throw new Error(
+      "No Setup context contains a usable HII package or Setup PE32 section.",
+    );
   }
-  const amitseFile = files.get(amitseGuid);
-  const setupDataFile = files.get(setupDataGuid);
-  const amitse = amitseFile ? await locatePe32(graph, amitseFile, "amitse") : null;
-  // SetupData is usually a freeform section inside the AMITSE FFS file, but
-  // some images give it its own FFS file under the same GUID instead - try
-  // that first and fall back to the AMITSE file.
-  let setupData = setupDataFile ? await locateSetupData(graph, setupDataFile) : null;
-  if (!setupData && amitseFile) {
-    setupData = await locateSetupData(graph, amitseFile);
+  const selected = options.artifactSetId
+    ? sets.find((set) => set.summary.id === options.artifactSetId)
+    : sets[0];
+  if (!selected) {
+    throw new Error("The selected firmware context no longer exists in this image.");
   }
-  const ifrText = await extractIfr(hii.bytes);
+  const ifrText = await extractIfr(selected.hii.bytes);
   const formPackageCount = (ifrText.match(/FormSet Guid:/g) ?? []).length;
-  const locations = [hii.location, amitse?.location, setupData?.location].filter(
-    (location): location is FirmwareArtifactLocation => location !== undefined,
-  );
+  const locations = [
+    selected.hii.location,
+    selected.amitse?.location,
+    selected.setupData?.location,
+  ].filter((location): location is FirmwareArtifactLocation => location !== undefined);
   return {
-    hii: hii.bytes,
+    hii: selected.hii.bytes,
     ifrText,
-    amitse: amitse?.bytes,
-    setupData: setupData?.bytes,
+    amitse: selected.amitse?.bytes,
+    setupData: selected.setupData?.bytes,
     formPackageCount,
-    extractionDepth: setup.depth,
+    extractionDepth: selected.setup.depth,
+    artifactSets: sets.map((set) => set.summary),
+    selectedArtifactSetId: selected.summary.id,
     provenance: retainArtifactBranches(graph, locations, image.length),
   };
 }
 
-export async function extractAptioIvArtifacts(file: File): Promise<AptioIvArtifacts> {
-  return extractAptioIvBytes(new Uint8Array(await file.arrayBuffer()));
+export async function extractAptioIvArtifacts(
+  file: File,
+  options: AptioIvExtractionOptions = {},
+): Promise<AptioIvArtifacts> {
+  return extractAptioIvBytes(
+    new Uint8Array(await file.arrayBuffer()),
+    runIfrExtractor,
+    firmwareDecompress,
+    options,
+  );
 }

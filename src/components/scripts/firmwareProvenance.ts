@@ -57,6 +57,25 @@ export interface FirmwareProvenanceGraph {
   artifacts: FirmwareArtifactLocation[];
 }
 
+export type FirmwareArtifactCoherence =
+  | "same-firmware-volume"
+  | "same-decoded-buffer"
+  | "shared-encapsulation-branch"
+  | "setup-only";
+
+// One coherent Setup/AMITSE/SetupData context. Modern images can carry more
+// than one firmware slot with the same AMI GUIDs, so GUID identity alone is
+// insufficient: every companion remains tied to its decoded buffer and FV.
+export interface FirmwareArtifactSetSummary {
+  id: string;
+  label: string;
+  coherence: FirmwareArtifactCoherence;
+  setupFile: FirmwareFileReference;
+  amitseFile?: FirmwareFileReference;
+  setupDataFile?: FirmwareFileReference;
+  warnings: string[];
+}
+
 export interface FirmwareArtifactTrace {
   kind: FirmwareArtifactKind;
   complete: boolean;

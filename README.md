@@ -72,10 +72,14 @@ modules, and runs IFRExtractor-RS via WebAssembly - and then reports what it
 found: the container kind, every volume, the compression path each artefact
 came through, how the Setup HII is laid out, and whether the image reads as
 Aptio IV or V (shared structures alone are never taken as proof, so an
-unresolved image stays marked as such). Press **Start HII analysis** to open
-the menu tree. A modified Setup module cannot yet be reinserted into the
-image it came from, so the **UEFI files** export stays disabled in this mode;
-`data.json` export still works.
+unresolved image stays marked as such). If the image carries more than one
+coherent Setup/AMITSE/SetupData context - a redundant/dual-BIOS layout, or
+several OEM navigation profiles side by side - the preflight lists every one
+and requires an explicit choice before continuing; see
+[`docs/ami/firmware-context-selection.md`](docs/ami/firmware-context-selection.md).
+Press **Start HII analysis** to open the menu tree. A modified Setup module
+cannot yet be reinserted into the image it came from, so the **UEFI files**
+export stays disabled in this mode; `data.json` export still works.
 
 **Four separate files** (manual compatibility mode): extract these with
 [UEFITool](https://github.com/LongSoft/UEFITool) and

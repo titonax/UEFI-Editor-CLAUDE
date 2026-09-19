@@ -6,6 +6,7 @@ import {
   FileInput,
   Group,
   List,
+  NativeSelect,
   Progress,
   Stack,
   Table,
@@ -25,7 +26,10 @@ import {
 } from "../scripts/amiFirmwareImage";
 import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
-import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
+import {
+  assessFirmwareReconstruction,
+  type FirmwareArtifactCoherence,
+} from "../scripts/firmwareProvenance";
 import type { FirmwareSectionCompression } from "../scripts/firmwareSections";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 
@@ -83,6 +87,13 @@ function compressionName(compression: FirmwareSectionCompression) {
   return "uncompressed wrapper";
 }
 
+function coherenceLabel(coherence: FirmwareArtifactCoherence) {
+  if (coherence === "same-firmware-volume") return "same firmware volume";
+  if (coherence === "same-decoded-buffer") return "same decoded buffer";
+  if (coherence === "shared-encapsulation-branch") return "shared encapsulation branch";
+  return "Setup only";
+}
+
 function containerLabel(container: FirmwareContainer) {
   if (container === "intel-flash") return "Complete Intel flash";
   if (container === "firmware-volume-image") return "Raw firmware volume image";
@@ -101,10 +112,14 @@ interface BiosImageUploadProps {
 // operation counter so a stale preflight can't overwrite a newer one.
 export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
   const operation = React.useRef(0);
+  const artifactCache = React.useRef(new Map<string, AptioIvArtifacts>());
   const [file, setFile] = React.useState<File | null>(null);
   const [report, setReport] = React.useState<AmiFirmwareImageReport | null>(null);
   const [artifacts, setArtifacts] = React.useState<AptioIvArtifacts | null>(null);
   const [profile, setProfile] = React.useState<AmiSetupProfileReport | null>(null);
+  const [selectedArtifactSetId, setSelectedArtifactSetId] = React.useState<string | null>(
+    null,
+  );
   const [loading, setLoading] = React.useState(false);
   const [stage, setStage] = React.useState("");
   const [error, setError] = React.useState("");
@@ -115,6 +130,8 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
     setReport(null);
     setArtifacts(null);
     setProfile(null);
+    setSelectedArtifactSetId(null);
+    artifactCache.current.clear();
     setError("");
     if (!selected) return;
     if (selected.size > MAX_FIRMWARE_BYTES) {
@@ -140,6 +157,43 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
       setStage("Inspecting $SPF and the HII Forms layout…");
       setArtifacts(extracted);
       setProfile(inspectAmiSetupProfile(extracted.hii, extracted.setupData));
+      artifactCache.current.set(extracted.selectedArtifactSetId, extracted);
+      // A single coherent context is picked automatically; more than one
+      // requires an explicit choice before "Start HII analysis" unlocks,
+      // since Setup/AMITSE/SetupData must never be mixed across slots.
+      setSelectedArtifactSetId(
+        extracted.artifactSets.length === 1 ? extracted.selectedArtifactSetId : null,
+      );
+    } catch (reason: unknown) {
+      if (currentOperation === operation.current) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (currentOperation === operation.current) {
+        setLoading(false);
+        setStage("");
+      }
+    }
+  };
+
+  const selectArtifactSet = async (artifactSetId: string | null) => {
+    if (!artifactSetId || !file) return;
+    if (artifacts?.selectedArtifactSetId === artifactSetId) {
+      setSelectedArtifactSetId(artifactSetId);
+      return;
+    }
+    const currentOperation = operation.current;
+    setLoading(true);
+    setError("");
+    try {
+      setStage("Loading the selected firmware context…");
+      const cached = artifactCache.current.get(artifactSetId);
+      const extracted = cached ?? (await extractFirmwareInWorker(file, { artifactSetId }));
+      if (currentOperation !== operation.current) return;
+      artifactCache.current.set(artifactSetId, extracted);
+      setArtifacts(extracted);
+      setProfile(inspectAmiSetupProfile(extracted.hii, extracted.setupData));
+      setSelectedArtifactSetId(artifactSetId);
     } catch (reason: unknown) {
       if (currentOperation === operation.current) {
         setError(reason instanceof Error ? reason.message : String(reason));
@@ -153,7 +207,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
   };
 
   const startAnalysis = async () => {
-    if (!artifacts) return;
+    if (!artifacts || !selectedArtifactSetId) return;
     const currentOperation = operation.current;
     setLoading(true);
     setError("");
@@ -220,6 +274,9 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
   const reconstruction = artifacts
     ? assessFirmwareReconstruction(artifacts.provenance)
     : null;
+  const selectedArtifactSet = artifacts?.artifactSets.find(
+    (candidate) => candidate.id === artifacts.selectedArtifactSetId,
+  );
 
   return (
     <Stack>
@@ -367,6 +424,22 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
                         : `${String(artifacts.extractionDepth)} nested layer(s)`}
                     </Table.Td>
                   </Table.Tr>
+                  <Table.Tr>
+                    <Table.Th>Firmware contexts</Table.Th>
+                    <Table.Td>
+                      {String(artifacts.artifactSets.length)} coherent Setup set
+                      {artifacts.artifactSets.length === 1 ? "" : "s"}
+                    </Table.Td>
+                  </Table.Tr>
+                  {selectedArtifactSet && (
+                    <Table.Tr>
+                      <Table.Th>Previewed context</Table.Th>
+                      <Table.Td>
+                        {selectedArtifactSet.label} ·{" "}
+                        {coherenceLabel(selectedArtifactSet.coherence)}
+                      </Table.Td>
+                    </Table.Tr>
+                  )}
                   {reconstruction && (
                     <Table.Tr>
                       <Table.Th>Reconstruction trace</Table.Th>
@@ -426,10 +499,48 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
               </Stack>
             </Alert>
           )}
+          {artifacts && artifacts.artifactSets.length > 1 && (
+            <Alert color="orange" title="Multiple firmware contexts detected">
+              <Stack gap="xs">
+                <Text size="sm">
+                  This image contains repeated AMI Setup modules in separate decoded
+                  buffers or firmware volumes. Choose the context to analyse; Setup,
+                  AMITSE and SetupData will never be mixed across equally plausible
+                  slots.
+                </Text>
+                <NativeSelect
+                  label="Firmware context / slot"
+                  data={[
+                    { value: "", label: "Choose one context", disabled: true },
+                    ...artifacts.artifactSets.map((candidate) => ({
+                      value: candidate.id,
+                      label: candidate.label,
+                    })),
+                  ]}
+                  value={selectedArtifactSetId ?? ""}
+                  disabled={loading}
+                  onChange={(event) =>
+                    void selectArtifactSet(event.currentTarget.value || null)
+                  }
+                />
+              </Stack>
+            </Alert>
+          )}
+          {selectedArtifactSet && selectedArtifactSet.warnings.length > 0 && (
+            <Alert color="yellow" title="Firmware context caveats">
+              <List size="sm" spacing="xs">
+                {selectedArtifactSet.warnings.map((warning) => (
+                  <List.Item key={warning}>{warning}</List.Item>
+                ))}
+              </List>
+            </Alert>
+          )}
           <Button
             size="lg"
             leftSection={<IconPlayerPlay />}
-            disabled={loading || !artifacts || !profile}
+            disabled={
+              loading || !artifacts || !profile || selectedArtifactSetId === null
+            }
             onClick={() => void startAnalysis()}
           >
             Start HII analysis
