@@ -24,3 +24,7 @@
 .detailsTable {
   min-width: 50rem;
 }
+
+.dashboardTable {
+  min-width: 44rem;
+}

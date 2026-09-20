@@ -30,14 +30,10 @@ import {
   legacyFrameworkHiiGuess,
   reconcileAmiGeneration,
   sniffNonAmiFailure,
-  type AmiGenerationAssessment,
-  type FirmwareContainer,
-  type FirmwareVendorGuess,
 } from "../scripts/amiFirmwareImage";
 import {
   classifyBrand,
   compareBrandNavigation,
-  type BrandClassification,
 } from "../scripts/brandKnowledge";
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
 import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
@@ -47,47 +43,19 @@ import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromA
 import {
   buildCorpusReport,
   reportNavigationDetected,
-  type CorpusReport,
   type CorpusTabOperation,
 } from "../scripts/corpusReport";
+import {
+  buildCorpusDashboard,
+  type CorpusFileStatus,
+  type CorpusRunEntry,
+  type CorpusStageResult,
+  type CorpusStageStatus,
+} from "../scripts/corpusDashboard";
+import CorpusDashboard from "./CorpusDashboard";
 import s from "./CorpusRunner.module.css";
 
 const MAX_FIRMWARE_BYTES = 512 * 1024 * 1024;
-
-type CorpusStageId = "preflight" | "extraction" | "hii" | "navigation" | "editability" | "reconstruction";
-type CorpusStageStatus = "passed" | "warning" | "failed" | "blocked" | "not-run";
-type CorpusFileStatus = "recognized" | "partial" | "unsupported" | "failed";
-
-interface CorpusStageResult {
-  id: CorpusStageId;
-  status: CorpusStageStatus;
-  detail: string;
-}
-
-interface CorpusRunEntry {
-  fileName: string;
-  size: number;
-  sha256: string;
-  status: CorpusFileStatus;
-  container?: FirmwareContainer;
-  generation?: AmiGenerationAssessment;
-  contextCount: number;
-  reconstructionComplete?: boolean;
-  reconstructionBlockers: string[];
-  stages: CorpusStageResult[];
-  report?: CorpusReport;
-  failureMessage?: string;
-  // Only set when this image was rejected for a structurally-understood
-  // reason (no firmware volumes at all, or valid UEFI volumes with no AMI
-  // Setup module) - this editor's best guess at what it actually is
-  // (Award/Phoenix/Insyde/other UEFI/not a PC BIOS), never a parse attempt.
-  vendorGuess?: FirmwareVendorGuess;
-  // The manufacturer (motherboard/system vendor) lead - independent of the
-  // vendorGuess above, which is about the BIOS vendor. Set whenever the
-  // preflight ran at all, AMI or not, since brand markers come from the
-  // same shallow byte scan (see brandKnowledge.ts).
-  brand?: BrandClassification;
-}
 
 const corpusStatusLabels: Record<CorpusFileStatus, string> = {
   recognized: "Recognized",
@@ -142,48 +110,6 @@ function entryTotals(entry: CorpusRunEntry) {
     hide: ops.filter((op) => op.hide.available).length,
     show: ops.filter((op) => op.show.available).length,
   };
-}
-
-// A duplicate upload (the same image selected twice, or genuinely identical
-// firmware under two filenames) shouldn't be counted twice in a breakdown of
-// what's blocking recognition - the file couldn't even be hashed is kept as
-// its own case rather than assumed identical to another unhashed failure.
-function distinctEntries(entries: CorpusRunEntry[]) {
-  const seen = new Set<string>();
-  return entries.filter((entry) => {
-    if (!entry.sha256) return true;
-    const key = entry.sha256.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-type RecognitionBlocker = "reading" | "preflight" | "extraction" | "hii" | "navigation" | "none";
-
-const recognitionBlockerStages = ["preflight", "extraction", "hii", "navigation"] as const;
-
-// Which stage first kept this image from being fully recognized - "none"
-// only once every stage up to navigation actually passed. A "partial" entry
-// (navigationDetected false) pushes its navigation stage as "warning", not
-// "passed", so it correctly comes out blocked "at navigation" here too -
-// this answers "which stage should we improve," which for a partial image
-// is exactly the navigation detector, not something further downstream.
-function firstRecognitionBlocker(entry: CorpusRunEntry): RecognitionBlocker {
-  if (!entry.sha256) return "reading";
-  for (const id of recognitionBlockerStages) {
-    if (entry.stages.find((stage) => stage.id === id)?.status !== "passed") return id;
-  }
-  return "none";
-}
-
-function blockerBreakdown(entries: CorpusRunEntry[]) {
-  const counts = new Map<RecognitionBlocker, number>();
-  for (const entry of distinctEntries(entries)) {
-    const blocker = firstRecognitionBlocker(entry);
-    counts.set(blocker, (counts.get(blocker) ?? 0) + 1);
-  }
-  return counts;
 }
 
 function summarizeRun(entries: CorpusRunEntry[]) {
@@ -778,13 +704,7 @@ export default function CorpusRunner() {
             <Metric label="Navigation" value={`${String(summary.navigationRate)}%`} />
             <Metric label="HII editable" value={`${String(summary.hiiEditRate)}%`} />
           </SimpleGrid>
-          <Text size="xs" c="dimmed">
-            Blocked at (distinct cases):{" "}
-            {[...blockerBreakdown(entries)]
-              .filter(([, count]) => count > 0)
-              .map(([blocker, count]) => `${blocker} ${String(count)}`)
-              .join(" · ")}
-          </Text>
+          <CorpusDashboard dashboard={buildCorpusDashboard(entries, files.length)} />
           <Group>
             <Button
               variant="default"
