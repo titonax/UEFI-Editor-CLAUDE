@@ -250,6 +250,16 @@ describe("inspectAmiFirmwareBytes", () => {
     expect(report.vendorGuess.evidence).toContain("InsydeH2O");
   });
 
+  it("recognizes the real Insyde copyright string, not the shorter guess it replaced", () => {
+    const bytes = new Uint8Array(0x60);
+    bytes.set(new TextEncoder().encode("Insyde Software Corp."), 0x10);
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.vendorGuess.family).toBe("insyde");
+    expect(report.vendorGuess.evidence).toContain("Insyde Software Corp.");
+  });
+
   it("recognizes embedded Linux firmware (router/IoT) as never having been a PC BIOS", () => {
     const bytes = new Uint8Array(0x60);
     bytes.set(new TextEncoder().encode("U-Boot"), 0x10);

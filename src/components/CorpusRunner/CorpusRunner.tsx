@@ -38,6 +38,12 @@ import {
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
 import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
 import { sha256Hex } from "../scripts/hashing";
+import {
+  inspectPhoenixLegacyBytes,
+  inspectPhoenixUefiBytes,
+  type PhoenixLegacyInventory,
+  type PhoenixUefiInventory,
+} from "../scripts/phoenixFirmware";
 import { frameworkIfrInventory, parseData, type FrameworkIfrInventory } from "../scripts/ifrParser";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
 import {
@@ -170,6 +176,9 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
     "brand",
     "brand_basis",
     "brand_navigation_outcome",
+    "phoenix_legacy_format",
+    "phoenix_legacy_module_count",
+    "phoenix_uefi_debug_modules",
     "failure",
   ];
   const rows = entries.map((entry) => {
@@ -194,6 +203,9 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
       entry.brand?.brand ?? "",
       entry.brand?.basis ?? "",
       entry.brand?.navigationOutcome ?? "",
+      entry.phoenixLegacy?.format ?? "",
+      entry.phoenixLegacy?.modules.length ?? "",
+      entry.phoenixUefi?.debugModules.join("; ") ?? "",
       entry.failureMessage ?? "",
     ];
   });
@@ -291,6 +303,69 @@ function FileDetails({ entry }: { entry: CorpusRunEntry }) {
             <Text size="xs" c="dimmed">
               {String(entry.brand.documentedSamples)} documented sample(s) for this brand.
             </Text>
+          )}
+        </Stack>
+      )}
+      {(entry.phoenixLegacy ?? entry.phoenixUefi) && (
+        <Stack gap="xs">
+          {entry.phoenixLegacy && (
+            <>
+              <Group gap="xs">
+                <Badge variant="light" color="grape">
+                  Phoenix {entry.phoenixLegacy.format === "phoenix-ffv" ? "FFV" : "module chain"}:{" "}
+                  {String(entry.phoenixLegacy.modules.length)} module(s)
+                </Badge>
+                <Badge variant="light" color="gray">
+                  build {entry.phoenixLegacy.buildCode || "?"} · {entry.phoenixLegacy.buildDate || "?"}
+                </Badge>
+              </Group>
+              <Text size="xs" c="dimmed">
+                Read-only inventory (offsets, sizes, compression); no module is decoded or
+                edited. See docs/phoenix/README.md.
+              </Text>
+              {entry.phoenixLegacy.warnings.map((warning) => (
+                <Text size="xs" c="orange" key={warning}>
+                  {warning}
+                </Text>
+              ))}
+              {entry.phoenixLegacy.modules.length > 0 && (
+                <ScrollArea>
+                  <Table striped withColumnBorders className={s.detailsTable}>
+                    <Table.Thead>
+                      <Table.Tr>
+                        <Table.Th>Module</Table.Th>
+                        <Table.Th>Offset</Table.Th>
+                        <Table.Th>Size</Table.Th>
+                        <Table.Th>Compression</Table.Th>
+                      </Table.Tr>
+                    </Table.Thead>
+                    <Table.Tbody>
+                      {entry.phoenixLegacy.modules.map((module, index) => (
+                        <Table.Tr key={`${module.name}:${String(index)}`}>
+                          <Table.Td>{module.name}</Table.Td>
+                          <Table.Td>0x{module.offset.toString(16).toUpperCase()}</Table.Td>
+                          <Table.Td>{module.size}</Table.Td>
+                          <Table.Td>{module.compression}</Table.Td>
+                        </Table.Tr>
+                      ))}
+                    </Table.Tbody>
+                  </Table>
+                </ScrollArea>
+              )}
+            </>
+          )}
+          {entry.phoenixUefi && (
+            <Stack gap={4}>
+              <Group gap="xs">
+                <Badge variant="light" color="grape">
+                  Phoenix PDB provenance: {entry.phoenixUefi.debugModules.join(", ")}
+                </Badge>
+              </Group>
+              <Text size="xs" c="dimmed">
+                Module provenance, not a Setup-format verdict - a debug path never overrides
+                independently verified AMI evidence.
+              </Text>
+            </Stack>
           )}
         </Stack>
       )}
@@ -426,12 +501,20 @@ export default function CorpusRunner() {
     // by then, so the verbose IFR text is available even though parsing it
     // as UEFI HII is not.
     let extractedIfrText: string | undefined;
+    // Independent of AMI success/failure - a Phoenix module inventory or
+    // PDB debug-path provenance (see phoenixFirmware.ts) is worth reporting
+    // either way, so both are computed once up front and attached to
+    // whichever entry (success or failure) this call returns.
+    let phoenixLegacy: PhoenixLegacyInventory | undefined;
+    let phoenixUefi: PhoenixUefiInventory | undefined;
     try {
       if (file.size > MAX_FIRMWARE_BYTES) {
         throw new Error("Exceeds the 512 MiB safety limit.");
       }
       const image = new Uint8Array(await file.arrayBuffer());
       sha256 = await sha256Hex(image);
+      phoenixLegacy = inspectPhoenixLegacyBytes(image) ?? undefined;
+      phoenixUefi = inspectPhoenixUefiBytes(image) ?? undefined;
 
       preflight = inspectAmiFirmwareBytes(image);
       if (preflight.firmwareVolumes.length === 0) {
@@ -527,6 +610,8 @@ export default function CorpusRunner() {
         stages,
         brand,
         report,
+        phoenixLegacy,
+        phoenixUefi,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -570,6 +655,8 @@ export default function CorpusRunner() {
         // so a manufacturer lead is still worth reporting even when this
         // image was never AMI Aptio (or failed for an unexpected reason).
         brand: preflight ? classifyBrand(file.name, sha256, preflight.brandMarkers) : undefined,
+        phoenixLegacy,
+        phoenixUefi,
       };
     }
   };
@@ -769,6 +856,11 @@ export default function CorpusRunner() {
                         {entry.brand?.brand && (
                           <Badge color="indigo" variant="light">
                             {entry.brand.brand}
+                          </Badge>
+                        )}
+                        {(entry.phoenixLegacy ?? entry.phoenixUefi) && (
+                          <Badge color="orange" variant="light">
+                            Phoenix
                           </Badge>
                         )}
                         <Badge color={statusColor(entry.status)}>
