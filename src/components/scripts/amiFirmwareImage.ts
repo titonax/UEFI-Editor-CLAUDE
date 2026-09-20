@@ -1,4 +1,5 @@
 import { scanHiiFormsPackages } from "./hiiPackages";
+import type { BrandMarker, FirmwareBrand } from "./brandKnowledge";
 
 export type AmiFirmwareGeneration = "aptio-iv" | "aptio-v" | "unresolved";
 export type DetectionConfidence = "confirmed" | "probable" | "unresolved";
@@ -28,9 +29,12 @@ export type FirmwareVendorFamily =
   | "award"
   | "phoenix"
   | "insyde"
+  | "ami-legacy"
   | "uefi-generic"
   | "embedded-non-bios"
   | "legacy-framework-hii"
+  | "intel-me"
+  | "non-firmware"
   | "unknown";
 
 export interface FirmwareVendorGuess {
@@ -74,6 +78,12 @@ export interface AmiFirmwareImageReport {
   generation: AmiFirmwareGeneration;
   confidence: DetectionConfidence;
   evidence: FirmwareEvidence[];
+  // Every manufacturer clue this shallow pass found, independent of AMI
+  // generation/vendor detection - which motherboard/system vendor made this,
+  // not which BIOS vendor wrote it. See brandKnowledge.ts's classifyBrand,
+  // which turns these (plus a documented-sample hash match, a user
+  // selection, or a filename token) into a manufacturer lead.
+  brandMarkers: BrandMarker[];
 }
 
 export type AmiSetupLayout =
@@ -147,6 +157,32 @@ const signatures: Signature[] = [
   { name: "openWrt", bytes: ascii("OpenWrt"), insensitiveAscii: true },
   { name: "squashFsMagic", bytes: ascii("hsqs") },
   { name: "linuxVersion", bytes: ascii("Linux version") },
+  // A pre-UEFI DOS-era AMI BIOS - shares the AMI name but none of the AMI
+  // Aptio structures above.
+  { name: "amiLegacy", bytes: ascii("AMIBIOS"), insensitiveAscii: true },
+  // Manufacturer (motherboard/system vendor) clues, independent of which
+  // BIOS vendor wrote the firmware - see brandKnowledge.ts.
+  { name: "brandHp", bytes: ascii("SECURE_HP_SIGNATURE") },
+  { name: "brandAsus", bytes: ascii("ASUSTeK COMPUTER INC."), insensitiveAscii: true },
+  { name: "brandAsrock", bytes: ascii("ASRock"), insensitiveAscii: true },
+  { name: "brandSupermicro", bytes: ascii("Supermicro"), insensitiveAscii: true },
+  { name: "brandMsi", bytes: ascii("Micro-Star International"), insensitiveAscii: true },
+  { name: "brandGigabyte", bytes: ascii("GIGABYTE"), insensitiveAscii: true },
+  { name: "brandDell", bytes: ascii("Dell Inc."), insensitiveAscii: true },
+  // The AMI FID (Firmware ID) record's own definition GUID; validated by
+  // intelFidMarker below against a bounded, checksummed firmware volume
+  // before it counts as an Intel manufacturer clue.
+  { name: "amiFidGuid", bytes: hexBytes("7502BE2E5864F94A91EDD3F4EDB100AA") },
+];
+
+const brandSignatures: { name: string; brand: FirmwareBrand; marker: string }[] = [
+  { name: "brandHp", brand: "HP", marker: "SECURE_HP_SIGNATURE" },
+  { name: "brandAsus", brand: "ASUS", marker: "ASUSTeK COMPUTER INC." },
+  { name: "brandAsrock", brand: "ASRock", marker: "ASRock" },
+  { name: "brandSupermicro", brand: "Supermicro", marker: "Supermicro" },
+  { name: "brandMsi", brand: "MSI", marker: "Micro-Star International" },
+  { name: "brandGigabyte", brand: "Gigabyte", marker: "GIGABYTE" },
+  { name: "brandDell", brand: "Dell", marker: "Dell Inc." },
 ];
 
 const ffs2Guid = hexBytes("78E58C8C3D8A1C4F9935896185C32DD3");
@@ -283,6 +319,78 @@ function containerOf(
   return "unknown";
 }
 
+// An Intel ME partition starts with a bounded $FPT header. The same header
+// also occurs at the start of a complete Intel SPI image (the descriptor
+// sits ahead of it), so a detected descriptor takes priority over this
+// guess - otherwise a full image would misreport as "just the ME region".
+function looksLikeIntelMePartition(bytes: Uint8Array, intelDescriptor: boolean) {
+  if (intelDescriptor) return false;
+  const fptSignature = ascii("$FPT");
+  return [0, 0x10].some((offset) => {
+    if (!bytesEqual(bytes, offset, fptSignature) || offset + 8 > bytes.length) {
+      return false;
+    }
+    const entryCount = u32(bytes, offset + 4);
+    return entryCount >= 1 && entryCount <= 128;
+  });
+}
+
+// Known non-BIOS file formats occasionally show up in a raw firmware
+// corpus (a misnamed image, a desktop.ini left in the export, ...) -
+// recognizing them by their own header beats leaving them "unknown".
+const nonFirmwareFileSignatures: Uint8Array[] = [
+  ascii("OggS"),
+  hexBytes("89504E470D0A1A0A"),
+  ascii("%PDF"),
+  hexBytes("504B0304"),
+  ascii("[.ShellClassInfo]"),
+  ascii("[LocalizedFileNames]"),
+];
+
+function looksLikeNonFirmwareFile(bytes: Uint8Array) {
+  return nonFirmwareFileSignatures.some((signature) => bytesEqual(bytes, 0, signature));
+}
+
+// A bare "INTEL" string can occur in any third-party module; only a bounded
+// AMI FID (Firmware ID) record - inside a validated, checksummed firmware
+// volume, with a sane ASCII-digit major-version field - counts as evidence
+// this image's own firmware identifies Intel as the manufacturer.
+function intelFidMarker(
+  bytes: Uint8Array,
+  guidOffsets: number[],
+  firmwareVolumes: number[],
+): BrandMarker | null {
+  const fidSignature = ascii("$FID");
+  const intelVendor = ascii("INTEL\0");
+  for (const guidOffset of guidOffsets) {
+    const fidOffset = guidOffset + 16;
+    const inValidatedVolume = firmwareVolumes.some((start) => {
+      const volumeEnd = start + u64(bytes, start + 0x20);
+      return guidOffset >= start && fidOffset + 0x35 + intelVendor.length <= volumeEnd;
+    });
+    if (
+      !inValidatedVolume ||
+      !bytesEqual(bytes, fidOffset, fidSignature) ||
+      !bytesEqual(bytes, fidOffset + 0x35, intelVendor)
+    ) {
+      continue;
+    }
+    const majorTens = bytes[fidOffset + 0x20];
+    const majorUnits = bytes[fidOffset + 0x21];
+    if (
+      majorTens < 0x30 ||
+      majorTens > 0x39 ||
+      majorUnits < 0x30 ||
+      majorUnits > 0x39 ||
+      bytes[fidOffset + 0x22] !== 0
+    ) {
+      continue;
+    }
+    return { brand: "Intel", marker: "INTEL in validated AMI FID record", offset: fidOffset };
+  }
+  return null;
+}
+
 const vendorSignatureLabels: Record<string, string> = {
   awardSoftware: "Award Software",
   awardBios: "AwardBIOS",
@@ -295,6 +403,7 @@ const vendorSignatureLabels: Record<string, string> = {
   openWrt: "OpenWrt",
   squashFsMagic: "SquashFS magic",
   linuxVersion: "Linux version string",
+  amiLegacy: "AMIBIOS",
 };
 
 // Runs only once none of this editor's own AMI Aptio evidence matched -
@@ -303,10 +412,14 @@ const vendorSignatureLabels: Record<string, string> = {
 // ahead of "some other UEFI" because their own strings are strong, specific
 // evidence; an embedded-Linux marker (router/IoT firmware, never a PC BIOS)
 // is checked before falling back to a bare "has firmware volumes" guess.
+// Legacy AMIBIOS, an Intel ME partition and a known non-firmware file only
+// apply once there isn't even a firmware volume to be "generic UEFI" about.
 function classifyFirmwareVendor(
+  bytes: Uint8Array,
   has: (...names: string[]) => boolean,
   amiAptioCandidate: boolean,
   firmwareVolumeCount: number,
+  intelDescriptor: boolean,
 ): FirmwareVendorGuess {
   const matched = (...names: string[]) => names.filter((name) => has(name));
   const labelled = (names: string[]) => names.map((name) => vendorSignatureLabels[name]);
@@ -339,6 +452,24 @@ function classifyFirmwareVendor(
       family: "uefi-generic",
       label: "Generic/unbranded UEFI (no AMI Aptio Setup found)",
       evidence: [],
+    };
+  }
+  const legacyAmi = matched("amiLegacy");
+  if (legacyAmi.length > 0) {
+    return { family: "ami-legacy", label: "Legacy AMIBIOS", evidence: labelled(legacyAmi) };
+  }
+  if (looksLikeIntelMePartition(bytes, intelDescriptor)) {
+    return {
+      family: "intel-me",
+      label: "Intel Management Engine region (not a UEFI image)",
+      evidence: ["$FPT partition table"],
+    };
+  }
+  if (looksLikeNonFirmwareFile(bytes)) {
+    return {
+      family: "non-firmware",
+      label: "Non-firmware file",
+      evidence: ["Recognized non-firmware file header"],
     };
   }
   return { family: "unknown", label: "Unrecognized firmware", evidence: [] };
@@ -381,7 +512,24 @@ export function inspectAmiFirmwareBytes(bytes: Uint8Array): AmiFirmwareImageRepo
       amitseFfs.length > 0 ||
       explicitIv ||
       explicitV);
-  const vendorGuess = classifyFirmwareVendor(has, amiAptioCandidate, firmwareVolumes.length);
+  const vendorGuess = classifyFirmwareVendor(
+    bytes,
+    has,
+    amiAptioCandidate,
+    firmwareVolumes.length,
+    intelDescriptor,
+  );
+  const fidMarker = intelFidMarker(bytes, offsets("amiFidGuid"), firmwareVolumes);
+  // Only the first occurrence of each brand string is kept - the marker is
+  // "this brand appears in this image," not a per-occurrence catalogue.
+  const brandMarkers: BrandMarker[] = [
+    ...brandSignatures.flatMap(({ name, brand, marker }) =>
+      offsets(name)
+        .slice(0, 1)
+        .map((offset) => ({ brand, marker, offset })),
+    ),
+    ...(fidMarker ? [fidMarker] : []),
+  ];
 
   // An explicit generation string is only trusted when exactly one
   // generation is named; naming both says nothing.
@@ -504,6 +652,7 @@ export function inspectAmiFirmwareBytes(bytes: Uint8Array): AmiFirmwareImageRepo
     generation,
     confidence,
     evidence,
+    brandMarkers,
   };
 }
 

@@ -941,6 +941,27 @@ function parseSetupTxt(setupTxt: string, setupdataBin: string): ParserState {
   return state;
 }
 
+export interface FrameworkIfrInventory {
+  formSets: number;
+  forms: number;
+  references: number;
+}
+
+// IFRExtractor-RS's verbose output for legacy EFI 1.10 "Framework" HII
+// prints its own line labels ("FormSet Title:"/"Form Title:"/"Ref Prompt:"),
+// distinct from the UEFI-mode ones parseData otherwise reads. This editor
+// never parses Framework IFR (see parseData's "Only UEFI is supported."
+// check below), but a rough read-only count is still useful evidence to
+// report instead of a bare rejection - see legacyFrameworkHiiGuess in
+// amiFirmwareImage.ts.
+export function frameworkIfrInventory(text: string): FrameworkIfrInventory {
+  return {
+    formSets: (text.match(/^0x[0-9a-f]+:\s*FormSet Title:/gim) ?? []).length,
+    forms: (text.match(/^0x[0-9a-f]+:\s*Form Title:/gim) ?? []).length,
+    references: (text.match(/^0x[0-9a-f]+:\s*Ref Prompt:/gim) ?? []).length,
+  };
+}
+
 export async function parseData(files: PopulatedFiles) {
   const [setupTxtHash, setupSctHash, amitseSctHash, setupdataBinHash] =
     await Promise.all([

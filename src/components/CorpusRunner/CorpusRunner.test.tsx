@@ -174,6 +174,12 @@ describe("CorpusRunner", () => {
     expect(screen.getByText(/forms .* refs/)).toBeInTheDocument();
     expect(screen.getByText(/provenance (complete|incomplete)/)).toBeInTheDocument();
     expect(screen.getAllByText(/\d+(\.\d+)? (B|KiB|MiB)/).length).toBeGreaterThan(0);
+    // board-a.bin and board-b.bin share identical bytes (firmwareFile()
+    // ignores its name argument) - only board-a's SHA-256 counts as a
+    // distinct case here, blocked at "navigation" (that stage pushes
+    // "warning" rather than "passed" when unresolved).
+    expect(screen.getByText(/Blocked at \(distinct cases\)/)).toBeInTheDocument();
+    expect(screen.getByText(/navigation 1/)).toBeInTheDocument();
     expect(screen.getByText("Export JSON report")).toBeInTheDocument();
     expect(screen.getByText("Export CSV summary")).toBeInTheDocument();
     expect(extractFirmwareInWorker).toHaveBeenCalledTimes(2);
