@@ -34,10 +34,15 @@ import {
   type FirmwareContainer,
   type FirmwareVendorGuess,
 } from "../scripts/amiFirmwareImage";
+import {
+  classifyBrand,
+  compareBrandNavigation,
+  type BrandClassification,
+} from "../scripts/brandKnowledge";
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
 import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
 import { sha256Hex } from "../scripts/hashing";
-import { parseData } from "../scripts/ifrParser";
+import { frameworkIfrInventory, parseData, type FrameworkIfrInventory } from "../scripts/ifrParser";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
 import {
   buildCorpusReport,
@@ -77,6 +82,11 @@ interface CorpusRunEntry {
   // Setup module) - this editor's best guess at what it actually is
   // (Award/Phoenix/Insyde/other UEFI/not a PC BIOS), never a parse attempt.
   vendorGuess?: FirmwareVendorGuess;
+  // The manufacturer (motherboard/system vendor) lead - independent of the
+  // vendorGuess above, which is about the BIOS vendor. Set whenever the
+  // preflight ran at all, AMI or not, since brand markers come from the
+  // same shallow byte scan (see brandKnowledge.ts).
+  brand?: BrandClassification;
 }
 
 const corpusStatusLabels: Record<CorpusFileStatus, string> = {
@@ -107,6 +117,14 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+function frameworkInventoryEvidence(inventory: FrameworkIfrInventory) {
+  return [
+    `${String(inventory.formSets)} FormSet(s)`,
+    `${String(inventory.forms)} form(s)`,
+    `${String(inventory.references)} reference(s)`,
+  ];
+}
+
 function generationLabel(entry: CorpusRunEntry) {
   const assessment = entry.generation;
   if (!assessment) return "generation unresolved";
@@ -124,6 +142,48 @@ function entryTotals(entry: CorpusRunEntry) {
     hide: ops.filter((op) => op.hide.available).length,
     show: ops.filter((op) => op.show.available).length,
   };
+}
+
+// A duplicate upload (the same image selected twice, or genuinely identical
+// firmware under two filenames) shouldn't be counted twice in a breakdown of
+// what's blocking recognition - the file couldn't even be hashed is kept as
+// its own case rather than assumed identical to another unhashed failure.
+function distinctEntries(entries: CorpusRunEntry[]) {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    if (!entry.sha256) return true;
+    const key = entry.sha256.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+type RecognitionBlocker = "reading" | "preflight" | "extraction" | "hii" | "navigation" | "none";
+
+const recognitionBlockerStages = ["preflight", "extraction", "hii", "navigation"] as const;
+
+// Which stage first kept this image from being fully recognized - "none"
+// only once every stage up to navigation actually passed. A "partial" entry
+// (navigationDetected false) pushes its navigation stage as "warning", not
+// "passed", so it correctly comes out blocked "at navigation" here too -
+// this answers "which stage should we improve," which for a partial image
+// is exactly the navigation detector, not something further downstream.
+function firstRecognitionBlocker(entry: CorpusRunEntry): RecognitionBlocker {
+  if (!entry.sha256) return "reading";
+  for (const id of recognitionBlockerStages) {
+    if (entry.stages.find((stage) => stage.id === id)?.status !== "passed") return id;
+  }
+  return "none";
+}
+
+function blockerBreakdown(entries: CorpusRunEntry[]) {
+  const counts = new Map<RecognitionBlocker, number>();
+  for (const entry of distinctEntries(entries)) {
+    const blocker = firstRecognitionBlocker(entry);
+    counts.set(blocker, (counts.get(blocker) ?? 0) + 1);
+  }
+  return counts;
 }
 
 function summarizeRun(entries: CorpusRunEntry[]) {
@@ -181,6 +241,9 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
     "reconstruction_complete",
     "vendor_guess",
     "vendor_evidence",
+    "brand",
+    "brand_basis",
+    "brand_navigation_outcome",
     "failure",
   ];
   const rows = entries.map((entry) => {
@@ -202,6 +265,9 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
       entry.reconstructionComplete === undefined ? "" : String(entry.reconstructionComplete),
       entry.vendorGuess?.family ?? "",
       entry.vendorGuess?.evidence.join("; ") ?? "",
+      entry.brand?.brand ?? "",
+      entry.brand?.basis ?? "",
+      entry.brand?.navigationOutcome ?? "",
       entry.failureMessage ?? "",
     ];
   });
@@ -276,6 +342,28 @@ function FileDetails({ entry }: { entry: CorpusRunEntry }) {
           {entry.vendorGuess.evidence.length > 0 && (
             <Text size="xs" c="dimmed">
               Evidence: {entry.vendorGuess.evidence.join(", ")}
+            </Text>
+          )}
+        </Stack>
+      )}
+      {entry.brand?.brand && (
+        <Stack gap={4}>
+          <Group gap="xs">
+            <Badge variant="light" color="indigo">
+              Manufacturer: {entry.brand.brand} ({entry.brand.basis})
+            </Badge>
+            {entry.brand.navigationOutcome !== "unmeasured" && (
+              <Badge
+                variant="light"
+                color={entry.brand.navigationOutcome === "matches-prior" ? "green" : "yellow"}
+              >
+                Navigation {entry.brand.navigationOutcome}
+              </Badge>
+            )}
+          </Group>
+          {entry.brand.documentedSamples > 0 && (
+            <Text size="xs" c="dimmed">
+              {String(entry.brand.documentedSamples)} documented sample(s) for this brand.
             </Text>
           )}
         </Stack>
@@ -406,6 +494,12 @@ export default function CorpusRunner() {
     // fails for a structurally-understood, non-AMI reason - it needs the
     // raw bytes and the preflight's firmware-volume count either way.
     let preflight: ReturnType<typeof inspectAmiFirmwareBytes> | undefined;
+    // Hoisted so the catch block can still build a Framework IFR inventory
+    // (see ifrParser.ts's frameworkIfrInventory) when parseData rejects a
+    // legacy Framework Setup module - extraction itself already succeeded
+    // by then, so the verbose IFR text is available even though parsing it
+    // as UEFI HII is not.
+    let extractedIfrText: string | undefined;
     try {
       if (file.size > MAX_FIRMWARE_BYTES) {
         throw new Error("Exceeds the 512 MiB safety limit.");
@@ -429,6 +523,7 @@ export default function CorpusRunner() {
       });
 
       const extracted = await extractFirmwareInWorker(file);
+      extractedIfrText = extracted.ifrText;
       stages.push({
         id: "extraction",
         status: "passed",
@@ -486,6 +581,13 @@ export default function CorpusRunner() {
       });
 
       const status: CorpusFileStatus = navigationDetected ? "recognized" : "partial";
+      const brand = compareBrandNavigation(classifyBrand(file.name, sha256, preflight.brandMarkers), [
+        singleFormSetDetected
+          ? "single-formset-ifr-hub"
+          : rootVisibilityDetected
+            ? "multi-formset-root-vector"
+            : "unresolved",
+      ]);
       return {
         fileName: file.name,
         size: file.size,
@@ -497,6 +599,7 @@ export default function CorpusRunner() {
         reconstructionComplete: reconstruction.traceComplete,
         reconstructionBlockers: reconstruction.blockers,
         stages,
+        brand,
         report,
       };
     } catch (error) {
@@ -518,7 +621,12 @@ export default function CorpusRunner() {
         (preflight.firmwareVolumes.length === 0 || sniffNonAmiFailure(message));
       const vendorGuess = knownNonAmi
         ? message.includes("Only UEFI is supported.")
-          ? legacyFrameworkHiiGuess
+          ? {
+              ...legacyFrameworkHiiGuess,
+              evidence: extractedIfrText
+                ? frameworkInventoryEvidence(frameworkIfrInventory(extractedIfrText))
+                : legacyFrameworkHiiGuess.evidence,
+            }
           : preflight?.vendorGuess
         : undefined;
       return {
@@ -532,6 +640,10 @@ export default function CorpusRunner() {
         stages,
         failureMessage: message,
         vendorGuess,
+        // Brand markers come from the same shallow byte scan as vendorGuess,
+        // so a manufacturer lead is still worth reporting even when this
+        // image was never AMI Aptio (or failed for an unexpected reason).
+        brand: preflight ? classifyBrand(file.name, sha256, preflight.brandMarkers) : undefined,
       };
     }
   };
@@ -666,6 +778,13 @@ export default function CorpusRunner() {
             <Metric label="Navigation" value={`${String(summary.navigationRate)}%`} />
             <Metric label="HII editable" value={`${String(summary.hiiEditRate)}%`} />
           </SimpleGrid>
+          <Text size="xs" c="dimmed">
+            Blocked at (distinct cases):{" "}
+            {[...blockerBreakdown(entries)]
+              .filter(([, count]) => count > 0)
+              .map(([blocker, count]) => `${blocker} ${String(count)}`)
+              .join(" · ")}
+          </Text>
           <Group>
             <Button
               variant="default"
@@ -725,6 +844,11 @@ export default function CorpusRunner() {
                         {entry.vendorGuess && (
                           <Badge color="gray" variant="light">
                             {entry.vendorGuess.label}
+                          </Badge>
+                        )}
+                        {entry.brand?.brand && (
+                          <Badge color="indigo" variant="light">
+                            {entry.brand.brand}
                           </Badge>
                         )}
                         <Badge color={statusColor(entry.status)}>

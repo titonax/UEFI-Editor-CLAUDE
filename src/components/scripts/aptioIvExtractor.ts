@@ -20,6 +20,12 @@ import type {
   FirmwareProvenanceGraph,
 } from "./firmwareProvenance";
 
+// Tags a decompression failure as continuable: nestedBuffers/locateSectionPayload
+// catch only this class and keep walking the rest of the image (see
+// tryDecodeEncapsulation), so one bad section never aborts an otherwise
+// extractable firmware context. Any other thrown error still propagates.
+class SectionDecodeFailure extends Error {}
+
 const setupGuid = "899407D7-99FE-43D8-9A21-79EC328CAC21";
 const amitseGuid = "B1DA0ADF-4F77-4070-A88E-BFFE1C60529A";
 const hiiGuid = "97E409E6-4CC1-11D9-81F6-000000000000";
@@ -267,6 +273,10 @@ interface ExtractionGraph {
   decodedSections: Map<string, number>;
   nextId: number;
   decompress: FirmwareDecompressor;
+  // Every SectionDecodeFailure tryDecodeEncapsulation swallowed to keep
+  // walking the rest of the image - one bad section (a trapped decompressor,
+  // an unsupported scheme) should not cost every other branch's evidence.
+  decodeFailures: string[];
 }
 
 function createExtractionGraph(
@@ -278,6 +288,7 @@ function createExtractionGraph(
     decodedSections: new Map(),
     nextId: 1,
     decompress,
+    decodeFailures: [],
   };
 }
 
@@ -366,7 +377,7 @@ async function decodeEncapsulation(
       const cause = error instanceof Error ? error.message : String(error);
       const definition = encapsulated.definitionGuid ? ` ${encapsulated.definitionGuid}` : "";
       const owner = ownerFile ? ` in FFS file ${ownerFile.guid}` : "";
-      throw new Error(
+      throw new SectionDecodeFailure(
         `Failed to decompress a ${encapsulated.compression}${definition} section${owner} ` +
           `(buffer ${String(parent.id)}, depth ${String(parent.depth)}, offset 0x${section.start.toString(16).toUpperCase()}, size 0x${(section.end - section.start).toString(16).toUpperCase()}): ${cause}`,
       );
@@ -395,6 +406,25 @@ async function decodeEncapsulation(
   return node;
 }
 
+// Runs decodeEncapsulation but keeps a trapped/rejected decompressor from
+// aborting the whole extraction: only a SectionDecodeFailure is swallowed
+// (recorded in graph.decodeFailures and treated as "no child here"), so a
+// bug or a genuinely unsupported error elsewhere still propagates normally.
+async function tryDecodeEncapsulation(
+  graph: ExtractionGraph,
+  parent: FirmwareBufferNode,
+  section: FirmwareSection,
+  ownerFile?: LocatedFile,
+) {
+  try {
+    return await decodeEncapsulation(graph, parent, section, ownerFile);
+  } catch (error) {
+    if (!(error instanceof SectionDecodeFailure)) throw error;
+    graph.decodeFailures.push(error.message);
+    return null;
+  }
+}
+
 async function nestedBuffers(graph: ExtractionGraph, node: FirmwareBufferNode) {
   const nested: FirmwareBufferNode[] = [];
   for (const file of filesInVolumes(node)) {
@@ -402,7 +432,7 @@ async function nestedBuffers(graph: ExtractionGraph, node: FirmwareBufferNode) {
     while (sectionStart + 4 <= file.end) {
       const section = readFirmwareSection(node.bytes, sectionStart, file.end);
       if (!section) break;
-      const child = await decodeEncapsulation(graph, node, section, file);
+      const child = await tryDecodeEncapsulation(graph, node, section, file);
       if (child) nested.push(child);
       sectionStart = align(section.end, 4);
     }
@@ -601,7 +631,7 @@ async function locateSectionPayload(
       // Only a section directly inside the FFS file records that file as
       // its owner; a section found inside an already-decoded buffer has no
       // FFS header of its own around it.
-      const nested = await decodeEncapsulation(
+      const nested = await tryDecodeEncapsulation(
         graph,
         parent,
         section,
@@ -810,14 +840,28 @@ export async function extractAptioIvBytes(
     [setupGuid, amitseGuid, setupDataGuid],
     decompress,
   );
+  // A section that trapped or was rejected by the decompressor no longer
+  // aborts the whole walk (see tryDecodeEncapsulation) - if that cost us the
+  // only path to a Setup context, say so; otherwise it becomes a warning on
+  // whichever context was still found, below.
+  const decodeFailureContext = () =>
+    graph.decodeFailures.length > 0
+      ? ` ${String(graph.decodeFailures.length)} section(s) could not be decoded; first: ${graph.decodeFailures[0]}`
+      : "";
   if ((files.get(setupGuid) ?? []).length === 0) {
-    throw new Error("Setup FFS was not found after recursive decompression.");
+    throw new Error(
+      `Setup FFS was not found after recursive decompression.${decodeFailureContext()}`,
+    );
   }
   const sets = await locateArtifactSets(graph, files);
   if (sets.length === 0) {
     throw new Error(
-      "No Setup context contains a usable HII package or Setup PE32 section.",
+      `No Setup context contains a usable HII package or Setup PE32 section.${decodeFailureContext()}`,
     );
+  }
+  if (graph.decodeFailures.length > 0) {
+    const warning = `${String(graph.decodeFailures.length)} nested section(s) could not be decoded; other firmware contexts may be missing. ${graph.decodeFailures[0]}`;
+    for (const set of sets) set.summary.warnings.push(warning);
   }
   const selected = options.artifactSetId
     ? sets.find((set) => set.summary.id === options.artifactSetId)

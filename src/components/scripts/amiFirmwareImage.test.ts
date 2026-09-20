@@ -310,6 +310,95 @@ describe("sniffNonAmiFailure", () => {
   });
 });
 
+describe("brand and family classification", () => {
+  it("recognizes an Intel ME partition from its $FPT header when there's no firmware volume", () => {
+    const bytes = new Uint8Array(0x20);
+    bytes.set(new TextEncoder().encode("$FPT"), 0);
+    new DataView(bytes.buffer).setUint32(4, 12, true);
+
+    expect(inspectAmiFirmwareBytes(bytes).vendorGuess.family).toBe("intel-me");
+  });
+
+  it("rejects an out-of-range $FPT entry count", () => {
+    const bytes = new Uint8Array(0x20);
+    bytes.set(new TextEncoder().encode("$FPT"), 0);
+    new DataView(bytes.buffer).setUint32(4, 0, true);
+
+    expect(inspectAmiFirmwareBytes(bytes).vendorGuess.family).toBe("unknown");
+  });
+
+  it("never reports Intel ME when an Intel flash descriptor is present (a full SPI image also starts with $FPT)", () => {
+    const bytes = new Uint8Array(0x20);
+    bytes.set(new TextEncoder().encode("$FPT"), 0);
+    new DataView(bytes.buffer).setUint32(4, 12, true);
+    bytes.set(hexBytes("5AA5F00F"), 0x10);
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.intelDescriptor).toBe(true);
+    expect(report.vendorGuess.family).not.toBe("intel-me");
+  });
+
+  it("recognizes a known non-firmware file header", () => {
+    const bytes = new Uint8Array(16);
+    bytes.set(hexBytes("89504E470D0A1A0A"), 0); // PNG signature
+
+    expect(inspectAmiFirmwareBytes(bytes).vendorGuess.family).toBe("non-firmware");
+  });
+
+  it("recognizes legacy AMIBIOS when there's no firmware volume", () => {
+    const bytes = new Uint8Array(0x20);
+    bytes.set(new TextEncoder().encode("AMIBIOS"), 4);
+
+    expect(inspectAmiFirmwareBytes(bytes).vendorGuess.family).toBe("ami-legacy");
+  });
+
+  it("collects a brand marker from a recognized manufacturer string", () => {
+    const report = inspectAmiFirmwareBytes(
+      firmwareVolumeImage(
+        { offset: 0x40, bytes: setupFfsGuidBytes },
+        { offset: 0x60, bytes: new TextEncoder().encode("ASUSTeK COMPUTER INC.") },
+      ),
+    );
+
+    expect(report.brandMarkers).toContainEqual(
+      expect.objectContaining({ brand: "ASUS", offset: 0x60 }),
+    );
+  });
+
+  it("validates an Intel manufacturer clue from a bounded AMI FID record inside a checksummed volume", () => {
+    const amiFidGuidBytes = hexBytes("7502BE2E5864F94A91EDD3F4EDB100AA");
+    const bytes = firmwareVolumeImage(
+      { offset: 0x40, bytes: setupFfsGuidBytes },
+      { offset: 0x60, bytes: amiFidGuidBytes },
+      { offset: 0x70, bytes: new TextEncoder().encode("$FID") },
+      { offset: 0x90, bytes: new Uint8Array([0x31, 0x30, 0x00]) },
+      { offset: 0xa5, bytes: new TextEncoder().encode("INTEL\0") },
+    );
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.brandMarkers).toContainEqual(
+      expect.objectContaining({ brand: "Intel", offset: 0x70 }),
+    );
+  });
+
+  it("rejects an AMI FID record whose major-version field isn't ASCII digits", () => {
+    const amiFidGuidBytes = hexBytes("7502BE2E5864F94A91EDD3F4EDB100AA");
+    const bytes = firmwareVolumeImage(
+      { offset: 0x40, bytes: setupFfsGuidBytes },
+      { offset: 0x60, bytes: amiFidGuidBytes },
+      { offset: 0x70, bytes: new TextEncoder().encode("$FID") },
+      { offset: 0x90, bytes: new Uint8Array([0xff, 0xff, 0x00]) },
+      { offset: 0xa5, bytes: new TextEncoder().encode("INTEL\0") },
+    );
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.brandMarkers.some((marker) => marker.brand === "Intel")).toBe(false);
+  });
+});
+
 function guidBytes(value: string) {
   const parts = value.split("-");
   const reverse = (hex: string) => hex.match(/../g)?.reverse().join("") ?? "";

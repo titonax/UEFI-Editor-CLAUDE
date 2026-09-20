@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateJsonChecksum, sha256Hex } from "./hashing";
-import { parseData, version } from "./ifrParser";
+import { frameworkIfrInventory, parseData, version } from "./ifrParser";
 import { FIXTURE_FORM_SET_GUID, buildFixtureFiles } from "./testFixtures";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 
@@ -325,6 +325,32 @@ describe("parseData validation", () => {
       .replace(/SHA256: [0-9a-f]{64}/, "SHA256: 0".repeat(64).slice(0, 64));
 
     await expect(parseData(files)).rejects.toThrow(/SHA256 mismatch/);
+  });
+});
+
+describe("frameworkIfrInventory", () => {
+  it("counts FormSets, forms and references from IFRExtractor-RS's Framework-mode title lines", () => {
+    const text = [
+      "0x000000: FormSet Title: Setup",
+      "0x000010: Form Title: Main",
+      "0x000020: Ref Prompt: Advanced",
+      "0x000030: Ref Prompt: Boot",
+      "0x000040: FormSet Title: Chipset",
+    ].join("\n");
+
+    expect(frameworkIfrInventory(text)).toEqual({
+      formSets: 2,
+      forms: 1,
+      references: 2,
+    });
+  });
+
+  it("returns all zeros for text with none of the Framework title lines", () => {
+    expect(frameworkIfrInventory("Extraction mode: UEFI\nFormSet Guid: a")).toEqual({
+      formSets: 0,
+      forms: 0,
+      references: 0,
+    });
   });
 });
 

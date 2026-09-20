@@ -234,6 +234,38 @@ describe("extractAptioIvArtifacts", () => {
     expect(message).toContain("LZMA decompression rejected the stream");
   });
 
+  it("keeps recovering other firmware contexts after one section fails to decompress, with a warning attached", async () => {
+    const lzmaGuid = "EE4E5898-3914-4259-9D6E-DC7BD79403CF";
+    const workingHii = new Uint8Array([0xaa, 0xbb, 0xcc]);
+    // One context whose only Setup section is undecodable, next to a
+    // perfectly normal one - a trapped/rejected decompressor should cost
+    // only its own branch's evidence, never the whole image's.
+    const failingContext = firmwareVolumeWithFile(
+      setupGuid,
+      guidDefinedSection(lzmaGuid, freeformSection(hiiGuid, new Uint8Array([0x01]))),
+    );
+    const workingContext = setupVolume(workingHii);
+    const image = new Uint8Array(failingContext.length + workingContext.length);
+    image.set(failingContext);
+    image.set(workingContext, failingContext.length);
+    const decompress = () =>
+      Promise.reject(new Error("LZMA decompression rejected the stream"));
+
+    const artifacts = await extractAptioIvBytes(
+      image,
+      () => Promise.resolve("FormSet Guid: recovered"),
+      decompress,
+    );
+
+    expect(artifacts.hii).toEqual(workingHii);
+    expect(artifacts.artifactSets).toHaveLength(1);
+    expect(
+      artifacts.artifactSets[0].warnings.some((warning) =>
+        warning.includes("could not be decoded"),
+      ),
+    ).toBe(true);
+  });
+
   it("keeps duplicated firmware slots coherent and selects them explicitly", async () => {
     const firstContext = artifactContext(0xa1);
     const secondContext = artifactContext(0xb2);

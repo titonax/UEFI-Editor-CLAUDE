@@ -107,21 +107,44 @@ scripted regression runs against a fixed local corpus.
 
 A real-world folder of firmware dumps is never all AMI Aptio, so an image
 that isn't is labelled **Unsupported** with a best-effort vendor guess -
-Award/Phoenix-Award, Phoenix, Insyde H2O, some other/unbranded UEFI, legacy
-EFI 1.10 "Framework" HII (a pre-UEFI2.0 machine whose Setup module IFRExtractor
-itself reports as Framework rather than UEFI), or embedded Linux firmware
-that was never a PC BIOS at all (a router or appliance dump) - rather than
-the generic **Failed** reserved for a genuinely unexpected error (a
-truncated file, a worker crash, the 512 MiB safety cap). Most of these
-guesses come from the same shallow byte-signature scan the AMI preflight
-already runs (`src/components/scripts/amiFirmwareImage.ts`); none of them
-are ever parsed further, so a guess stays a label, not a claim of support.
+Award/Phoenix-Award, Phoenix, Insyde H2O, legacy AMIBIOS, an Intel Management
+Engine region, a recognized non-firmware file, some other/unbranded UEFI,
+legacy EFI 1.10 "Framework" HII (a pre-UEFI2.0 machine whose Setup module
+IFRExtractor itself reports as Framework rather than UEFI - its rough
+FormSet/form/reference inventory is still shown, read-only), or embedded
+Linux firmware that was never a PC BIOS at all (a router or appliance dump)
+- rather than the generic **Failed** reserved for a genuinely unexpected
+error (a truncated file, a worker crash, the 512 MiB safety cap). Most of
+these guesses come from the same shallow byte-signature scan the AMI
+preflight already runs (`src/components/scripts/amiFirmwareImage.ts`); none
+of them are ever parsed further, so a guess stays a label, not a claim of
+support.
+
+Independently of that vendor guess, every image also gets a best-effort
+**manufacturer** (motherboard/system vendor) lead - ASUS/HP/Intel/MSI/
+ASRock/Supermicro/Gigabyte/Dell - from an exact SHA-256 match against this
+repository's own documented samples, an explicit selection, a firmware-marker
+byte string, or a filename token, in that precedence order (see
+[`docs/ami/manufacturer-knowledge.md`](docs/ami/manufacturer-knowledge.md)
+for the evidence catalogue and
+[`src/components/scripts/brandKnowledge.ts`](src/components/scripts/brandKnowledge.ts)
+for the logic). A brand match is a lead, never proof: the actual structural
+detectors still run on every image regardless, and a match never unlocks
+editing on its own - the report does say whether this image's own proven
+navigation mechanism matches or departs from that brand's documented prior.
+A "Blocked at (distinct cases)" line under the summary counts, once per
+unique SHA-256, which stage (preflight/extraction/HII/navigation) first kept
+each image from being recognized.
+
 When an image genuinely is AMI Aptio but a compressed section still fails to
 decompress, the error names exactly which one - its GUID-defined
 decompression scheme (when it has one), the FFS file that owns it, and its
 buffer/depth/offset/size - instead of a bare "stream rejected", so a real
 corpus failure can be located directly in a byte-level tool like UEFITool
-rather than hand-scanned for across a multi-megabyte image.
+rather than hand-scanned for across a multi-megabyte image. That one bad
+section no longer aborts the whole extraction either: it's recorded as a
+warning on whatever firmware context was still found, so one trapped or
+rejected decompressor never costs every other context's evidence.
 
 Once loaded, the sidebar shows the BIOS menu tree: the root menus proven by
 the AMITSE table and SetupData page list, every submenu under them, and any
