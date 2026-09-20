@@ -132,9 +132,24 @@ for the logic). A brand match is a lead, never proof: the actual structural
 detectors still run on every image regardless, and a match never unlocks
 editing on its own - the report does say whether this image's own proven
 navigation mechanism matches or departs from that brand's documented prior.
-A "Blocked at (distinct cases)" line under the summary counts, once per
-unique SHA-256, which stage (preflight/extraction/HII/navigation) first kept
-each image from being recognized.
+
+Below the summary strip, a **Compatibility by layer** dashboard turns the
+whole run into read-only statistics, all measured once per distinct SHA-256
+(a duplicate upload never double-counts): a per-stage pass/warning/failed/
+blocked/not-run breakdown with its own eligibility rule (extraction requires
+preflight to have passed, HII requires extraction, navigation/editability/
+reconstruction all require HII); a **first recognition blocker** table -
+which single stage first kept each distinct case from being recognized,
+with example filenames; a **failure taxonomy** classifying every failure
+message into a small closed set of codes (`NO_SETUP_FFS`,
+`SECTION_DECODE_FAILED`, `FRAMEWORK_HII`, ...); and a **distribution of
+cases** tab set breaking the same extraction/navigation/HII-edit/full-image
+rates down by firmware family, IFR format, manufacturer, container and
+Aptio generation. See
+[`src/components/scripts/corpusDashboard.ts`](src/components/scripts/corpusDashboard.ts)
+for exactly how each figure is computed and
+[`src/components/CorpusRunner/CorpusDashboard.tsx`](src/components/CorpusRunner/CorpusDashboard.tsx)
+for the UI.
 
 When an image genuinely is AMI Aptio but a compressed section still fails to
 decompress, the error names exactly which one - its GUID-defined

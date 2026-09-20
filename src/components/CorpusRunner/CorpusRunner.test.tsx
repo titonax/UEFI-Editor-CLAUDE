@@ -140,8 +140,8 @@ describe("CorpusRunner", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run local corpus analysis" }));
 
     await waitFor(() => {
-      expect(screen.getByText("board-a.bin")).toBeInTheDocument();
-      expect(screen.getByText("board-b.bin")).toBeInTheDocument();
+      expect(screen.getAllByText("board-a.bin").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("board-b.bin").length).toBeGreaterThan(0);
     });
     // board-a.bin parses but has no detected single-FormSet navigation (a
     // generic two-Form fixture, no hub) -> "Partial"; board-b.bin's
@@ -149,14 +149,22 @@ describe("CorpusRunner", () => {
     // throws when no AMI Setup module is found, which the corpus runner
     // recognizes as a structurally-understood non-AMI image -> "Unsupported"
     // (not "Failed", which is reserved for genuinely unexpected errors).
-    // Scoped to each file's own accordion item, since the summary metrics
-    // grid also has "Partial"/"Unsupported" tile labels.
-    const itemA = screen.getByText("board-a.bin").closest(".mantine-Accordion-item");
-    const itemB = screen.getByText("board-b.bin").closest(".mantine-Accordion-item");
-    if (!itemA || !itemB) throw new Error("expected both accordion items");
+    // Scoped to each file's own accordion item; each filename now also
+    // appears in the dashboard's "First recognition blocker" example-files
+    // column, so getAllByText + picking the accordion-item match is needed.
+    function accordionItemFor(fileName: string) {
+      const item = screen
+        .getAllByText(fileName)
+        .map((element) => element.closest(".mantine-Accordion-item"))
+        .find((element): element is HTMLElement => element !== null);
+      if (!item) throw new Error(`expected an accordion item for ${fileName}`);
+      return item;
+    }
+    const itemA = accordionItemFor("board-a.bin");
+    const itemB = accordionItemFor("board-b.bin");
     await waitFor(() => {
-      expect(within(itemA as HTMLElement).getByText("Partial")).toBeInTheDocument();
-      expect(within(itemB as HTMLElement).getByText("Unsupported")).toBeInTheDocument();
+      expect(within(itemA).getByText("Partial")).toBeInTheDocument();
+      expect(within(itemB).getByText("Unsupported")).toBeInTheDocument();
     });
     expect(
       screen.getAllByText("Setup FFS was not found after recursive decompression.", {
@@ -166,7 +174,7 @@ describe("CorpusRunner", () => {
     // board-b.bin has a valid FFS2 volume but no AMI markers at all, so the
     // vendor sniffer's fallback applies: recognized as UEFI, just not AMI.
     expect(
-      within(itemB as HTMLElement).getAllByText(/Generic\/unbranded UEFI/).length,
+      within(itemB).getAllByText(/Generic\/unbranded UEFI/).length,
     ).toBeGreaterThan(0);
     // The richer, GPT-matching per-file detail: size/container/generation,
     // form/ref counts, a stage table and a provenance badge, not just a
@@ -174,12 +182,13 @@ describe("CorpusRunner", () => {
     expect(screen.getByText(/forms .* refs/)).toBeInTheDocument();
     expect(screen.getByText(/provenance (complete|incomplete)/)).toBeInTheDocument();
     expect(screen.getAllByText(/\d+(\.\d+)? (B|KiB|MiB)/).length).toBeGreaterThan(0);
-    // board-a.bin and board-b.bin share identical bytes (firmwareFile()
-    // ignores its name argument) - only board-a's SHA-256 counts as a
-    // distinct case here, blocked at "navigation" (that stage pushes
-    // "warning" rather than "passed" when unresolved).
-    expect(screen.getByText(/Blocked at \(distinct cases\)/)).toBeInTheDocument();
-    expect(screen.getByText(/navigation 1/)).toBeInTheDocument();
+    // The fuller analytics dashboard (see corpusDashboard.ts) renders below
+    // the summary tiles: per-stage eligibility, first-recognition-blocker
+    // breakdown, and cohort tables by family/IFR format/manufacturer/
+    // container/generation.
+    expect(screen.getByText("Compatibility by layer")).toBeInTheDocument();
+    expect(screen.getByText("First recognition blocker")).toBeInTheDocument();
+    expect(screen.getByText("Distribution of cases")).toBeInTheDocument();
     expect(screen.getByText("Export JSON report")).toBeInTheDocument();
     expect(screen.getByText("Export CSV summary")).toBeInTheDocument();
     expect(extractFirmwareInWorker).toHaveBeenCalledTimes(2);
