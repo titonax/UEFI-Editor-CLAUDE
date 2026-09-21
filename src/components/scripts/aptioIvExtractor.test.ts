@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractAptioIvArtifacts, extractAptioIvBytes } from "./aptioIvExtractor";
+import { extractAptioIvArtifacts, extractAptioIvBytes, selectBestIfrTexts } from "./aptioIvExtractor";
 
 const setupGuid = "899407D7-99FE-43D8-9A21-79EC328CAC21";
 const amitseGuid = "B1DA0ADF-4F77-4070-A88E-BFFE1C60529A";
@@ -300,5 +300,54 @@ describe("extractAptioIvArtifacts", () => {
     expect(second.hii).toEqual(new Uint8Array([0xb2, 0x01]));
     expect(second.amitse).toEqual(new Uint8Array([0xb2, 0x02]));
     expect(second.setupData).toEqual(new Uint8Array([0xb2, 0x03]));
+  });
+});
+
+describe("selectBestIfrTexts", () => {
+  // A real 32MB Aptio V image carried two en-US string packages for the same
+  // form package: one resolved every string, the other was a stale/broken
+  // table whose Prompt/Help/Text all came back the literal "InvalidId".
+  it("keeps the least-broken variant when a form package has more than one string package for the same language", () => {
+    const broken = 'Ref Prompt: "InvalidId", Help: "InvalidId"\nRef Prompt: "InvalidId", Help: "InvalidId"';
+    const working = 'Ref Prompt: "Main", Help: ""\nRef Prompt: "Advanced", Help: ""';
+
+    const result = selectBestIfrTexts([
+      { name: "setup.bin.0.0.en-US.uefi.ifr.txt", text: broken },
+      { name: "setup.bin.0.1.en-US.uefi.ifr.txt", text: working },
+    ]);
+
+    expect(result).toEqual([working]);
+  });
+
+  it("keeps the order-independent least-broken variant regardless of which one comes first", () => {
+    const broken = 'Ref Prompt: "InvalidId", Help: "InvalidId"';
+    const working = 'Ref Prompt: "Boot", Help: ""';
+
+    expect(
+      selectBestIfrTexts([
+        { name: "setup.bin.0.0.en-US.uefi.ifr.txt", text: working },
+        { name: "setup.bin.0.1.en-US.uefi.ifr.txt", text: broken },
+      ]),
+    ).toEqual([working]);
+  });
+
+  it("keeps every form package and language as its own group", () => {
+    const packageZero = 'Ref Prompt: "Main", Help: ""';
+    const packageOne = 'Ref Prompt: "Advanced", Help: ""';
+    const spanish = 'Ref Prompt: "Principal", Help: ""';
+
+    const result = selectBestIfrTexts([
+      { name: "setup.bin.0.0.en-US.uefi.ifr.txt", text: packageZero },
+      { name: "setup.bin.1.0.en-US.uefi.ifr.txt", text: packageOne },
+      { name: "setup.bin.0.0.es-ES.uefi.ifr.txt", text: spanish },
+    ]);
+
+    expect(result).toEqual([packageZero, packageOne, spanish]);
+  });
+
+  it("passes through an unrecognized output name unchanged rather than dropping it", () => {
+    const text = 'Ref Prompt: "Main", Help: ""';
+
+    expect(selectBestIfrTexts([{ name: "unexpected-name.txt", text }])).toEqual([text]);
   });
 });

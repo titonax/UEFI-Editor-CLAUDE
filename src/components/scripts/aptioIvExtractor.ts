@@ -770,6 +770,41 @@ async function locateArtifactSets(graph: ExtractionGraph, files: Map<string, Loc
   return sets;
 }
 
+// IFRExtractor names each output <base>.<formPackageIndex>.<stringPackageIndex>.<language>.uefi.ifr.txt.
+// A real 32MB Aptio V image carried two en-US string packages for the same
+// form package: one resolved every Prompt/Help/Text string, the other was a
+// stale/broken table whose strings all came back the literal "InvalidId".
+// Concatenating every variant means whichever text comes first wins -
+// ifrParser.ts's forms.find() takes the first match at a given offset - so a
+// broken table ahead of the real one silently replaces every label the user
+// sees. Group by (form package, language) and keep only the least-broken
+// variant instead of blindly concatenating all of them.
+const ifrOutputNamePattern = /^.+\.(\d+)\.\d+\.([^.]+)\.uefi\.ifr\.txt$/;
+
+export function selectBestIfrTexts(outputs: { name: string; text: string }[]) {
+  const groups = new Map<string, { text: string; invalidIdCount: number }[]>();
+  const ungrouped: string[] = [];
+  for (const { name, text } of outputs) {
+    const match = ifrOutputNamePattern.exec(name);
+    if (!match) {
+      ungrouped.push(text);
+      continue;
+    }
+    const [, formPackage, language] = match;
+    const key = `${formPackage}:${language}`;
+    const variants = groups.get(key) ?? [];
+    variants.push({ text, invalidIdCount: (text.match(/"InvalidId"/g) ?? []).length });
+    groups.set(key, variants);
+  }
+  const selected = [...groups.values()].map(
+    (variants) =>
+      variants.reduce((best, candidate) =>
+        candidate.invalidIdCount < best.invalidIdCount ? candidate : best,
+      ).text,
+  );
+  return [...selected, ...ungrouped];
+}
+
 async function runIfrExtractor(hii: Uint8Array) {
   const directory = new Map<string, WasiFile>();
   directory.set("setup.bin", new WasiFile(hii));
@@ -793,9 +828,11 @@ async function runIfrExtractor(hii: Uint8Array) {
   });
   const exitCode = wasi.start(instance as WebAssembly.Instance & { exports: { memory: WebAssembly.Memory; _start: () => unknown } });
   if (exitCode !== 0) throw new Error(stdout.join("\n") || `IFRExtractor exited with ${String(exitCode)}.`);
-  const outputs = [...directory.entries()].filter(([name]) => name.endsWith(".ifr.txt"));
+  const outputs = [...directory.entries()]
+    .filter(([name]) => name.endsWith(".ifr.txt"))
+    .map(([name, output]) => ({ name, text: new TextDecoder().decode(output.data) }));
   if (outputs.length === 0) throw new Error("IFRExtractor did not generate a verbose IFR file.");
-  return outputs.map(([, output]) => new TextDecoder().decode(output.data)).join("\n");
+  return selectBestIfrTexts(outputs).join("\n");
 }
 
 // Only the source image and the buffers on some artifact's path back to it
