@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { inspectPhoenixLegacyBytes, inspectPhoenixUefiBytes } from "./phoenixFirmware";
+import {
+  findNamedPhoenixModule,
+  inspectPhoenixLegacyBytes,
+  inspectPhoenixUefiBytes,
+} from "./phoenixFirmware";
 
 const ascii = (value: string) => new TextEncoder().encode(value);
 
@@ -106,6 +110,59 @@ describe("inspectPhoenixLegacyBytes", () => {
 
   it("returns null for anything that isn't a bounded PhoenixBIOS 4.0 image", () => {
     expect(inspectPhoenixLegacyBytes(new Uint8Array(0x10000))).toBeNull();
+  });
+});
+
+// A single standalone FFV module header, with no BCPSYS/BCPFFV directory
+// and no "PhoenixBIOS" banner string anywhere - the shape a modern Phoenix
+// SecureCore UEFI build's legacy CMOS Setup Table modules actually have
+// (confirmed against a real 2 MiB laptop firmware sample whose only
+// Phoenix evidence was a \Phoenix\...\*.pdb debug path; see
+// docs/phoenix/README.md).
+function standaloneFfvModule(name: string, offset: number) {
+  const bytes = new Uint8Array(offset + 0x40);
+  bytes[offset] = 0xf8;
+  bytes[offset + 4] = 0x40;
+  bytes[offset + 7] = 2;
+  bytes.set(ascii(name), offset + 8);
+  bytes[offset + 16] = 0xff;
+  bytes[offset + 24] = 0x28;
+  bytes[offset + 27] = 1;
+  bytes[offset + 28] = 0x1c;
+  bytes[offset + 32] = 0x78;
+  return bytes;
+}
+
+describe("findNamedPhoenixModule", () => {
+  it("finds a named module by its own FFV header, with no directory to walk through", () => {
+    const bytes = standaloneFfvModule("_T00", 0x5000);
+
+    const module = findNamedPhoenixModule(bytes, "TEMPLAT0.ROM");
+
+    expect(module).toMatchObject({
+      name: "TEMPLAT0.ROM",
+      offset: 0x5000,
+      size: 0x40,
+      compression: "lh5",
+      packedSize: 0x1c,
+      unpackedSize: 0x78,
+      payloadOffset: 0x5000 + 24 + 12,
+    });
+  });
+
+  it("returns null when the named module isn't present", () => {
+    const bytes = standaloneFfvModule("_T00", 0x5000);
+
+    expect(findNamedPhoenixModule(bytes, "STRINGS0.ROM")).toBeNull();
+  });
+
+  it("rejects a module whose compressed section exceeds its own bounds", () => {
+    const bytes = standaloneFfvModule("_T00", 0x5000);
+    // packedSize 0x1c + unpackedSize field's own 12-byte header would run
+    // past the module - shrink the module's declared size to trigger it.
+    bytes[0x5000 + 4] = 0x20;
+
+    expect(findNamedPhoenixModule(bytes, "TEMPLAT0.ROM")).toBeNull();
   });
 });
 

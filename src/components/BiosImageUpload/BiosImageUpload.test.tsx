@@ -5,11 +5,17 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import BiosImageUpload from "./BiosImageUpload";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
+import type { PhoenixSetupMenu } from "../scripts/phoenixSetupTable";
 
 const extractFirmwareInWorker = vi.hoisted(() => vi.fn());
+const inspectPhoenixSetupMenu = vi.hoisted(() => vi.fn());
 
 vi.mock("../scripts/aptioIvExtractorClient", () => ({
   extractFirmwareInWorker,
+}));
+
+vi.mock("../scripts/phoenixSetupMenu", () => ({
+  inspectPhoenixSetupMenu,
 }));
 
 function hexBytes(value: string) {
@@ -157,12 +163,26 @@ beforeAll(() => {
       removeEventListener: vi.fn(),
     }),
   );
+  // The Phoenix Setup menu panel's ScrollArea observes its own size; jsdom
+  // has no ResizeObserver implementation.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+    },
+  );
 });
 
 afterEach(() => {
   cleanup();
   extractFirmwareInWorker.mockReset();
+  inspectPhoenixSetupMenu.mockReset();
+  inspectPhoenixSetupMenu.mockResolvedValue(null);
 });
+
+inspectPhoenixSetupMenu.mockResolvedValue(null);
 
 describe("BiosImageUpload", () => {
   it("accepts any filename, deep-scans once, and only hands over on Start", async () => {
@@ -330,6 +350,51 @@ describe("BiosImageUpload", () => {
       screen.getByText("Setup FFS was not found after recursive decompression."),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start HII analysis" })).toBeDisabled();
+  });
+
+  it("shows the Phoenix Setup menu panel when a legacy Setup Table is found on a non-AMI image", async () => {
+    const menu: PhoenixSetupMenu = {
+      sections: [
+        {
+          offset: 0,
+          items: [
+            {
+              type: "pick-field",
+              offset: 0,
+              length: 20,
+              prompt: "F12 Boot Menu:",
+              help: "Enabled or Disabled",
+              rawBytes: new Uint8Array(20),
+            },
+          ],
+        },
+      ],
+    };
+    inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, {
+      target: { files: [imageFile(new Uint8Array(0x100), "phoenix.bin")] },
+    });
+
+    expect(await screen.findByText("Phoenix Setup menu: 1 screen(s), 1 item(s)")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Screen 1 · 1 item(s)"));
+    expect(screen.getByText("F12 Boot Menu:")).toBeInTheDocument();
+    expect(screen.getByText("Enabled or Disabled")).toBeInTheDocument();
+    expect(inspectPhoenixSetupMenu).toHaveBeenCalledOnce();
+  });
+
+  it("never queries the Phoenix Setup Table for an AMI Aptio candidate", async () => {
+    const sourceImage = validFirmwareVolumeImage();
+    extractFirmwareInWorker.mockResolvedValueOnce(artifactsFor(sourceImage));
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, { target: { files: [imageFile(sourceImage, "board.F13d")] } });
+
+    expect(
+      await screen.findByText("AMI Aptio V — probable HII profile"),
+    ).toBeInTheDocument();
+    expect(inspectPhoenixSetupMenu).not.toHaveBeenCalled();
   });
 
   it("refuses an image over the 512 MiB safety limit before reading it", async () => {
