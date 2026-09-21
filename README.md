@@ -151,20 +151,25 @@ for exactly how each figure is computed and
 [`src/components/CorpusRunner/CorpusDashboard.tsx`](src/components/CorpusRunner/CorpusDashboard.tsx)
 for the UI.
 
-A Phoenix-family image gets more than a vendor-guess label: independently of
-AMI Aptio success or failure, the corpus runner also reports a read-only
-structural inventory. For legacy PhoenixBIOS 4.0 ROMs (`BCPSYS`/`BCPFFV`/
-`BCPCMP` records) it walks the Flash File Volume directory - or falls back to
-the older BCPSYS-linked module chain - and lists every recovered module's
-name, offset, size and LH5 compression sizes, bounds-checked at every step so
-a malformed directory or a corrupt compressed section stops the walk with a
-warning instead of reading past it. For a Phoenix-derived UEFI build (no BCP/
-FFV structures at all) it reports the `\Phoenix\...\*.pdb` debug-path module
-names left in CodeView records, flagging when `SecCore` is among them - this
-is module provenance only, never a Setup-format verdict, since a real sample
-carried Phoenix SecCore PDB paths alongside an unrelated Insyde copyright
-string in the same image. Neither inventory feeds editing, reconstruction, or
-any write path. See
+A Phoenix-family image gets more than a vendor-guess label: the shared
+preflight (`inspectAmiFirmwareBytes`) reports a read-only structural
+inventory independently of AMI Aptio success or failure, so it shows up
+both in the single-image upload screen and in the corpus runner - opening a
+Phoenix image directly in the editor shows its inventory instead of a bare
+"no valid firmware volumes" message. For legacy PhoenixBIOS 4.0 ROMs
+(`BCPSYS`/`BCPFFV`/`BCPCMP` records) it walks the Flash File Volume
+directory - or falls back to the older BCPSYS-linked module chain - and
+lists every recovered module's name, offset, size and LH5 compression
+sizes, bounds-checked at every step so a malformed directory or a corrupt
+compressed section stops the walk with a warning instead of reading past
+it. For a Phoenix-derived UEFI build (no BCP/FFV structures at all) it
+reports the `\Phoenix\...\*.pdb` debug-path module names left in CodeView
+records, flagging when `SecCore` is among them - this is module provenance
+only, never a Setup-format verdict, since a real sample carried Phoenix
+SecCore PDB paths alongside an unrelated Insyde copyright string in the
+same image (the stronger, conflicting vendor string still wins the vendor
+guess; the PDB provenance is still reported alongside it). Neither
+inventory feeds editing, reconstruction, or any write path. See
 [`docs/phoenix/README.md`](docs/phoenix/README.md) for both documented cases
 and
 [`src/components/scripts/phoenixFirmware.ts`](src/components/scripts/phoenixFirmware.ts)

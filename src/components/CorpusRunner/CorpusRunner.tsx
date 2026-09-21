@@ -38,12 +38,6 @@ import {
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
 import { assessFirmwareReconstruction } from "../scripts/firmwareProvenance";
 import { sha256Hex } from "../scripts/hashing";
-import {
-  inspectPhoenixLegacyBytes,
-  inspectPhoenixUefiBytes,
-  type PhoenixLegacyInventory,
-  type PhoenixUefiInventory,
-} from "../scripts/phoenixFirmware";
 import { frameworkIfrInventory, parseData, type FrameworkIfrInventory } from "../scripts/ifrParser";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
 import {
@@ -501,21 +495,16 @@ export default function CorpusRunner() {
     // by then, so the verbose IFR text is available even though parsing it
     // as UEFI HII is not.
     let extractedIfrText: string | undefined;
-    // Independent of AMI success/failure - a Phoenix module inventory or
-    // PDB debug-path provenance (see phoenixFirmware.ts) is worth reporting
-    // either way, so both are computed once up front and attached to
-    // whichever entry (success or failure) this call returns.
-    let phoenixLegacy: PhoenixLegacyInventory | undefined;
-    let phoenixUefi: PhoenixUefiInventory | undefined;
     try {
       if (file.size > MAX_FIRMWARE_BYTES) {
         throw new Error("Exceeds the 512 MiB safety limit.");
       }
       const image = new Uint8Array(await file.arrayBuffer());
       sha256 = await sha256Hex(image);
-      phoenixLegacy = inspectPhoenixLegacyBytes(image) ?? undefined;
-      phoenixUefi = inspectPhoenixUefiBytes(image) ?? undefined;
 
+      // Phoenix module inventory / PDB provenance (see phoenixFirmware.ts)
+      // is computed by inspectAmiFirmwareBytes itself, independent of AMI
+      // success or failure, so it's available from preflight either way.
       preflight = inspectAmiFirmwareBytes(image);
       if (preflight.firmwareVolumes.length === 0) {
         stages.push({
@@ -610,8 +599,8 @@ export default function CorpusRunner() {
         stages,
         brand,
         report,
-        phoenixLegacy,
-        phoenixUefi,
+        phoenixLegacy: preflight.phoenixLegacy,
+        phoenixUefi: preflight.phoenixUefi,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -655,8 +644,8 @@ export default function CorpusRunner() {
         // so a manufacturer lead is still worth reporting even when this
         // image was never AMI Aptio (or failed for an unexpected reason).
         brand: preflight ? classifyBrand(file.name, sha256, preflight.brandMarkers) : undefined,
-        phoenixLegacy,
-        phoenixUefi,
+        phoenixLegacy: preflight?.phoenixLegacy,
+        phoenixUefi: preflight?.phoenixUefi,
       };
     }
   };

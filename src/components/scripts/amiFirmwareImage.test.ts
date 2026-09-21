@@ -295,6 +295,121 @@ describe("inspectAmiFirmwareBytes", () => {
   });
 });
 
+// A minimal but bounds-valid PhoenixBIOS 4.0 FFV image, shared with
+// phoenixFirmware.test.ts's own fixture: BCPSYS -> BCPFFV -> BCPCMP records,
+// a volumedir.bin2 FFV module pointing at one FFV volume (matched by the
+// real ffvVolumeGuid) containing one compressed Setup module.
+function phoenixFfvImage() {
+  const bytes = new Uint8Array(0x40000);
+  const view = new DataView(bytes.buffer);
+  bytes.set(new TextEncoder().encode("PhoenixBIOS 4.0 Release 6.1"), 0x3d000);
+  const sys = 0x3f000;
+  bytes.set(new TextEncoder().encode("BCPSYS"), sys);
+  view.setUint16(sys + 8, 0x83, true);
+  bytes.set(new TextEncoder().encode("12/05/07"), sys + 0x0f);
+  bytes.set(new TextEncoder().encode("DEVEL97G"), sys + 0x37);
+  const ffv = sys + 0x83;
+  bytes.set(new TextEncoder().encode("BCPFFV"), ffv);
+  view.setUint16(ffv + 8, 14, true);
+  view.setUint32(ffv + 10, 0xfff30008, true);
+  const cmp = ffv + 14;
+  bytes.set(new TextEncoder().encode("BCPCMP"), cmp);
+  view.setUint16(cmp + 8, 33, true);
+  bytes[cmp + 11] = 3;
+
+  const directory = 0x30008;
+  bytes[directory] = 0xf8;
+  bytes[directory + 4] = 0x58;
+  bytes[directory + 7] = 1;
+  bytes.set(new TextEncoder().encode("volumedi"), directory + 8);
+  bytes[directory + 16] = 0xff;
+  bytes.set(new TextEncoder().encode("r.bin2"), directory + 17);
+  view.setUint32(directory + 28, 32, true);
+  const entry = directory + 32;
+  const [a, b, c, d, e] = "FED91FBA-D37B-4EEA-8729-2EF29FB37A78".split("-");
+  view.setUint32(entry, Number.parseInt(a, 16), true);
+  view.setUint16(entry + 4, Number.parseInt(b, 16), true);
+  view.setUint16(entry + 6, Number.parseInt(c, 16), true);
+  bytes.set(
+    Uint8Array.from(`${d}${e}`.match(/../g) ?? [], (part) => Number.parseInt(part, 16)),
+    entry + 8,
+  );
+  view.setUint32(entry + 16, 0xfff10000, true);
+  view.setUint32(entry + 20, 0xc0, true);
+  const moduleStart = 0x10000;
+  bytes[moduleStart] = 0xf8;
+  bytes[moduleStart + 4] = 0x40;
+  bytes[moduleStart + 7] = 2;
+  bytes.set(new TextEncoder().encode("_E00"), moduleStart + 8);
+  bytes[moduleStart + 16] = 0xff;
+  bytes[moduleStart + 24] = 0x28;
+  bytes[moduleStart + 27] = 1;
+  bytes[moduleStart + 28] = 0x1c;
+  bytes[moduleStart + 32] = 0x78;
+  return bytes;
+}
+
+// A real Lenovo Flex 2 sample carried an RSDS/PDB record naming a Phoenix
+// SecCore module (see phoenixFirmware.test.ts) - written here at a small
+// fixed offset inside an otherwise-valid firmware volume image.
+function withPhoenixSecCorePdb(bytes: Uint8Array) {
+  bytes.set(new TextEncoder().encode("RSDS"), 0x60);
+  bytes.set(
+    new TextEncoder().encode("C:\\Build\\Phoenix\\SecCore\\Sec\\SecCore.pdb\0"),
+    0x60 + 24,
+  );
+  return bytes;
+}
+
+describe("inspectAmiFirmwareBytes - Phoenix integration", () => {
+  it("attaches a Phoenix legacy inventory, a phoenix-rom container and a phoenix vendor guess in one pass", () => {
+    const report = inspectAmiFirmwareBytes(phoenixFfvImage());
+
+    expect(report.container).toBe("phoenix-rom");
+    expect(report.phoenixLegacy).toMatchObject({
+      format: "phoenix-ffv",
+      buildCode: "DEVEL97G",
+    });
+    expect(report.vendorGuess.family).toBe("phoenix");
+    expect(report.vendorGuess.label).toBe("PhoenixBIOS 4.0");
+  });
+
+  it("attaches Phoenix UEFI PDB provenance and a phoenix-uefi vendor guess when no legacy structures are present", () => {
+    const bytes = withPhoenixSecCorePdb(firmwareVolumeImage());
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.phoenixLegacy).toBeUndefined();
+    expect(report.phoenixUefi).toEqual({ secureCore: true, debugModules: ["SecCore"] });
+    expect(report.vendorGuess.family).toBe("phoenix-uefi");
+  });
+
+  // The Lenovo Flex 2 sample this models carried Phoenix SecCore PDB paths
+  // alongside an unrelated Insyde copyright string in the same image - a
+  // PDB path is module provenance, never a Setup-format verdict, so the
+  // stronger Insyde string evidence still wins the vendor guess while the
+  // Phoenix PDB provenance is still reported independently on the report.
+  it("keeps a stronger conflicting vendor string as the vendor guess while still reporting Phoenix PDB provenance", () => {
+    // 0xC0 is well past the RSDS record (0x60) and its null-terminated PDB
+    // path (0x78 onward, well under 64 bytes long), so this doesn't corrupt
+    // either.
+    const bytes = withPhoenixSecCorePdb(firmwareVolumeImage());
+    bytes.set(new TextEncoder().encode("Insyde Software Corp."), 0xc0);
+
+    const report = inspectAmiFirmwareBytes(bytes);
+
+    expect(report.vendorGuess.family).toBe("insyde");
+    expect(report.phoenixUefi).toEqual({ secureCore: true, debugModules: ["SecCore"] });
+  });
+
+  it("never runs the Phoenix inspectors when no Phoenix signature is present", () => {
+    const report = inspectAmiFirmwareBytes(classicAmiImage());
+
+    expect(report.phoenixLegacy).toBeUndefined();
+    expect(report.phoenixUefi).toBeUndefined();
+  });
+});
+
 describe("sniffNonAmiFailure", () => {
   it("recognizes all three structurally-understood non-AMI extraction failures", () => {
     expect(
