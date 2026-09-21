@@ -1,6 +1,7 @@
 import type { AmiGenerationAssessment, FirmwareContainer, FirmwareVendorGuess } from "./amiFirmwareImage";
 import type { BrandClassification } from "./brandKnowledge";
 import { reportNavigationDetected, type CorpusReport } from "./corpusReport";
+import type { PhoenixLegacyInventory, PhoenixUefiInventory } from "./phoenixFirmware";
 
 // The browser corpus runner's per-file result shape - richer than
 // CorpusReport (see corpusReport.ts), which only ever describes a
@@ -38,6 +39,12 @@ export interface CorpusRunEntry {
   failureMessage?: string;
   vendorGuess?: FirmwareVendorGuess;
   brand?: BrandClassification;
+  // Independent of the classification above - a PhoenixBIOS 4.0 module
+  // inventory (never decoded) and/or Phoenix PDB debug-path provenance,
+  // whenever either was found. Neither ever overrides vendorGuess/family;
+  // see phoenixFirmware.ts and docs/phoenix/README.md.
+  phoenixLegacy?: PhoenixLegacyInventory;
+  phoenixUefi?: PhoenixUefiInventory;
 }
 
 // A duplicate upload (the same image selected twice, or genuinely identical

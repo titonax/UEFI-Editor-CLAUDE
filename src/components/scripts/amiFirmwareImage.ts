@@ -150,7 +150,10 @@ const signatures: Signature[] = [
   { name: "phoenixAward", bytes: ascii("Phoenix - AwardBIOS"), insensitiveAscii: true },
   { name: "phoenixTechnologies", bytes: ascii("Phoenix Technologies"), insensitiveAscii: true },
   { name: "phoenixBios", bytes: ascii("PhoenixBIOS"), insensitiveAscii: true },
-  { name: "insydeCorp", bytes: ascii("Insyde Corp"), insensitiveAscii: true },
+  // "Insyde Corp" alone is not a substring of the real copyright string
+  // ("Insyde Software Corp.", confirmed against a real Lenovo Flex 2
+  // sample) - search for the actual string, not a guessed shorter one.
+  { name: "insydeCorp", bytes: ascii("Insyde Software Corp."), insensitiveAscii: true },
   { name: "insydeH2o", bytes: ascii("InsydeH2O"), insensitiveAscii: true },
   // Not a PC BIOS at all: an embedded-Linux blob (router/IoT/appliance).
   { name: "uBoot", bytes: ascii("U-Boot") },
@@ -397,7 +400,7 @@ const vendorSignatureLabels: Record<string, string> = {
   phoenixAward: "Phoenix - AwardBIOS",
   phoenixTechnologies: "Phoenix Technologies",
   phoenixBios: "PhoenixBIOS",
-  insydeCorp: "Insyde Corp.",
+  insydeCorp: "Insyde Software Corp.",
   insydeH2o: "InsydeH2O",
   uBoot: "U-Boot",
   openWrt: "OpenWrt",
