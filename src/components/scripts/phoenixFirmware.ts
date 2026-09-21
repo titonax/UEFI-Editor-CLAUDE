@@ -38,6 +38,10 @@ export interface PhoenixModule {
   compression: "lh5" | "none" | "unknown";
   packedSize?: number;
   unpackedSize?: number;
+  // Where the compressed payload itself starts, for a module with
+  // packedSize/unpackedSize - lets a caller (see phoenixSetupMenu.ts) slice
+  // it out for decompression without redoing the section-header math.
+  payloadOffset?: number;
 }
 
 export interface PhoenixLegacyInventory {
@@ -182,7 +186,7 @@ function readFfvModules(
             : compressed
               ? "unknown"
               : "none",
-        ...(validCompression ? { packedSize, unpackedSize } : {}),
+        ...(validCompression ? { packedSize, unpackedSize, payloadOffset: section + 12 } : {}),
       });
     }
     offset += size;
@@ -293,6 +297,7 @@ export function inspectPhoenixLegacyBytes(bytes: Uint8Array): PhoenixLegacyInven
       compression: compression === 5 ? "lh5" : compression === 0 ? "none" : "unknown",
       packedSize,
       unpackedSize: u32(bytes, next + 15),
+      payloadOffset: next + headerLength,
     });
     next = u32(bytes, next) & (bytes.length - 1);
   }
@@ -348,4 +353,47 @@ export function inspectPhoenixUefiBytes(bytes: Uint8Array): PhoenixUefiInventory
     secureCore: [...modules].some((name) => /^SecCore$/i.test(name)),
     debugModules: [...modules],
   };
+}
+
+// A modern Phoenix SecureCore UEFI build can still carry the same FFV
+// module layout as classic PhoenixBIOS 4.0 for its legacy CMOS Setup
+// Table (STRINGS0.ROM/TEMPLAT0.ROM), but without the "PhoenixBIOS" banner
+// string or BCPSYS/BCPFFV directory inspectPhoenixLegacyBytes looks for -
+// confirmed against a real 2 MiB laptop firmware sample whose only Phoenix
+// evidence was a \Phoenix\...\*.pdb debug path (see
+// inspectPhoenixUefiBytes), yet whose FFV modules (including a real
+// TEMPLAT0.ROM/STRINGS0.ROM pair) decode identically to the BCP/FFV case.
+// This scans directly for a named module's own 0xF8 header instead of
+// requiring a directory to find it through, validating the same bounded
+// compressed-section structure readFfvModules already checks.
+export function findNamedPhoenixModule(bytes: Uint8Array, name: string): PhoenixModule | null {
+  for (let offset = 0; offset + 24 <= bytes.length; offset++) {
+    if (bytes[offset] !== 0xf8 || bytes[offset + 7] !== 2) continue;
+    const size = u24(bytes, offset + 4);
+    if (size < 24 || offset + size > bytes.length) continue;
+    if (ffvModuleName(bytes, offset) !== name) continue;
+    const section = offset + 24;
+    if (section + 12 > offset + size || bytes[section + 3] !== 1) continue;
+    const packedSize = u24(bytes, section + 4);
+    const unpackedSize = u24(bytes, section + 8);
+    const sectionSize = u24(bytes, section);
+    const validCompression =
+      packedSize > 0 &&
+      unpackedSize > 0 &&
+      sectionSize >= packedSize + 12 &&
+      section + sectionSize <= offset + size &&
+      section + 12 + packedSize <= offset + size;
+    if (!validCompression) continue;
+    return {
+      name,
+      kind: "section",
+      offset,
+      size,
+      compression: "lh5",
+      packedSize,
+      unpackedSize,
+      payloadOffset: section + 12,
+    };
+  }
+  return null;
 }

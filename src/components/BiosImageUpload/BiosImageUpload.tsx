@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  Accordion,
   Alert,
   Badge,
   Button,
@@ -8,6 +9,7 @@ import {
   List,
   NativeSelect,
   Progress,
+  ScrollArea,
   Stack,
   Table,
   Text,
@@ -34,6 +36,8 @@ import {
 } from "../scripts/firmwareProvenance";
 import type { FirmwareSectionCompression } from "../scripts/firmwareSections";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
+import { inspectPhoenixSetupMenu } from "../scripts/phoenixSetupMenu";
+import type { PhoenixSetupItem, PhoenixSetupMenu } from "../scripts/phoenixSetupTable";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 
 const MAX_FIRMWARE_BYTES = 512 * 1024 * 1024;
@@ -171,6 +175,78 @@ function VendorSummary({
   );
 }
 
+function phoenixItemTypeLabel(type: PhoenixSetupItem["type"]) {
+  if (type === "pick-field") return "Pick Field";
+  if (type === "generic-text") return "Text";
+  if (type === "information") return "Submenu";
+  if (type === "time") return "Time";
+  if (type === "date") return "Date";
+  return "Hex";
+}
+
+// Phoenix Setup text stores multi-line help as one string with embedded
+// \r line breaks (no \n) - collapse them to spaces for a one-line table
+// cell rather than showing the raw control characters.
+function phoenixText(value: string | null) {
+  return value === null ? null : value.replace(/\r/g, " ").trim();
+}
+
+// The Phoenix counterpart to the AMI Aptio HII menu tree: a read-only
+// inventory of every screen a legacy Phoenix CMOS Setup Table defines,
+// with each item's prompt/help resolved from STRINGS.ROM. Unlike the AMI
+// tree, this never claims a confirmed hierarchy between screens (see
+// docs/phoenix/README.md) and is never editable.
+function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
+  const totalItems = menu.sections.reduce((sum, section) => sum + section.items.length, 0);
+  if (totalItems === 0) return null;
+  return (
+    <Stack gap="xs">
+      <Group gap="xs">
+        <Badge variant="light" color="grape">
+          Phoenix Setup menu: {String(menu.sections.length)} screen(s), {String(totalItems)} item(s)
+        </Badge>
+      </Group>
+      <Text size="xs" c="dimmed">
+        Read-only inventory of a legacy Phoenix CMOS Setup Table - prompts and
+        help text resolved from STRINGS.ROM. This never confirms a hierarchy
+        between screens, and nothing here is editable; see
+        docs/phoenix/README.md.
+      </Text>
+      <Accordion variant="contained">
+        {menu.sections.map((section, index) => (
+          <Accordion.Item key={section.offset} value={String(section.offset)}>
+            <Accordion.Control>
+              Screen {String(index + 1)} · {String(section.items.length)} item(s)
+            </Accordion.Control>
+            <Accordion.Panel>
+              <ScrollArea>
+                <Table striped withColumnBorders>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>Type</Table.Th>
+                      <Table.Th>Prompt</Table.Th>
+                      <Table.Th>Help</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {section.items.map((item, itemIndex) => (
+                      <Table.Tr key={`${String(section.offset)}:${String(itemIndex)}`}>
+                        <Table.Td>{phoenixItemTypeLabel(item.type)}</Table.Td>
+                        <Table.Td>{phoenixText(item.prompt) ?? "—"}</Table.Td>
+                        <Table.Td>{phoenixText(item.help)}</Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </ScrollArea>
+            </Accordion.Panel>
+          </Accordion.Item>
+        ))}
+      </Accordion>
+    </Stack>
+  );
+}
+
 interface BiosImageUploadProps {
   onExtracted: (files: PopulatedFiles) => Promise<void>;
 }
@@ -185,6 +261,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
   const artifactCache = React.useRef(new Map<string, AptioIvArtifacts>());
   const [file, setFile] = React.useState<File | null>(null);
   const [report, setReport] = React.useState<AmiFirmwareImageReport | null>(null);
+  const [phoenixMenu, setPhoenixMenu] = React.useState<PhoenixSetupMenu | null>(null);
   const [artifacts, setArtifacts] = React.useState<AptioIvArtifacts | null>(null);
   const [profile, setProfile] = React.useState<AmiSetupProfileReport | null>(null);
   const [selectedArtifactSetId, setSelectedArtifactSetId] = React.useState<string | null>(
@@ -198,6 +275,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
     const currentOperation = ++operation.current;
     setFile(selected);
     setReport(null);
+    setPhoenixMenu(null);
     setArtifacts(null);
     setProfile(null);
     setSelectedArtifactSetId(null);
@@ -218,6 +296,20 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
       setStage("Validating firmware volumes and the outer container…");
       const imageReport = inspectAmiFirmwareBytes(image);
       setReport(imageReport);
+
+      // A Phoenix legacy CMOS Setup Table (STRINGS0.ROM/TEMPLAT0.ROM) can
+      // exist in an image with no AMI Aptio evidence at all - even one
+      // with no visible firmware volumes, since a legacy Phoenix ROM never
+      // used the UEFI PI volume format to begin with (see
+      // docs/phoenix/README.md). Skipped for an actual AMI Aptio candidate,
+      // which is never also a Phoenix image.
+      if (!imageReport.amiAptioCandidate) {
+        setStage("Looking for a Phoenix Setup Table…");
+        const menu = await inspectPhoenixSetupMenu(image);
+        if (currentOperation !== operation.current) return;
+        setPhoenixMenu(menu);
+      }
+
       if (imageReport.firmwareVolumes.length === 0) return;
       // A definitively non-AMI vendor (its own byte signature already says
       // so) can only ever fail the AMI-only deep extraction with "Setup FFS
@@ -651,6 +743,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
             </Text>
           </Alert>
         )}
+        {phoenixMenu && <PhoenixSetupMenuPanel menu={phoenixMenu} />}
         </>
       )}
     </Stack>
