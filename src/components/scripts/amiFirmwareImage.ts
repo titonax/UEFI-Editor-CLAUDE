@@ -1,5 +1,11 @@
 import { scanHiiFormsPackages } from "./hiiPackages";
 import type { BrandMarker, FirmwareBrand } from "./brandKnowledge";
+import {
+  inspectPhoenixLegacyBytes,
+  inspectPhoenixUefiBytes,
+  type PhoenixLegacyInventory,
+  type PhoenixUefiInventory,
+} from "./phoenixFirmware";
 
 export type AmiFirmwareGeneration = "aptio-iv" | "aptio-v" | "unresolved";
 export type DetectionConfidence = "confirmed" | "probable" | "unresolved";
@@ -7,6 +13,7 @@ export type FirmwareContainer =
   | "intel-flash"
   | "firmware-volume-image"
   | "vendor-image"
+  | "phoenix-rom"
   | "unknown";
 
 export interface FirmwareEvidence {
@@ -28,6 +35,7 @@ export type FirmwareVendorFamily =
   | "ami-aptio"
   | "award"
   | "phoenix"
+  | "phoenix-uefi"
   | "insyde"
   | "ami-legacy"
   | "uefi-generic"
@@ -84,6 +92,14 @@ export interface AmiFirmwareImageReport {
   // which turns these (plus a documented-sample hash match, a user
   // selection, or a filename token) into a manufacturer lead.
   brandMarkers: BrandMarker[];
+  // Independent of AMI Aptio success or failure - a Phoenix module inventory
+  // or PDB debug-path provenance (see phoenixFirmware.ts) is worth reporting
+  // either way, so every caller of inspectAmiFirmwareBytes gets it for free
+  // instead of recomputing it. Neither ever feeds vendorGuess above on its
+  // own when stronger, conflicting evidence (e.g. an Insyde copyright
+  // string) already matched - see classifyFirmwareVendor.
+  phoenixLegacy?: PhoenixLegacyInventory;
+  phoenixUefi?: PhoenixUefiInventory;
 }
 
 export type AmiSetupLayout =
@@ -155,6 +171,9 @@ const signatures: Signature[] = [
   // sample) - search for the actual string, not a guessed shorter one.
   { name: "insydeCorp", bytes: ascii("Insyde Software Corp."), insensitiveAscii: true },
   { name: "insydeH2o", bytes: ascii("InsydeH2O"), insensitiveAscii: true },
+  // Cheap gate for inspectPhoenixUefiBytes below: only worth the bounded
+  // RSDS/PDB scan when a "\Phoenix\" path segment is actually present.
+  { name: "phoenixPdbPath", bytes: ascii("\\Phoenix\\"), insensitiveAscii: true },
   // Not a PC BIOS at all: an embedded-Linux blob (router/IoT/appliance).
   { name: "uBoot", bytes: ascii("U-Boot") },
   { name: "openWrt", bytes: ascii("OpenWrt"), insensitiveAscii: true },
@@ -315,8 +334,10 @@ function guidedSectionStart(bytes: Uint8Array, guidOffset: number) {
 function containerOf(
   firmwareVolumes: number[],
   intelDescriptor: boolean,
+  phoenixLegacy: PhoenixLegacyInventory | null,
 ): FirmwareContainer {
   if (intelDescriptor) return "intel-flash";
+  if (phoenixLegacy) return "phoenix-rom";
   if (firmwareVolumes.includes(0)) return "firmware-volume-image";
   if (firmwareVolumes.length > 0) return "vendor-image";
   return "unknown";
@@ -423,6 +444,8 @@ function classifyFirmwareVendor(
   amiAptioCandidate: boolean,
   firmwareVolumeCount: number,
   intelDescriptor: boolean,
+  phoenixLegacy: PhoenixLegacyInventory | null,
+  phoenixUefi: PhoenixUefiInventory | null,
 ): FirmwareVendorGuess {
   const matched = (...names: string[]) => names.filter((name) => has(name));
   const labelled = (names: string[]) => names.map((name) => vendorSignatureLabels[name]);
@@ -433,6 +456,19 @@ function classifyFirmwareVendor(
   const award = matched("awardSoftware", "awardBios", "phoenixAward");
   if (award.length > 0) {
     return { family: "award", label: "Award / Phoenix-Award BIOS", evidence: labelled(award) };
+  }
+  // A validated BCP/FFV directory or module chain (see phoenixFirmware.ts)
+  // is stronger, structural evidence than a bare vendor string, so it wins
+  // over the plain signature match below when both are present.
+  if (phoenixLegacy) {
+    return {
+      family: "phoenix",
+      label: "PhoenixBIOS 4.0",
+      evidence: [
+        phoenixLegacy.format === "phoenix-ffv" ? "BCP/FFV directory" : "BCPSYS module chain",
+        `${String(phoenixLegacy.modules.length)} module(s)`,
+      ],
+    };
   }
   const phoenix = matched("phoenixTechnologies", "phoenixBios");
   if (phoenix.length > 0) {
@@ -448,6 +484,18 @@ function classifyFirmwareVendor(
       family: "embedded-non-bios",
       label: "Embedded Linux firmware (router/IoT, not a PC BIOS)",
       evidence: labelled(embedded),
+    };
+  }
+  // PDB provenance only, reached solely because nothing stronger (Award,
+  // Insyde, a validated Phoenix legacy directory) already matched above -
+  // never a Setup-format verdict on its own (see phoenixFirmware.ts).
+  if (phoenixUefi) {
+    return {
+      family: "phoenix-uefi",
+      label: phoenixUefi.secureCore
+        ? "Phoenix UEFI (SecCore module provenance)"
+        : "Phoenix UEFI (module provenance)",
+      evidence: phoenixUefi.debugModules,
     };
   }
   if (firmwareVolumeCount > 0) {
@@ -515,12 +563,22 @@ export function inspectAmiFirmwareBytes(bytes: Uint8Array): AmiFirmwareImageRepo
       amitseFfs.length > 0 ||
       explicitIv ||
       explicitV);
+  // Gated behind a cheap signature hit first, so an image that is nothing
+  // like Phoenix never pays for the bounded BCP/FFV walk or the RSDS/PDB
+  // scan (see phoenixFirmware.ts).
+  const phoenixLegacy = has("phoenixBios") ? inspectPhoenixLegacyBytes(bytes) : null;
+  const phoenixUefi =
+    firmwareVolumes.length > 0 && has("phoenixPdbPath")
+      ? inspectPhoenixUefiBytes(bytes)
+      : null;
   const vendorGuess = classifyFirmwareVendor(
     bytes,
     has,
     amiAptioCandidate,
     firmwareVolumes.length,
     intelDescriptor,
+    phoenixLegacy,
+    phoenixUefi,
   );
   const fidMarker = intelFidMarker(bytes, offsets("amiFidGuid"), firmwareVolumes);
   // Only the first occurrence of each brand string is kept - the marker is
@@ -634,7 +692,7 @@ export function inspectAmiFirmwareBytes(bytes: Uint8Array): AmiFirmwareImageRepo
 
   return {
     size: bytes.length,
-    container: containerOf(firmwareVolumes, intelDescriptor),
+    container: containerOf(firmwareVolumes, intelDescriptor, phoenixLegacy),
     intelDescriptor,
     firmwareVolumes,
     ffs2Volumes,
@@ -656,6 +714,8 @@ export function inspectAmiFirmwareBytes(bytes: Uint8Array): AmiFirmwareImageRepo
     confidence,
     evidence,
     brandMarkers,
+    ...(phoenixLegacy ? { phoenixLegacy } : {}),
+    ...(phoenixUefi ? { phoenixUefi } : {}),
   };
 }
 

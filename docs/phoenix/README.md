@@ -71,13 +71,38 @@ this function's: it reports only what it actually found.
 Both cases are exercised by
 [`phoenixFirmware.test.ts`](../../src/components/scripts/phoenixFirmware.test.ts).
 
-## How the corpus runner surfaces this
+## Where this is computed
 
-When either inventory is present, the corpus runner shows it independently of
-AMI Aptio success or failure — a Phoenix image is never forced through the
-Aptio HII pipeline. The accordion entry gets a `Phoenix` badge, the file
-details panel lists the recovered modules (and any bounds/corruption
-warnings) or the PDB-derived module names, and the CSV export carries
-`phoenix_legacy_format`, `phoenix_legacy_module_count` and
+Both inspectors are called from `inspectAmiFirmwareBytes` in
+[`amiFirmwareImage.ts`](../../src/components/scripts/amiFirmwareImage.ts) —
+the same shallow preflight every caller already runs — each gated behind a
+cheap signature hit first (a `PhoenixBIOS` string for the legacy inventory, a
+`\Phoenix\` path segment plus at least one valid firmware volume for the PDB
+scan) so an image that is nothing like Phoenix never pays for either bounded
+walk. The result is attached to the preflight's own report
+(`report.phoenixLegacy` / `report.phoenixUefi`) and to its `container`
+(`"phoenix-rom"` for a legacy ROM) and `vendorGuess` (`"phoenix"` /
+`"phoenix-uefi"` family) — computed once, available to every caller, rather
+than recomputed per screen. A validated legacy FFV/module-chain directory is
+treated as stronger evidence than a bare vendor string; the PDB-only case is
+only reached once nothing stronger (Award, Insyde, a validated Phoenix
+legacy directory) already matched, so it never overrides a conflicting
+vendor string — see [Documented cases](#documented-cases) above for exactly
+that scenario.
+
+## Where this is surfaced
+
+Both the single-image upload screen
+([`BiosImageUpload.tsx`](../../src/components/BiosImageUpload/BiosImageUpload.tsx))
+and the **Local firmware corpus runner**
+([`CorpusRunner.tsx`](../../src/components/CorpusRunner/CorpusRunner.tsx))
+read this straight off the shared preflight, independently of AMI Aptio
+success or failure — a Phoenix image is never forced through the Aptio HII
+pipeline, and opening one directly in the editor shows its inventory instead
+of a bare "no valid firmware volumes" message. The upload screen shows an
+Alert with the module table or the PDB provenance; the corpus runner's
+accordion entry gets a `Phoenix` badge, its file details panel shows the
+same table/provenance (plus any bounds/corruption warnings), and its CSV
+export carries `phoenix_legacy_format`, `phoenix_legacy_module_count` and
 `phoenix_uefi_debug_modules` columns. None of this feeds editing,
 reconstruction, or any write path.

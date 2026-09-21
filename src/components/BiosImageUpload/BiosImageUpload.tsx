@@ -93,6 +93,7 @@ function containerLabel(container: FirmwareContainer) {
   if (container === "intel-flash") return "Complete Intel flash";
   if (container === "firmware-volume-image") return "Raw firmware volume image";
   if (container === "vendor-image") return "Vendor update image";
+  if (container === "phoenix-rom") return "Phoenix modular ROM";
   return "Unknown container";
 }
 
@@ -431,6 +432,57 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
               Setup or AMITSE is not visible in the outer byte stream. The local
               preflight is decompressing nested firmware before deciding that a module
               is absent.
+            </Alert>
+          )}
+          {report.phoenixLegacy && (
+            <Alert color="grape" title="Phoenix 4.0 module inventory">
+              <Stack gap="xs">
+                <Text size="sm">
+                  {report.phoenixLegacy.format === "phoenix-ffv" ? "BCP/FFV directory" : "BCPSYS module chain"}{" "}
+                  · build {report.phoenixLegacy.buildCode || "?"} ·{" "}
+                  {report.phoenixLegacy.buildDate || "?"} ·{" "}
+                  {String(report.phoenixLegacy.modules.length)} module(s). This is a
+                  read-only inventory (offsets, sizes, compression) - Phoenix menu
+                  editing is not available; see docs/phoenix/README.md.
+                </Text>
+                {report.phoenixLegacy.warnings.map((warning) => (
+                  <Text size="xs" c="orange" key={warning}>
+                    {warning}
+                  </Text>
+                ))}
+                {report.phoenixLegacy.modules.length > 0 && (
+                  <Table striped withColumnBorders>
+                    <Table.Thead>
+                      <Table.Tr>
+                        <Table.Th>Module</Table.Th>
+                        <Table.Th>Offset</Table.Th>
+                        <Table.Th>Size</Table.Th>
+                        <Table.Th>Compression</Table.Th>
+                      </Table.Tr>
+                    </Table.Thead>
+                    <Table.Tbody>
+                      {report.phoenixLegacy.modules.map((module, index) => (
+                        <Table.Tr key={`${module.name}:${String(index)}`}>
+                          <Table.Td>{module.name}</Table.Td>
+                          <Table.Td>0x{module.offset.toString(16).toUpperCase()}</Table.Td>
+                          <Table.Td>{module.size}</Table.Td>
+                          <Table.Td>{module.compression}</Table.Td>
+                        </Table.Tr>
+                      ))}
+                    </Table.Tbody>
+                  </Table>
+                )}
+              </Stack>
+            </Alert>
+          )}
+          {report.phoenixUefi && (
+            <Alert color="grape" title="Phoenix UEFI module provenance">
+              <Text size="sm">
+                Debug-path module name(s): {report.phoenixUefi.debugModules.join(", ")}.
+                This is module provenance, not a Setup-format verdict - a Phoenix PDB
+                path never overrides this image's own AMI Aptio detection above; see
+                docs/phoenix/README.md.
+              </Text>
             </Alert>
           )}
           {evidence.length > 0 && (
