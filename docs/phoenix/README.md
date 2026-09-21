@@ -156,19 +156,67 @@ limitation below.
   own tab title (`Main`, `Security`, `Boot`, …) was never cracked for the
   real samples this was verified against, so the UI labels screens
   generically ("Screen 1", "Screen 2", …) in scan order rather than by their
-  real tab name.
-- **No menu-visibility condition mechanism was found.** AMI Aptio HII has an
-  explicit `SuppressIf`-style expression that can hide a form/question.
-  Nothing equivalent turned up in the Phoenix Setup Table format while
-  reverse-engineering it against the samples below — including the modified
-  pair, where making a hidden "Intel" menu visible again was done by editing
-  a section's own label and wiring its item-list linkage back in, not by
-  flipping a separate visibility flag/expression. Visibility here appears to
-  be purely structural: an item is part of the inventory if and only if it's
-  in a section's contiguous, reachable run. If a real sample turns up a
-  counterexample, this note (and the parser) should be revisited — it isn't
-  a claim that no such mechanism can ever exist in this format, only that
-  none was found in what was actually inspected.
+  real tab name. See
+  [Menu visibility and the "hidden menu" reveal mechanism](#menu-visibility-and-the-hidden-menu-reveal-mechanism)
+  below for what a deeper follow-up investigation did and didn't establish
+  about the region most likely to hold this table.
+- **No `SuppressIf`-style expression mechanism was found**, and this is no
+  longer just an absence of evidence — see the next section for a
+  byte-level-verified explanation of how hiding/revealing an item actually
+  works in this format, which is structural rather than expression-based.
+
+### Menu visibility and the "hidden menu" reveal mechanism
+
+A follow-up investigation went looking specifically for *how* an item gets
+hidden or revealed in this format — prompted by a real original/modified ROM
+pair (see [Documented cases](#documented-cases)) where the user had
+themselves unhidden a chipset debug menu, and by a claim (from an unrelated
+chat transcript, not this codebase) that a flag byte plus an NVRAM-token
+check in a callback controlled that menu's visibility.
+
+**The flag/callback claim doesn't hold up.** Checked byte-for-byte against
+the real original/modified pair, the specific offsets that claim named
+(a callback address, a flag byte transitioning `0x13` → `0x00`) are
+byte-for-byte **identical** between the original and modified ROM — nothing
+changed there at all. The one part of that claim that did check out was a
+single string-table pointer value for the text `"Intel"`, which was later
+re-derived independently from this investigation's own analysis; the
+causal mechanism (flag + callback + NVRAM token) was not reproducible from
+the real bytes and should be treated as unverified.
+
+**What actually changed, confirmed with an exact match.** Both `TEMPLAT.ROM`
+and `STRINGS.ROM`, once decompressed, begin with a small container header —
+`[u16 totalSize][u16 marker = 0x0019]` — confirmed identically across two
+independent real samples (the Acer sample and the original/modified pair).
+Immediately after this header, before the first item-record run this
+parser's own section scanner locates, there is a dense region of 4-byte
+records. Diffing the original against the modified `TEMPLAT.ROM` in that
+region turned up exactly four 2-byte slots that flip from `0x0000` (empty)
+to a real value in the modified ROM. Two of those four match, **byte for
+byte**, the `promptRef` field a real, already-visible item carries in its
+own item record elsewhere in the same file (the "Keyboard auto-repeat
+rate:" and "Set User Password" items). That is a direct, reproducible
+confirmation that revealing an item in this format means populating an
+empty slot in this pre-item reference region with a copy of that item's own
+string reference — not toggling a condition/flag evaluated at runtime.
+
+**What's still open.** That region is not a single clean table the way the
+model above might suggest: scanning it exhaustively and cross-checking every
+slot against every known item's own `promptRef`/`helpRef` (across both the
+original/modified pair and the independent Acer sample) found a real but
+weak signal — on the order of 5% of slots match a known item reference,
+well above chance but far short of "every slot is one of these." The most
+likely explanation is that this region multiplexes more than one
+sub-structure (the reveal-mechanism slots confirmed above are one of them),
+and the rest hasn't been separated out. Until it is, this parser does not
+attempt to read this region at all — it would mean asserting a hide/reveal
+verdict the evidence doesn't yet support for the general case, and this
+project's own rule is to never claim more structural certainty than was
+actually verified. It also means this region cannot yet be used to resolve
+the screen-name limitation above: a name cluster found nearby (`Main`,
+`Security`, `Advanced`, `Information` as consecutive `Generic Text` items
+around one section) coincides with, but isn't proven to be governed by, this
+same reference region.
 
 ## Documented cases
 
@@ -176,7 +224,7 @@ limitation below.
 | --- | --- | --- |
 | Acer PhoenixBIOS 4.0 sample | `PhoenixBIOS 4.0 Release 6.1` string, `BCPSYS`/`BCPFFV`/`BCPCMP` records, one FFV volume matched by the real Flash File Volume GUID | BCP/FFV directory walk correctly resolves the FFV volume and enumerates its Setup, template and strings modules with LH5 compression sizes; its `ACPI1.ROM` module's real LH5 body is used verbatim as a decompression test fixture in [`phoenixLh5.test.ts`](../../src/components/scripts/phoenixLh5.test.ts) |
 | Lenovo Flex 2 sample | `RSDS` debug record naming `...\Phoenix\SecCore\Sec\SecCore.pdb`, alongside an unrelated Insyde copyright string elsewhere in the same image | PDB provenance is reported independently of, and can coexist or conflict with, other vendor evidence in the same image — never collapsed into a single family verdict |
-| A laptop's original/modified BIOS pair | An original ROM and two user-modified copies of it, all carrying a legacy CMOS Setup Table | Decompressing and diffing all three confirmed the Setup Table format above end to end, including how a hidden chipset debug menu ("Intel") was made visible by relabeling a placeholder section and wiring its item-list linkage — see [Known limitations](#known-limitations) above for what this did and didn't show about menu visibility |
+| A laptop's original/modified BIOS pair | An original ROM and two user-modified copies of it, all carrying a legacy CMOS Setup Table | Decompressing and diffing all three confirmed the Setup Table format above end to end, including how a hidden chipset debug menu ("Intel") was made visible by relabeling a placeholder section and wiring its item-list linkage. A follow-up byte-level diff of the same pair, cross-checked against the independent Acer sample, additionally confirmed the general reveal mechanism (an empty slot in a pre-item reference region gets populated with a copy of the revealed item's own string reference) — see [Menu visibility and the "hidden menu" reveal mechanism](#menu-visibility-and-the-hidden-menu-reveal-mechanism) above |
 
 The Acer case and the module-discovery/decompression pipeline are exercised
 by
