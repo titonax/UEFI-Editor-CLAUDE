@@ -35,6 +35,25 @@ function validFirmwareVolumeImage() {
   return bytes;
 }
 
+// A checksum-valid FFS2 volume carrying an Insyde copyright marker instead
+// of an AMI one - a definitively non-AMI vendor with a valid firmware
+// volume, so the AMI-only deep extraction would otherwise be attempted.
+function insydeFirmwareVolumeImage() {
+  const bytes = new Uint8Array(0x180);
+  const view = new DataView(bytes.buffer);
+  bytes.set(hexBytes("78E58C8C3D8A1C4F9935896185C32DD3"), 0x10);
+  view.setBigUint64(0x20, 0x100n, true);
+  bytes.set([0x5f, 0x46, 0x56, 0x48], 0x28);
+  view.setUint16(0x30, 0x38, true);
+  bytes.set(new TextEncoder().encode("Insyde Software Corp."), 0x60);
+  let checksum = 0;
+  for (let offset = 0; offset < 0x38; offset += 2) {
+    checksum = (checksum + view.getUint16(offset, true)) & 0xffff;
+  }
+  view.setUint16(0x32, -checksum & 0xffff, true);
+  return bytes;
+}
+
 // One Forms Package whose FormSet uses AMI's unified Setup GUID.
 function unifiedFormsPackage() {
   const bytes = new Uint8Array(37);
@@ -276,6 +295,23 @@ describe("BiosImageUpload", () => {
       screen.getByText(/No valid UEFI firmware volumes were found/),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start HII analysis" })).toBeDisabled();
+    expect(extractFirmwareInWorker).not.toHaveBeenCalled();
+  });
+
+  it("shows a vendor summary instead of the AMI panel, and never attempts extraction, for a definitively non-AMI image", async () => {
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, {
+      target: { files: [imageFile(insydeFirmwareVolumeImage(), "image.bin")] },
+    });
+
+    expect(await screen.findByText("Insyde H2O")).toBeInTheDocument();
+    expect(screen.getByText(/Evidence: Insyde Software Corp\./)).toBeInTheDocument();
+    expect(screen.getByText("Raw firmware volume image")).toBeInTheDocument();
+    expect(screen.queryByText("Setup FFS (outer image)")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start HII analysis" }),
+    ).not.toBeInTheDocument();
     expect(extractFirmwareInWorker).not.toHaveBeenCalled();
   });
 

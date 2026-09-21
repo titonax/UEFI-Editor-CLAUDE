@@ -77,6 +77,20 @@ before continuing; see
 [`docs/ami/firmware-context-selection.md`](docs/ami/firmware-context-selection.md).
 Press **Start HII analysis** to open the menu tree.
 
+If the outer byte scan already identifies the image as a definitively
+non-AMI vendor (Award/Phoenix-Award, Phoenix, Insyde, legacy AMIBIOS,
+embedded Linux, an Intel Management Engine region, a recognized
+non-firmware file, or legacy EFI 1.10 "Framework" HII), the app skips the
+AMI-only deep extraction entirely - it can only ever end in "Setup FFS was
+not found" - and shows that vendor's guess, its evidence and the outer
+container instead of the AMI generation/Setup-profile panel, which was
+never going to apply to it. A genuinely ambiguous image (firmware volumes
+present but no vendor marker visible yet, since Setup/AMITSE can still be
+hidden behind encapsulation) still goes through the full AMI flow, since
+that's exactly the case the deep scan exists to resolve. A Phoenix
+inventory panel (see below) still appears independently of this, whichever
+side of the split the image landed on.
+
 > The manual "four separate files" upload (paste in Setup/AMITSE/SetupData
 > already extracted with UEFITool + IFRExtractor-RS yourself) has been
 > removed, matching upstream. That was also the only path that ever enabled
