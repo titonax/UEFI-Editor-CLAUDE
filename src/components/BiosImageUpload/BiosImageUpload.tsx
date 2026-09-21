@@ -23,6 +23,8 @@ import {
   type AmiSetupLayout,
   type AmiSetupProfileReport,
   type FirmwareContainer,
+  type FirmwareVendorFamily,
+  type FirmwareVendorGuess,
 } from "../scripts/amiFirmwareImage";
 import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
 import { extractFirmwareInWorker } from "../scripts/aptioIvExtractorClient";
@@ -97,6 +99,78 @@ function containerLabel(container: FirmwareContainer) {
   return "Unknown container";
 }
 
+// Families with unambiguous, structurally-understood evidence against AMI
+// Aptio: no point running the AMI-only deep extraction (it can only end in
+// "Setup FFS was not found") or showing the AMI generation/Setup-profile
+// panel for one of these. "uefi-generic" and "unknown" stay in the AMI flow
+// below - firmware volumes with no top-level vendor marker at all is exactly
+// the case where Setup/AMITSE might still be hidden behind encapsulation, so
+// the deep scan is still worth attempting.
+const nonAmiVendorFamilies = new Set<FirmwareVendorFamily>([
+  "award",
+  "phoenix",
+  "phoenix-uefi",
+  "insyde",
+  "ami-legacy",
+  "embedded-non-bios",
+  "legacy-framework-hii",
+  "intel-me",
+  "non-firmware",
+]);
+
+function vendorSummaryColor(family: FirmwareVendorFamily) {
+  if (family === "non-firmware" || family === "intel-me") return "gray";
+  if (family === "legacy-framework-hii") return "yellow";
+  return "blue";
+}
+
+// The non-AMI counterpart to the AMI generation/Setup-profile panel below:
+// this editor only ever parses/edits AMI Aptio HII, so a definitively
+// non-AMI image gets its vendor guess and outer-container evidence instead
+// of AMI-specific fields (Setup FFS, AMITSE FFS, $SPF, HII Forms layout)
+// that were never going to be found in it.
+function VendorSummary({
+  report,
+  vendorGuess,
+}: {
+  report: AmiFirmwareImageReport;
+  vendorGuess: FirmwareVendorGuess;
+}) {
+  return (
+    <>
+      <Alert color={vendorSummaryColor(vendorGuess.family)} title={vendorGuess.label}>
+        This editor only parses and edits AMI Aptio HII. This image was identified as{" "}
+        {vendorGuess.label} from its own byte signatures - nothing below is parsed any
+        further.
+      </Alert>
+      <Group gap="xs">
+        <Badge variant="light">{containerLabel(report.container)}</Badge>
+      </Group>
+      {vendorGuess.evidence.length > 0 && (
+        <Text size="xs" c="dimmed">
+          Evidence: {vendorGuess.evidence.join(", ")}
+        </Text>
+      )}
+      <Table striped withColumnBorders>
+        <Table.Tbody>
+          <Table.Tr>
+            <Table.Th>Image size</Table.Th>
+            <Table.Td>{report.size.toLocaleString()} bytes</Table.Td>
+          </Table.Tr>
+          <Table.Tr>
+            <Table.Th>Intel descriptor</Table.Th>
+            <Table.Td>{report.intelDescriptor ? "Present" : "Not detected"}</Table.Td>
+          </Table.Tr>
+          <Table.Tr>
+            <Table.Th>Firmware volumes</Table.Th>
+            <Table.Td>{offsets(report.firmwareVolumes)}</Table.Td>
+          </Table.Tr>
+        </Table.Tbody>
+      </Table>
+    </>
+  );
+}
+
 interface BiosImageUploadProps {
   onExtracted: (files: PopulatedFiles) => Promise<void>;
 }
@@ -145,6 +219,11 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
       const imageReport = inspectAmiFirmwareBytes(image);
       setReport(imageReport);
       if (imageReport.firmwareVolumes.length === 0) return;
+      // A definitively non-AMI vendor (its own byte signature already says
+      // so) can only ever fail the AMI-only deep extraction with "Setup FFS
+      // was not found" - skip the wasted decompression pass and the
+      // misleading "analysis failed" it would otherwise show.
+      if (nonAmiVendorFamilies.has(imageReport.vendorGuess.family)) return;
 
       setStage("Decompressing nested volumes and locating AMI Setup data…");
       const extracted = await extractFirmwareInWorker(selected);
@@ -278,6 +357,10 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
       )}
       {report && (
         <>
+          {nonAmiVendorFamilies.has(report.vendorGuess.family) ? (
+            <VendorSummary report={report} vendorGuess={report.vendorGuess} />
+          ) : (
+            <>
           <Alert
             color={
               report.amiAptioCandidate
@@ -434,57 +517,6 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
               is absent.
             </Alert>
           )}
-          {report.phoenixLegacy && (
-            <Alert color="grape" title="Phoenix 4.0 module inventory">
-              <Stack gap="xs">
-                <Text size="sm">
-                  {report.phoenixLegacy.format === "phoenix-ffv" ? "BCP/FFV directory" : "BCPSYS module chain"}{" "}
-                  · build {report.phoenixLegacy.buildCode || "?"} ·{" "}
-                  {report.phoenixLegacy.buildDate || "?"} ·{" "}
-                  {String(report.phoenixLegacy.modules.length)} module(s). This is a
-                  read-only inventory (offsets, sizes, compression) - Phoenix menu
-                  editing is not available; see docs/phoenix/README.md.
-                </Text>
-                {report.phoenixLegacy.warnings.map((warning) => (
-                  <Text size="xs" c="orange" key={warning}>
-                    {warning}
-                  </Text>
-                ))}
-                {report.phoenixLegacy.modules.length > 0 && (
-                  <Table striped withColumnBorders>
-                    <Table.Thead>
-                      <Table.Tr>
-                        <Table.Th>Module</Table.Th>
-                        <Table.Th>Offset</Table.Th>
-                        <Table.Th>Size</Table.Th>
-                        <Table.Th>Compression</Table.Th>
-                      </Table.Tr>
-                    </Table.Thead>
-                    <Table.Tbody>
-                      {report.phoenixLegacy.modules.map((module, index) => (
-                        <Table.Tr key={`${module.name}:${String(index)}`}>
-                          <Table.Td>{module.name}</Table.Td>
-                          <Table.Td>0x{module.offset.toString(16).toUpperCase()}</Table.Td>
-                          <Table.Td>{module.size}</Table.Td>
-                          <Table.Td>{module.compression}</Table.Td>
-                        </Table.Tr>
-                      ))}
-                    </Table.Tbody>
-                  </Table>
-                )}
-              </Stack>
-            </Alert>
-          )}
-          {report.phoenixUefi && (
-            <Alert color="grape" title="Phoenix UEFI module provenance">
-              <Text size="sm">
-                Debug-path module name(s): {report.phoenixUefi.debugModules.join(", ")}.
-                This is module provenance, not a Setup-format verdict - a Phoenix PDB
-                path never overrides this image's own AMI Aptio detection above; see
-                docs/phoenix/README.md.
-              </Text>
-            </Alert>
-          )}
           {evidence.length > 0 && (
             <List size="sm" spacing="xs">
               {evidence.map((entry) => (
@@ -566,6 +598,59 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
           >
             Start HII analysis
           </Button>
+        </>
+        )}
+        {report.phoenixLegacy && (
+          <Alert color="grape" title="Phoenix 4.0 module inventory">
+            <Stack gap="xs">
+              <Text size="sm">
+                {report.phoenixLegacy.format === "phoenix-ffv" ? "BCP/FFV directory" : "BCPSYS module chain"}{" "}
+                · build {report.phoenixLegacy.buildCode || "?"} ·{" "}
+                {report.phoenixLegacy.buildDate || "?"} ·{" "}
+                {String(report.phoenixLegacy.modules.length)} module(s). This is a
+                read-only inventory (offsets, sizes, compression) - Phoenix menu
+                editing is not available; see docs/phoenix/README.md.
+              </Text>
+              {report.phoenixLegacy.warnings.map((warning) => (
+                <Text size="xs" c="orange" key={warning}>
+                  {warning}
+                </Text>
+              ))}
+              {report.phoenixLegacy.modules.length > 0 && (
+                <Table striped withColumnBorders>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>Module</Table.Th>
+                      <Table.Th>Offset</Table.Th>
+                      <Table.Th>Size</Table.Th>
+                      <Table.Th>Compression</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {report.phoenixLegacy.modules.map((module, index) => (
+                      <Table.Tr key={`${module.name}:${String(index)}`}>
+                        <Table.Td>{module.name}</Table.Td>
+                        <Table.Td>0x{module.offset.toString(16).toUpperCase()}</Table.Td>
+                        <Table.Td>{module.size}</Table.Td>
+                        <Table.Td>{module.compression}</Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              )}
+            </Stack>
+          </Alert>
+        )}
+        {report.phoenixUefi && (
+          <Alert color="grape" title="Phoenix UEFI module provenance">
+            <Text size="sm">
+              Debug-path module name(s): {report.phoenixUefi.debugModules.join(", ")}.
+              This is module provenance, not a Setup-format verdict - a Phoenix PDB
+              path never overrides this image's own vendor detection above; see
+              docs/phoenix/README.md.
+            </Text>
+          </Alert>
+        )}
         </>
       )}
     </Stack>
