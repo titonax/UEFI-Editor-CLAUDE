@@ -360,6 +360,7 @@ describe("BiosImageUpload", () => {
       sections: [
         {
           offset: 0,
+          name: null,
           items: [
             {
               type: "pick-field",
@@ -374,6 +375,7 @@ describe("BiosImageUpload", () => {
         },
         {
           offset: 100,
+          name: null,
           items: [
             {
               type: "pick-field",
@@ -387,6 +389,7 @@ describe("BiosImageUpload", () => {
           ],
         },
       ],
+      source: "contiguous-scan",
     };
     inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
     const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
@@ -419,6 +422,7 @@ describe("BiosImageUpload", () => {
       sections: [
         {
           offset: 0,
+          name: null,
           items: [
             {
               type: "pick-field",
@@ -432,6 +436,7 @@ describe("BiosImageUpload", () => {
           ],
         },
       ],
+      source: "contiguous-scan",
     };
     inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
     const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
@@ -457,6 +462,7 @@ describe("BiosImageUpload", () => {
       sections: [
         {
           offset: 0,
+          name: null,
           items: [
             {
               type: "pick-field",
@@ -470,6 +476,7 @@ describe("BiosImageUpload", () => {
           ],
         },
       ],
+      source: "contiguous-scan",
     };
     inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
     const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());

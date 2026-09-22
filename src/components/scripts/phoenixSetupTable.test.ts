@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPhoenixSetupMenu,
+  parsePhoenixRootTable,
   parsePhoenixStringTable,
   resolvePhoenixString,
   scanPhoenixSetupSections,
@@ -102,6 +103,45 @@ function timeItem(promptRef: number, helpRef: number) {
   return bytes;
 }
 
+// A Date record: type(1) + length(1) + promptRef(2) + helpRef(2) + 4 bytes
+// of filler - confirmed against a real "System Date:" record (type 0x20,
+// length 10), the Main screen's companion to a Time record (type 0x21).
+function dateItem(promptRef: number, helpRef: number) {
+  const bytes = new Uint8Array(10);
+  bytes[0] = 0x20;
+  bytes[1] = 10;
+  new DataView(bytes.buffer).setUint16(2, promptRef, true);
+  new DataView(bytes.buffer).setUint16(4, helpRef, true);
+  return bytes;
+}
+
+// An Action record: type(1) + length(1) + promptRef(2) + helpRef(2) + up to
+// 12 bytes of unconfirmed trailing data (kept as rawBytes, never guessed
+// at as options) - confirmed against real Security ("Set Supervisor
+// Password", type 0x22, length 18) and Exit ("Exit Saving Changes", type
+// 0x24, length 14) records: a triggerable action with no editable value of
+// its own.
+function actionItem(promptRef: number, helpRef: number, typeByte: 0x22 | 0x24, length: number) {
+  const bytes = new Uint8Array(length);
+  bytes[0] = typeByte;
+  bytes[1] = length;
+  new DataView(bytes.buffer).setUint16(2, promptRef, true);
+  new DataView(bytes.buffer).setUint16(4, helpRef, true);
+  return bytes;
+}
+
+// A Boot Device Slot record: type(1) + length(1) + 12 bytes of unconfirmed
+// data, no string reference of its own - confirmed against the real Boot
+// screen's device-slot entries (type 0x27, length 14): the actual device
+// name isn't static text Phoenix could store at ROM-build time, since it
+// depends on what's plugged in at boot.
+function bootDeviceSlotItem() {
+  const bytes = new Uint8Array(14);
+  bytes[0] = 0x27;
+  bytes[1] = 14;
+  return bytes;
+}
+
 function concat(...chunks: Uint8Array[]) {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const result = new Uint8Array(total);
@@ -162,6 +202,63 @@ describe("Pick Field options", () => {
   });
 });
 
+describe("date / action / boot-device-slot item types", () => {
+  it("parses a Date record (type 0x20) with the same prompt/help shape as Time", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = concat(
+      dateItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+    );
+
+    const sections = scanPhoenixSetupSections(templat, table);
+
+    expect(sections[0].items[0].type).toBe("date");
+    expect(sections[0].items[0].prompt).toBe("Main");
+    expect(sections[0].items[0].help).toBe("Enabled or Disabled");
+    expect(sections[0].items[0].options).toEqual([]);
+  });
+
+  it("parses an Action record (types 0x22 and 0x24) with a resolved prompt/help and no options", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = concat(
+      actionItem(0x10, 0x12, 0x22, 18),
+      actionItem(0x10, 0x12, 0x24, 14),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+    );
+
+    const sections = scanPhoenixSetupSections(templat, table);
+
+    expect(sections[0].items[0].type).toBe("action");
+    expect(sections[0].items[0].prompt).toBe("Main");
+    expect(sections[0].items[0].help).toBe("Enabled or Disabled");
+    expect(sections[0].items[0].options).toEqual([]);
+    expect(sections[0].items[1].type).toBe("action");
+  });
+
+  it("parses a Boot Device Slot record (type 0x27) with no prompt or help - the device name isn't static text", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = concat(
+      bootDeviceSlotItem(),
+      bootDeviceSlotItem(),
+      bootDeviceSlotItem(),
+      bootDeviceSlotItem(),
+      bootDeviceSlotItem(),
+    );
+
+    const sections = scanPhoenixSetupSections(templat, table);
+
+    expect(sections[0].items[0].type).toBe("boot-device-slot");
+    expect(sections[0].items[0].prompt).toBeNull();
+    expect(sections[0].items[0].help).toBeNull();
+    expect(sections[0].items[0].options).toEqual([]);
+  });
+});
+
 describe("scanPhoenixSetupSections", () => {
   it("finds one section from a contiguous run of valid item records", () => {
     const templat = concat(
@@ -217,7 +314,7 @@ describe("scanPhoenixSetupSections", () => {
 });
 
 describe("buildPhoenixSetupMenu", () => {
-  it("combines the string table and the item scan into one read-only menu", () => {
+  it("combines the string table and the item scan into one read-only menu, falling back to the contiguous-run scan when there's no root table", () => {
     const templat = concat(
       genericTextItem(0x10),
       pickFieldItem(0x10, 0x12),
@@ -228,7 +325,105 @@ describe("buildPhoenixSetupMenu", () => {
 
     const menu = buildPhoenixSetupMenu(templat, stringTableImage());
 
+    expect(menu.source).toBe("contiguous-scan");
     expect(menu.sections).toHaveLength(1);
+    expect(menu.sections[0].name).toBeNull();
     expect(menu.sections[0].items[0].prompt).toBe("Main");
+  });
+});
+
+// Field/pointer layout below mirrors TEMPLAT.ROM's real root/tab table
+// (Phoenix BIOS Editor offset 0x0068), confirmed against two independent
+// real firmware samples - see parsePhoenixRootTable's own doc comment.
+// Every pointer field here (the root field's own value, and every
+// label/content/item pointer the table holds) is PBE-relative: `raw - 4`,
+// exactly like a string reference.
+const ROOT_FIELD_RAW_OFFSET = 0x6c;
+
+function writeU16(bytes: Uint8Array, offset: number, value: number) {
+  new DataView(bytes.buffer).setUint16(offset, value, true);
+}
+
+// Builds a synthetic TEMPLAT.ROM whose root table has two tabs, each
+// pointing (via its content list) at item records placed well away from
+// both the tab array and each other - proving the root table resolves a
+// tab's real items even when they aren't physically contiguous, exactly
+// like a real image (see readTabItems's doc comment).
+function rootTableTemplat() {
+  const bytes = new Uint8Array(0x100);
+
+  // Root field (raw 0x6c, fixed) holds a PBE pointer to the tab array at
+  // raw 0x30. Every other block below is placed with a wide enough gap
+  // that nothing overlaps raw 0x6c/0x6d - a real record placed across that
+  // boundary would silently corrupt the root field itself.
+  writeU16(bytes, ROOT_FIELD_RAW_OFFSET, 0x30 - 4);
+
+  // Tab 0: label "Main" at raw 0x10, content list at raw 0xc0.
+  bytes.set(genericTextItem(0x10), 0x10);
+  writeU16(bytes, 0x30, 0x10 - 4); // label pointer
+  writeU16(bytes, 0x32, 0xc0 - 4); // content pointer
+  // Tab 1: label "Main" at raw 0x20 (reusing the same string, a second
+  // record so both tabs are independently addressable), content at 0xf0.
+  bytes.set(genericTextItem(0x10), 0x20);
+  writeU16(bytes, 0x34, 0x20 - 4);
+  writeU16(bytes, 0x36, 0xf0 - 4);
+  // (0, 0) end-of-table sentinel.
+  writeU16(bytes, 0x38, 0);
+  writeU16(bytes, 0x3a, 0);
+
+  // Tab 0's items: a Pick Field at raw 0x90 and a Time record at raw 0xb0 -
+  // not contiguous with each other or with the content list itself.
+  bytes.set(pickFieldItem(0x10, 0x12, 20, [0x14, 0x16]), 0x90);
+  bytes.set(timeItem(0x10, 0x12), 0xb0);
+  writeU16(bytes, 0xc0, 0x90 - 4);
+  writeU16(bytes, 0xc2, 0);
+  writeU16(bytes, 0xc4, 0xb0 - 4);
+  writeU16(bytes, 0xc6, 0);
+  writeU16(bytes, 0xc8, 0); // end-of-list sentinel
+
+  // Tab 1's items: a single Date record at raw 0xe0.
+  bytes.set(dateItem(0x10, 0x12), 0xe0);
+  writeU16(bytes, 0xf0, 0xe0 - 4);
+  writeU16(bytes, 0xf2, 0);
+  writeU16(bytes, 0xf4, 0); // end-of-list sentinel
+
+  return bytes;
+}
+
+describe("parsePhoenixRootTable", () => {
+  it("resolves each tab's real name and its non-contiguous item list", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = rootTableTemplat();
+
+    const sections = parsePhoenixRootTable(templat, table);
+
+    expect(sections).not.toBeNull();
+    expect(sections).toHaveLength(2);
+    expect(sections?.[0].name).toBe("Main");
+    expect(sections?.[0].items.map((item) => item.type)).toEqual(["pick-field", "time"]);
+    expect(sections?.[0].items[0].options).toEqual(["Disabled", "Enabled"]);
+    expect(sections?.[1].name).toBe("Main");
+    expect(sections?.[1].items.map((item) => item.type)).toEqual(["date"]);
+  });
+
+  it("returns null when the root field is zero, so callers fall back to the contiguous-run scan", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = new Uint8Array(0x100); // root field left at 0
+
+    expect(parsePhoenixRootTable(templat, table)).toBeNull();
+  });
+});
+
+describe("buildPhoenixSetupMenu with a root table", () => {
+  it("prefers the root table's real tab names and item membership over the contiguous-run scan", () => {
+    const table = stringTableImage();
+    const templat = rootTableTemplat();
+
+    const menu = buildPhoenixSetupMenu(templat, table);
+
+    expect(menu.source).toBe("root-table");
+    expect(menu.sections).toHaveLength(2);
+    expect(menu.sections[0].name).toBe("Main");
+    expect(menu.sections[1].name).toBe("Main");
   });
 });

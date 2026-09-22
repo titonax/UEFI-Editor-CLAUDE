@@ -73,6 +73,8 @@ export type PhoenixSetupItemType =
   | "information"
   | "time"
   | "date"
+  | "action"
+  | "boot-device-slot"
   | "free-form-hex";
 
 // One entry in a Phoenix Setup screen. Only the fields independently
@@ -102,12 +104,32 @@ export interface PhoenixSetupItem {
 }
 
 export interface PhoenixSetupSection {
-  // TEMPLAT.ROM byte offset of this section's first item - a stable
-  // per-image identity, since sections aren't otherwise named.
+  // TEMPLAT.ROM byte offset identifying this section: the tab's content
+  // pointer list when it came from the root/tab table (see
+  // parsePhoenixRootTable), or its first item's offset when it came from
+  // the contiguous-run fallback scan (see scanPhoenixSetupSections). Either
+  // way, a stable per-image identity for a section that isn't otherwise
+  // addressable.
   offset: number;
+  // The tab's real name (e.g. "Main", "Security"), resolved from the
+  // root/tab table. Null for a fallback section, where no tab identity is
+  // known - see PhoenixSetupMenu.source.
+  name: string | null;
   items: PhoenixSetupItem[];
 }
 
+// Confirmed against the per-tab item-pointer list a root/tab table indexes
+// into (see parsePhoenixRootTable): 0x20 is the real "date" companion to
+// 0x21 "time" (both len 10, e.g. "System Date:"/"System Time:"). 0x22 was
+// previously assumed to be a second date encoding by naming symmetry alone;
+// real records (e.g. "Set Supervisor Password", "Set User Password") show
+// it's a triggerable action with no editable value, like 0x24 (confirmed as
+// the Exit screen's "Exit Saving Changes"/"Save Changes"/etc.) - just a
+// longer record (len 18 vs 14) whose extra trailing bytes don't resolve to
+// text and are left in rawBytes rather than guessed at. 0x27 is the Boot
+// screen's device-slot entry (no prompt of its own - the device name isn't
+// static text Phoenix could store at ROM-build time, since it depends on
+// what's plugged in at boot).
 function itemTypeOf(typeByte: number): PhoenixSetupItemType | null {
   switch (typeByte) {
     case 0x00:
@@ -117,12 +139,17 @@ function itemTypeOf(typeByte: number): PhoenixSetupItemType | null {
       return "generic-text";
     case 0x11:
       return "information";
+    case 0x20:
+      return "date";
     case 0x21:
       return "time";
     case 0x22:
-      return "date";
+    case 0x24:
+      return "action";
     case 0x23:
       return "free-form-hex";
+    case 0x27:
+      return "boot-device-slot";
     default:
       return null;
   }
@@ -146,7 +173,7 @@ function parseItem(bytes: Uint8Array, offset: number, table: PhoenixStringTable 
   if (type === null || length < 2 || offset + length > bytes.length) return null;
   const rawBytes = bytes.subarray(offset, offset + length);
 
-  if (type === "free-form-hex") {
+  if (type === "free-form-hex" || type === "boot-device-slot") {
     return { type, offset, length, prompt: null, help: null, options: [], rawBytes };
   }
 
@@ -154,7 +181,7 @@ function parseItem(bytes: Uint8Array, offset: number, table: PhoenixStringTable 
   const helpRef = length >= 6 ? u16(bytes, offset + 4) : null;
   const prompt = promptRef === null ? null : resolveOrNull(table, promptRef);
   const help =
-    (type === "pick-field" || type === "time" || type === "date") && helpRef !== null
+    (type === "pick-field" || type === "time" || type === "date" || type === "action") && helpRef !== null
       ? resolveOrNull(table, helpRef)
       : null;
   const options = type === "pick-field" ? parsePickFieldOptions(bytes, offset, length, table) : [];
@@ -242,7 +269,7 @@ export function scanPhoenixSetupSections(
         items.push(item);
         cursor += item.length;
       }
-      sections.push({ offset: bestStart, items });
+      sections.push({ offset: bestStart, name: null, items });
       position = bestEnd;
     } else {
       position++;
@@ -251,8 +278,109 @@ export function scanPhoenixSetupSections(
   return sections;
 }
 
+// Every TEMPLAT.ROM pointer field outside a string reference (the root
+// table field itself, and every label/content/item pointer inside it) is
+// PBE-relative like a string reference's slot lookup, not a raw TEMPLAT.ROM
+// offset: add 4 to land on the real byte (see the module doc comment for
+// why). Kept as a named helper since the root table leans on this
+// convention far more than the rest of the parser does.
+function pbeToRaw(pointer: number): number {
+  return pointer + 4;
+}
+
+// TEMPLAT.ROM field (Phoenix BIOS Editor offset 0x0068) holding the real
+// root/tab table's own pointer. Confirmed as the standard Phoenix legacy
+// location for it across two independent, unrelated samples of the same
+// laptop family: a pristine factory image and a later, differently
+// restructured one (extra Advanced/Advanced2 split) from the same
+// BIOS-modding project. A firmware that doesn't use this convention (e.g.
+// one instead using the earlier ascending-directory addressing scheme
+// found on an unrelated Acer sample) reads back 0 here, and callers should
+// fall back to scanPhoenixSetupSections.
+const ROOT_TABLE_FIELD_RAW_OFFSET = pbeToRaw(0x0068);
+// Each tab entry is a (labelPointer, contentPointer) u16 pair; a
+// (0, 0) pair marks the end of the table. 32 is generous headroom over the
+// 6-8 tabs seen on real samples so a corrupt/missing terminator can't spin
+// this into a very long scan.
+const MAX_ROOT_TABLE_TABS = 32;
+// A tab's content pointer leads to a list of (itemPointer, 0x0000) u16
+// pairs - one per item actually shown on that tab - terminated by an
+// itemPointer of 0. 200 is generous headroom over the largest real tab
+// (Advanced2, 16 items) for the same reason.
+const MAX_TAB_ITEMS = 200;
+
+// Resolves a root-table label pointer to the tab's display name, e.g.
+// "Main" or "Security". A label is always a Generic Text or Information
+// item (confirmed on both cross-validation samples); anything else means
+// this isn't really a label pointer, so this returns null rather than a
+// nonsense guess.
+function readTabLabel(bytes: Uint8Array, table: PhoenixStringTable | null, labelPointer: number): string | null {
+  const rawOffset = pbeToRaw(labelPointer);
+  if (rawOffset + 4 > bytes.length) return null;
+  const typeByte = bytes[rawOffset];
+  const length = bytes[rawOffset + 1];
+  if ((typeByte !== 0x10 && typeByte !== 0x11) || length < 4 || rawOffset + length > bytes.length) return null;
+  return resolveOrNull(table, u16(bytes, rawOffset + 2));
+}
+
+// Resolves a root-table content pointer to the tab's real item list. These
+// items are not physically contiguous in TEMPLAT.ROM - they're interleaved
+// with other tabs' and sub-menus' own items - which is exactly why
+// scanPhoenixSetupSections's contiguous-run heuristic can misattribute or
+// entirely miss a tab's content; this pointer list is the authoritative
+// source once it resolves. Confirmed item-for-item against two independent
+// samples: e.g. Information's 13 entries resolve to exactly "CPU Type:",
+// "CPU Speed:", ... "UUID:" - the real System Information screen.
+function readTabItems(bytes: Uint8Array, table: PhoenixStringTable | null, contentPointer: number): PhoenixSetupItem[] {
+  const items: PhoenixSetupItem[] = [];
+  let cursor = pbeToRaw(contentPointer);
+  for (let step = 0; step < MAX_TAB_ITEMS && cursor + 4 <= bytes.length; step++, cursor += 4) {
+    const itemPointer = u16(bytes, cursor);
+    if (itemPointer === 0) break;
+    const item = parseItem(bytes, pbeToRaw(itemPointer), table);
+    if (item) items.push(item);
+  }
+  return items;
+}
+
+// Reads the real Setup tab layout - names and item membership - via
+// TEMPLAT.ROM's root/tab table when present. Returns null (rather than an
+// empty array) when the table isn't there, so buildPhoenixSetupMenu can
+// tell "no tabs" apart from "fall back to the contiguous-run scan".
+export function parsePhoenixRootTable(
+  bytes: Uint8Array,
+  table: PhoenixStringTable | null,
+): PhoenixSetupSection[] | null {
+  if (ROOT_TABLE_FIELD_RAW_OFFSET + 2 > bytes.length) return null;
+  const rootPointer = u16(bytes, ROOT_TABLE_FIELD_RAW_OFFSET);
+  if (rootPointer === 0) return null;
+  const arrayRaw = pbeToRaw(rootPointer);
+
+  const sections: PhoenixSetupSection[] = [];
+  for (let tab = 0; tab < MAX_ROOT_TABLE_TABS; tab++) {
+    const labelOffset = arrayRaw + tab * 4;
+    const contentOffset = labelOffset + 2;
+    if (contentOffset + 2 > bytes.length) break;
+    const labelPointer = u16(bytes, labelOffset);
+    const contentPointer = u16(bytes, contentOffset);
+    if (labelPointer === 0 && contentPointer === 0) break;
+
+    const name = readTabLabel(bytes, table, labelPointer);
+    const items = readTabItems(bytes, table, contentPointer);
+    if (name === null && items.length === 0) continue;
+    sections.push({ offset: pbeToRaw(contentPointer), name, items });
+  }
+  return sections.length > 0 ? sections : null;
+}
+
 export interface PhoenixSetupMenu {
   sections: PhoenixSetupSection[];
+  // "root-table" when sections carry their real Setup tab names and
+  // authoritative item membership (see parsePhoenixRootTable); "contiguous-scan"
+  // when they're the unnamed contiguous-run fallback (see
+  // scanPhoenixSetupSections), used only when a firmware doesn't have (or
+  // doesn't use) the root/tab table.
+  source: "root-table" | "contiguous-scan";
 }
 
 // Combines the string table and the item-record scan into one read-only
@@ -260,5 +388,7 @@ export interface PhoenixSetupMenu {
 // be decompressed (see decompressPhoenixLh5 in phoenixLh5.ts).
 export function buildPhoenixSetupMenu(templat: Uint8Array, strings: Uint8Array): PhoenixSetupMenu {
   const table = parsePhoenixStringTable(strings);
-  return { sections: scanPhoenixSetupSections(templat, table) };
+  const rootTableSections = parsePhoenixRootTable(templat, table);
+  if (rootTableSections) return { sections: rootTableSections, source: "root-table" };
+  return { sections: scanPhoenixSetupSections(templat, table), source: "contiguous-scan" };
 }

@@ -64,6 +64,6 @@ describe("inspectPhoenixSetupMenu", () => {
     // finds no STRPACK-BIOS header and no item records - the point of this
     // test is that discovery, LH5 decompression and parsing all ran
     // without throwing, not that this particular payload looks like menus.
-    expect(menu).toEqual({ sections: [] });
+    expect(menu).toEqual({ sections: [], source: "contiguous-scan" });
   });
 });

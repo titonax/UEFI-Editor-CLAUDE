@@ -131,41 +131,74 @@ decompressed firmware (see [Documented cases](#documented-cases)):
   2-byte header. Confirmed types: `0x00`/`0x01` Pick Field (prompt + help
   refs, variable length), `0x10` Generic Text (single string ref, fixed 10
   bytes), `0x11` Information (likely a submenu container, fixed 12 bytes),
-  `0x21` Time (prompt + help refs, fixed 10 bytes), `0x22` Date (fixed 18
-  bytes seen; not fully decoded beyond its header) and `0x23` Free-form Hex
-  (kept as raw bytes only — its layout isn't confirmed). Every field beyond
-  what's named above is kept as `rawBytes` rather than guessed at — except a
-  Pick Field's own **option list**: a packed array of string references
-  filling the record from `+16` to its own end (so a 20-byte record carries
-  2 options, a 32-byte one up to 8). Confirmed against real `Enabled`/
-  `Disabled`, memory-size and mode-name option lists across two independent
-  firmware samples, and matches the tutorial's own worked example
-  byte-for-byte (its `CA 05`/`CC 05` fields at the same +16 offset, left
-  unlabeled there). An unused trailing slot (a `0` reference, or one that
-  doesn't resolve to a string) is left out of `PhoenixSetupItem.options`
+  `0x20` Date (prompt + help refs, fixed 10 bytes — the Main screen's
+  companion to Time, e.g. `System Date:`/`System Time:`), `0x21` Time
+  (prompt + help refs, fixed 10 bytes), `0x22`/`0x24` Action (prompt + help
+  refs, fixed 18/14 bytes — a triggerable action with no editable value of
+  its own, e.g. Security's `Set Supervisor Password` or Exit's `Exit Saving
+  Changes`; `0x22` was previously misidentified as a second Date encoding by
+  naming symmetry alone, before the root table below made its real records
+  resolvable), `0x23` Free-form Hex (kept as raw bytes only — its layout
+  isn't confirmed) and `0x27` Boot Device Slot (fixed 14 bytes, no prompt of
+  its own — the device name isn't static text Phoenix could store at
+  ROM-build time, since it depends on what's plugged in at boot). Every
+  field beyond what's named above is kept as `rawBytes` rather than guessed
+  at — except a Pick Field's own **option list**: a packed array of string
+  references filling the record from `+16` to its own end (so a 20-byte
+  record carries 2 options, a 32-byte one up to 8). Confirmed against real
+  `Enabled`/`Disabled`, memory-size and mode-name option lists across two
+  independent firmware samples, and matches the tutorial's own worked
+  example byte-for-byte (its `CA 05`/`CC 05` fields at the same +16 offset,
+  left unlabeled there). An unused trailing slot (a `0` reference, or one
+  that doesn't resolve to a string) is left out of `PhoenixSetupItem.options`
   rather than shown as a blank entry.
 
-**Items are laid out sequentially, not through pointer indirection.** An
-earlier hypothesis — that a root/navigation table holds pointers to each
-screen's item list — turned out to be a byte-offset counting error; the real
-layout is long, contiguous runs of back-to-back item records ("screens"),
-separated by non-item data (confirmed to include embedded x86 executable
-code stubs between screens in real firmware).
-`scanPhoenixSetupSections` finds these runs directly: at each candidate
-offset it counts how many consecutive bytes frame as valid item records
-(bounded by a small lookahead window), keeps the longest run found, and — if
-that run has at least 5 items — treats it as one screen and continues
-scanning after it; otherwise it advances one byte and retries. This sidesteps
-actually locating the root/tab-navigation table, at the cost of a known
-limitation below.
+**Items live behind a root/tab table — not, as an earlier version of this
+document claimed, purely as contiguous runs.** That earlier claim ("an
+earlier hypothesis... turned out to be a byte-offset counting error") was
+itself wrong: it came from a *generalized, blind scan* for the table's shape
+that produced too many false positives to trust, not from checking the
+table's real, fixed location. `parsePhoenixRootTable` reads it directly, at
+a **fixed** `TEMPLAT.ROM` field — Phoenix BIOS Editor offset `0x0068`
+(`+4` for the raw decompressed-buffer offset, like every pointer below) —
+confirmed as the standard location across two independent, unrelated
+samples of the same laptop family (a pristine factory image and a later,
+differently restructured one). That field holds a pointer to an array of
+`(labelPointer, contentPointer)` pairs, one per real Setup tab, terminated by
+a `(0, 0)` pair:
+
+- **`labelPointer`** resolves (`+4`) to a Generic Text or Information item
+  whose string reference is the tab's real name — `Information`, `Main`,
+  `Security`, `Advanced`, `Advanced2`, `Intel`, `Boot`, `Exit` on the
+  cross-validation samples.
+- **`contentPointer`** resolves (`+4`) to a list of `(itemPointer, 0x0000)`
+  pairs, one per item actually shown on that tab, terminated by an
+  `itemPointer` of `0`. Each `itemPointer` resolves (`+4`) to a full item
+  record — **elsewhere** in `TEMPLAT.ROM`, not contiguous with the content
+  list or with each other. This is exactly why `scanPhoenixSetupSections`'s
+  contiguous-run heuristic can't recover a tab's real membership on its
+  own: a tab's items are interleaved with other tabs' and sub-menus' own
+  items, not laid out back-to-back. Confirmed item-for-item on both
+  cross-validation samples — e.g. `Information`'s 13 entries resolve to
+  exactly `CPU Type:`, `CPU Speed:`, … `UUID:`, the real System Information
+  screen, and `Exit`'s 6 entries resolve to `Exit Saving Changes`, `Exit
+  Discarding Changes`, `Load Setup Defaults`, `Discard Changes`, `Save
+  Changes` plus one separator.
+
+`buildPhoenixSetupMenu` prefers this root table when it's present
+(`PhoenixSetupMenu.source === "root-table"`, each section's `name` set to
+its real tab name), and falls back to `scanPhoenixSetupSections`'s unnamed
+contiguous-run scan (`source === "contiguous-scan"`, `name: null`) only when
+it isn't — e.g. the Acer sample referenced elsewhere in this document, which
+reads back `0` at the fixed field and uses a different, earlier-investigated
+addressing scheme instead.
 
 ### Known limitations
 
-- **Screen names aren't resolved.** The root table linking each screen to its
-  own tab title (`Main`, `Security`, `Boot`, …) was never cracked for the
-  real samples this was verified against, so the UI labels screens
-  generically ("Screen 1", "Screen 2", …) in scan order rather than by their
-  real tab name.
+- **The root table isn't universal.** A firmware that doesn't use the fixed
+  `0x0068` field (or had it patched to point elsewhere) falls back to the
+  unnamed contiguous-run scan, with the same tab-membership blind spot the
+  root table exists to fix.
 - **A callback-based visibility mechanism exists and this parser can't
   evaluate it.** See
   [Menu visibility: a real, confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism)
@@ -286,7 +319,7 @@ on the callback mechanism, which is the one with full, exact confirmation.
 | --- | --- | --- |
 | Acer PhoenixBIOS 4.0 sample | `PhoenixBIOS 4.0 Release 6.1` string, `BCPSYS`/`BCPFFV`/`BCPCMP` records, one FFV volume matched by the real Flash File Volume GUID | BCP/FFV directory walk correctly resolves the FFV volume and enumerates its Setup, template and strings modules with LH5 compression sizes; its `ACPI1.ROM` module's real LH5 body is used verbatim as a decompression test fixture in [`phoenixLh5.test.ts`](../../src/components/scripts/phoenixLh5.test.ts) |
 | Lenovo Flex 2 sample | `RSDS` debug record naming `...\Phoenix\SecCore\Sec\SecCore.pdb`, alongside an unrelated Insyde copyright string elsewhere in the same image | PDB provenance is reported independently of, and can coexist or conflict with, other vendor evidence in the same image — never collapsed into a single family verdict |
-| A laptop's original/modified BIOS pair, plus a third pristine sample of the same platform | `110_MFG.ROM`/`110_MOD.ROM` (a real user edit) and `ORIGINAL.bin` (same laptop platform — identical PDB build paths — genuinely pristine, unlike `110_MFG.ROM` despite its name), all carrying a legacy CMOS Setup Table | Decompressing and diffing all three confirmed the Setup Table format above end to end, including how a hidden chipset debug menu ("Intel") was made visible by relabeling a placeholder section and wiring its item-list linkage. A deeper follow-up disassembled the actual embedded 8086 callback (via Capstone) that conditionally hides the "Intel" item — reading an NVRAM token and a live BIOS RAM bit — and confirmed, byte-for-byte and instruction-for-instruction, exactly how patching its machine code neutralizes the condition; see [Menu visibility: a real, confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism) above |
+| A laptop's original/modified BIOS pair, plus a third pristine sample of the same platform | `110_MFG.ROM`/`110_MOD.ROM` (a real user edit) and `ORIGINAL.bin` (same laptop platform — identical PDB build paths — genuinely pristine, unlike `110_MFG.ROM` despite its name), all carrying a legacy CMOS Setup Table | Decompressing and diffing all three confirmed the Setup Table format above end to end, including how a hidden chipset debug menu ("Intel") was made visible by relabeling a placeholder section and wiring its item-list linkage. A deeper follow-up disassembled the actual embedded 8086 callback (via Capstone) that conditionally hides the "Intel" item — reading an NVRAM token and a live BIOS RAM bit — and confirmed, byte-for-byte and instruction-for-instruction, exactly how patching its machine code neutralizes the condition; see [Menu visibility: a real, confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism) above. A further follow-up located and fully decoded the root/tab table on both `ORIGINAL.bin` (6 tabs: Information, Main, Security, Intel, Boot, Exit) and `110_MFG.ROM`/`110_MOD.ROM` (8 tabs — Advanced/Advanced2 split out of the same content), confirming every tab's real name and its full, non-contiguous item membership item-for-item; see [Setup Table format](#setup-table-format) above |
 
 The Acer case and the module-discovery/decompression pipeline are exercised
 by
@@ -357,13 +390,17 @@ upload screen only, laid out the same way the AMI editor is: a screen list
 on the left (`NavLink` per screen, the first one selected by default) and
 the selected screen's item table on the right (type/prompt/help/options),
 using the same Mantine table components the AMI Aptio HII tree already
-uses elsewhere in the same screen. A `Generic Text`/`Information` row (a
-confirmed in-line group label, not a regular question) renders in bold
-rather than being hidden or given a synthesized section title it hasn't
-earned. A Pick Field's option list is a real `Select`, not just a
-read-only column - **its selection is genuinely changeable**, but only
-ever held in this browser tab's own React state. It is not yet wired into
-the corpus runner — a natural follow-up, not yet requested.
+uses elsewhere in the same screen. When the image carries a root/tab table
+(see [Setup Table format](#setup-table-format) above), the screen list shows
+the image's own real tab names and a "Real tab names (root table)" badge;
+otherwise it falls back to generic "Screen N" labels in scan order, same as
+before. A `Generic Text`/`Information` row (a confirmed in-line group label,
+not a regular question) renders in bold rather than being hidden or given a
+synthesized section title it hasn't earned. A Pick Field's option list is a
+real `Select`, not just a read-only column - **its selection is genuinely
+changeable**, but only ever held in this browser tab's own React state. It
+is not yet wired into the corpus runner — a natural follow-up, not yet
+requested.
 
 **Nothing selected in that dropdown is written anywhere.** Turning a
 selection into a rebuilt, flashable ROM needs re-compressing the edited

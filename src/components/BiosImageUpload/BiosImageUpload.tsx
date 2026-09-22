@@ -182,6 +182,8 @@ function phoenixItemTypeLabel(type: PhoenixSetupItem["type"]) {
   if (type === "information") return "Submenu";
   if (type === "time") return "Time";
   if (type === "date") return "Date";
+  if (type === "action") return "Action";
+  if (type === "boot-device-slot") return "Boot Device";
   return "Hex";
 }
 
@@ -206,12 +208,16 @@ function isPhoenixLabelItem(type: PhoenixSetupItem["type"]) {
 // legacy Phoenix CMOS Setup Table defines, with each item's prompt/help
 // resolved from STRINGS.ROM and a Pick Field's own option list turned into
 // a real selector. Laid out the same way the AMI editor is - a screen list
-// on the left, the selected screen's items on the right - though unlike
-// the AMI tree this never claims a confirmed hierarchy between screens
-// (see docs/phoenix/README.md). A Pick Field's selection here is staged in
-// this browser tab only: there is no LH5 encoder available yet to
-// recompress an edited TEMPLAT.ROM back into a flashable image, so nothing
-// selected below is written anywhere - see docs/phoenix/README.md.
+// on the left, the selected screen's items on the right. When the image
+// carries a root/tab table (see parsePhoenixRootTable in
+// phoenixSetupTable.ts) each screen is the real Setup tab - "Main",
+// "Security", "Boot", ... - with its authoritative item membership;
+// otherwise this falls back to unnamed, contiguous-run "Screen N" sections
+// that don't claim a confirmed tab identity (see docs/phoenix/README.md). A
+// Pick Field's selection here is staged in this browser tab only: there is
+// no LH5 encoder available yet to recompress an edited TEMPLAT.ROM back
+// into a flashable image, so nothing selected below is written anywhere -
+// see docs/phoenix/README.md.
 function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
   const sections = React.useMemo(
     () => menu.sections.filter((section) => section.items.length > 0),
@@ -225,6 +231,7 @@ function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
   const totalItems = sections.reduce((sum, section) => sum + section.items.length, 0);
   if (totalItems === 0) return null;
   const selectedSection = sections.find((section) => section.offset === selectedOffset) ?? sections[0];
+  const hasRealTabs = menu.source === "root-table";
 
   return (
     <Stack gap="xs">
@@ -232,16 +239,23 @@ function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
         <Badge variant="light" color="grape">
           Phoenix Setup menu: {String(sections.length)} screen(s), {String(totalItems)} item(s)
         </Badge>
+        {hasRealTabs && (
+          <Badge variant="light" color="teal">
+            Real tab names (root table)
+          </Badge>
+        )}
       </Group>
       <Text size="xs" c="dimmed">
         Prompts, help text and a Pick Field's own option list, all resolved
         from STRINGS.ROM. Bold rows are Text/Submenu items, which read as
-        in-line group labels rather than questions. This never confirms a
-        hierarchy between screens, and a selection made below is only kept
-        in this browser tab - it isn't written back into the image yet, and
-        some items may be conditionally hidden on real hardware by embedded
-        firmware logic this inventory can't evaluate - see
-        docs/phoenix/README.md.
+        in-line group labels rather than questions.{" "}
+        {hasRealTabs
+          ? "Screen names and item membership below come from the image's own root/tab table."
+          : "This image has no root/tab table, so screens below are unnamed contiguous runs rather than confirmed Setup tabs."}{" "}
+        A selection made below is only kept in this browser tab - it isn't
+        written back into the image yet, and some items may be conditionally
+        hidden on real hardware by embedded firmware logic this inventory
+        can't evaluate - see docs/phoenix/README.md.
       </Text>
       <Group align="flex-start" gap="md" wrap="nowrap">
         <ScrollArea.Autosize mah={480} miw={220} maw={220}>
@@ -249,7 +263,7 @@ function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
             {sections.map((section, index) => (
               <NavLink
                 key={section.offset}
-                label={`Screen ${String(index + 1)}`}
+                label={phoenixText(section.name) ?? `Screen ${String(index + 1)}`}
                 description={`${String(section.items.length)} item(s)`}
                 active={section.offset === selectedSection.offset}
                 onClick={() => {
