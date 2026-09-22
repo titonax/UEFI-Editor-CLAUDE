@@ -156,67 +156,120 @@ limitation below.
   own tab title (`Main`, `Security`, `Boot`, …) was never cracked for the
   real samples this was verified against, so the UI labels screens
   generically ("Screen 1", "Screen 2", …) in scan order rather than by their
-  real tab name. See
-  [Menu visibility and the "hidden menu" reveal mechanism](#menu-visibility-and-the-hidden-menu-reveal-mechanism)
-  below for what a deeper follow-up investigation did and didn't establish
-  about the region most likely to hold this table.
-- **No `SuppressIf`-style expression mechanism was found**, and this is no
-  longer just an absence of evidence — see the next section for a
-  byte-level-verified explanation of how hiding/revealing an item actually
-  works in this format, which is structural rather than expression-based.
+  real tab name.
+- **A callback-based visibility mechanism exists and this parser can't
+  evaluate it.** See
+  [Menu visibility: a real, confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism)
+  below. Some items are gated at Setup-render time by embedded x86 code this
+  parser has no way to execute, so its item inventory can include an item a
+  real, unmodified BIOS would actually keep hidden.
 
-### Menu visibility and the "hidden menu" reveal mechanism
+### Menu visibility: a real, confirmed callback mechanism
 
-A follow-up investigation went looking specifically for *how* an item gets
-hidden or revealed in this format — prompted by a real original/modified ROM
-pair (see [Documented cases](#documented-cases)) where the user had
-themselves unhidden a chipset debug menu, and by a claim (from an unrelated
-chat transcript, not this codebase) that a flag byte plus an NVRAM-token
-check in a callback controlled that menu's visibility.
+An earlier version of this document claimed a specific flag-plus-callback
+visibility mechanism (reported from an unrelated chat transcript, not this
+codebase) didn't check out against the real original/modified ROM pair in
+[Documented cases](#documented-cases). That check was wrong, for two
+correctable reasons, and the mechanism is now confirmed byte-for-byte and
+disassembled instruction-for-instruction:
 
-**The flag/callback claim doesn't hold up.** Checked byte-for-byte against
-the real original/modified pair, the specific offsets that claim named
-(a callback address, a flag byte transitioning `0x13` → `0x00`) are
-byte-for-byte **identical** between the original and modified ROM — nothing
-changed there at all. The one part of that claim that did check out was a
-single string-table pointer value for the text `"Intel"`, which was later
-re-derived independently from this investigation's own analysis; the
-causal mechanism (flag + callback + NVRAM token) was not reproducible from
-the real bytes and should be treated as unverified.
+1. **Offset base mismatch.** Phoenix BIOS Editor / Phoenix SLIC Tool strips
+   a 4-byte `[u16 totalSize][u16 marker = 0x0019]` LH5-container header when
+   it extracts `TEMPLAT0.ROM`/`STRINGS0.ROM` for editing — this is a generic
+   framing byte-count present on every LH5-packed Phoenix resource
+   (confirmed on `TEMPLAT.ROM`, `STRINGS.ROM` *and* `SETUP0.ROM` across three
+   independent real samples), not something specific to the Setup Table
+   format. This codebase's own LH5 decompression (`phoenixLh5.ts`) doesn't
+   strip it, since nothing in this parser needs to. Any offset quoted
+   against a PBE-extracted file — including the tutorial PDF's own worked
+   example and the transcript above — is exactly 4 less than the equivalent
+   offset into this codebase's raw decompressed buffer.
+2. **Wrong file pair.** The transcript's offsets describe the transition
+   from a genuinely pristine build to a patched one. `110_MFG.ROM` (despite
+   its name) was **already patched** relative to that pristine state — the
+   patch had already landed by the time it was captured. Comparing it
+   against `110_MOD.ROM` (the user's own further edit, made on top of the
+   already-patched `110_MFG.ROM`) shows no change at that address, because
+   there was nothing left to change there. `ORIGINAL.bin` — a third real
+   sample of the same laptop platform (same PDB build paths), added to this
+   investigation later — is the genuinely pristine build, and diffing it
+   against `110_MFG.ROM` shows exactly the transition described.
 
-**What actually changed, confirmed with an exact match.** Both `TEMPLAT.ROM`
-and `STRINGS.ROM`, once decompressed, begin with a small container header —
-`[u16 totalSize][u16 marker = 0x0019]` — confirmed identically across two
-independent real samples (the Acer sample and the original/modified pair).
-Immediately after this header, before the first item-record run this
-parser's own section scanner locates, there is a dense region of 4-byte
-records. Diffing the original against the modified `TEMPLAT.ROM` in that
-region turned up exactly four 2-byte slots that flip from `0x0000` (empty)
-to a real value in the modified ROM. Two of those four match, **byte for
-byte**, the `promptRef` field a real, already-visible item carries in its
-own item record elsewhere in the same file (the "Keyboard auto-repeat
-rate:" and "Set User Password" items). That is a direct, reproducible
-confirmation that revealing an item in this format means populating an
-empty slot in this pre-item reference region with a copy of that item's own
-string reference — not toggling a condition/flag evaluated at runtime.
+With both corrections applied, every specific claim resolves exactly:
 
-**What's still open.** That region is not a single clean table the way the
-model above might suggest: scanning it exhaustively and cross-checking every
-slot against every known item's own `promptRef`/`helpRef` (across both the
-original/modified pair and the independent Acer sample) found a real but
-weak signal — on the order of 5% of slots match a known item reference,
-well above chance but far short of "every slot is one of these." The most
-likely explanation is that this region multiplexes more than one
-sub-structure (the reveal-mechanism slots confirmed above are one of them),
-and the rest hasn't been separated out. Until it is, this parser does not
-attempt to read this region at all — it would mean asserting a hide/reveal
-verdict the evidence doesn't yet support for the general case, and this
-project's own rule is to never claim more structural certainty than was
-actually verified. It also means this region cannot yet be used to resolve
-the screen-name limitation above: a name cluster found nearby (`Main`,
-`Security`, `Advanced`, `Information` as consecutive `Generic Text` items
-around one section) coincides with, but isn't proven to be governed by, this
-same reference region.
+- `TEMPLAT0.ROM + 0x110D` (PBE-relative) → this codebase's raw offset
+  `0x1111`: a `Generic Text` item record (`10 0a 34 05 00 00`) whose string
+  reference is `0x0534` — matching the transcript's claimed pointer exactly.
+  `resolvePhoenixString` on that reference returns `"Intel"`.
+- `TEMPLAT0.ROM + 0x3F65` (PBE-relative) → raw offset `0x3F69`: real,
+  disassembled 8086 machine code (confirmed with Capstone, 16-bit real
+  mode), not filler:
+  ```
+  3f69  push bp
+  3f6a  mov bp, sp
+  3f6c  call 0x3f71
+  3f6f  pop bp
+  3f70  retf
+  3f71  push dx
+  3f72  mov ax, 0x231        ; NVRAM token 0x0231
+  3f75  call 0x5c4e          ; read-token helper
+  3f78  pop dx
+  3f79  cmp al, 1
+  3f7b  je   0x3f7f          ; token == 1 -> keep checking
+  3f7d  jmp  0x3f8f          ; token != 1 -> hide
+  3f7f  xor  ax, ax
+  3f81  lcall 0xf000, 0x4b6d ; far call into the main BIOS
+  3f86  test al, 4           ; bit 0x04
+  3f88  jne  0x3f8f          ; bit set -> hide
+  3f8a  mov  ax, 0           ; "show" path: return 0
+  3f8f  mov  ax, 0x0013      ; "hide" path: return 0x13 (ORIGINAL.bin)
+                              ;              return 0x0000 (110_MFG.ROM / 110_MOD.ROM)
+  3f92  ret
+  ```
+  This is exactly the OR'd condition the transcript described (NVRAM token
+  `0x0231 != 1`, or bit `0x04` of a far call into `F000:4B6D`), reading the
+  token via a helper at `0x5c4e` and the RAM state via a genuine far call
+  into the platform's core BIOS segment.
+- `TEMPLAT0.ROM + 0x3F8C` (PBE-relative) → raw offset `0x3F90`: not a
+  separate data flag — it's the **low byte of the `mov ax, imm16` immediate
+  operand on the "hide" path's own return instruction**, at `0x3f8f`-`0x3f91`
+  above. `ORIGINAL.bin` has `13 00` there (hide path returns `0x0013`);
+  `110_MFG.ROM` and `110_MOD.ROM` both have `00 00` (hide path returns `0`,
+  identically to the show path, making the whole condition inert). The
+  "patch" described in the transcript is a **machine-code edit**, not a
+  data/config toggle: overwriting the immediate operand of an existing
+  instruction so both branches of the callback return the same value.
+
+So Phoenix *does* have a genuine, `SuppressIf`-style conditional visibility
+mechanism — just implemented as inline embedded 8086 machine code the Setup
+engine calls at render time (reading NVRAM tokens and live BIOS RAM state),
+not as a declared expression evaluated against static operands the way AMI
+Aptio's HII does it. This coexists with a second, unrelated, purely
+structural mechanism confirmed separately in the same firmware: the
+"Keyboard auto-repeat rate:" and "Set User Password" items are revealed by
+populating an empty slot in a pre-item reference region with a copy of that
+item's own string reference (no code involved for those two). Both are real;
+neither is universal — different items in the same ROM use different gates.
+
+**What this means for the shipped parser.** This parser has no x86
+interpreter and does not attempt to evaluate these callbacks — doing so
+safely and generally is a much larger undertaking than a static byte parser.
+Concretely, this means an item like `"Intel"` above, whose embedded callback
+would make it runtime-invisible on an unpatched Setup, still shows up in
+this tool's inventory: the parser reports every item record it can reach
+structurally, not only the ones a live BIOS would actually render. That is a
+real, working-as-verified limitation now, not an unproven one — replacing
+this document's earlier, incorrect claim that no such condition mechanism
+exists in this format at all. Locating *which* items carry such a callback
+(and where its address is stored — not yet identified) is a natural next
+step, not yet done.
+
+The pre-item reference region discussed in an earlier revision of this
+section (the one holding the "Keyboard auto-repeat rate:"/"Set User
+Password" reveal slots) is unrelated to this callback mechanism — it's a
+separate table, and remains only partially understood (see this file's git
+history for that narrower investigation if useful); this section now focuses
+on the callback mechanism, which is the one with full, exact confirmation.
 
 ## Documented cases
 
@@ -224,7 +277,7 @@ same reference region.
 | --- | --- | --- |
 | Acer PhoenixBIOS 4.0 sample | `PhoenixBIOS 4.0 Release 6.1` string, `BCPSYS`/`BCPFFV`/`BCPCMP` records, one FFV volume matched by the real Flash File Volume GUID | BCP/FFV directory walk correctly resolves the FFV volume and enumerates its Setup, template and strings modules with LH5 compression sizes; its `ACPI1.ROM` module's real LH5 body is used verbatim as a decompression test fixture in [`phoenixLh5.test.ts`](../../src/components/scripts/phoenixLh5.test.ts) |
 | Lenovo Flex 2 sample | `RSDS` debug record naming `...\Phoenix\SecCore\Sec\SecCore.pdb`, alongside an unrelated Insyde copyright string elsewhere in the same image | PDB provenance is reported independently of, and can coexist or conflict with, other vendor evidence in the same image — never collapsed into a single family verdict |
-| A laptop's original/modified BIOS pair | An original ROM and two user-modified copies of it, all carrying a legacy CMOS Setup Table | Decompressing and diffing all three confirmed the Setup Table format above end to end, including how a hidden chipset debug menu ("Intel") was made visible by relabeling a placeholder section and wiring its item-list linkage. A follow-up byte-level diff of the same pair, cross-checked against the independent Acer sample, additionally confirmed the general reveal mechanism (an empty slot in a pre-item reference region gets populated with a copy of the revealed item's own string reference) — see [Menu visibility and the "hidden menu" reveal mechanism](#menu-visibility-and-the-hidden-menu-reveal-mechanism) above |
+| A laptop's original/modified BIOS pair, plus a third pristine sample of the same platform | `110_MFG.ROM`/`110_MOD.ROM` (a real user edit) and `ORIGINAL.bin` (same laptop platform — identical PDB build paths — genuinely pristine, unlike `110_MFG.ROM` despite its name), all carrying a legacy CMOS Setup Table | Decompressing and diffing all three confirmed the Setup Table format above end to end, including how a hidden chipset debug menu ("Intel") was made visible by relabeling a placeholder section and wiring its item-list linkage. A deeper follow-up disassembled the actual embedded 8086 callback (via Capstone) that conditionally hides the "Intel" item — reading an NVRAM token and a live BIOS RAM bit — and confirmed, byte-for-byte and instruction-for-instruction, exactly how patching its machine code neutralizes the condition; see [Menu visibility: a real, confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism) above |
 
 The Acer case and the module-discovery/decompression pipeline are exercised
 by
