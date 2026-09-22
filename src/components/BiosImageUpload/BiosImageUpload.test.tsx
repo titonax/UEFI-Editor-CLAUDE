@@ -173,6 +173,9 @@ beforeAll(() => {
       disconnect = vi.fn();
     },
   );
+  // Mantine's Combobox (the Pick Field option Select) scrolls the active
+  // option into view; jsdom has no scrollIntoView implementation at all.
+  Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {
@@ -352,7 +355,66 @@ describe("BiosImageUpload", () => {
     expect(screen.getByRole("button", { name: "Start HII analysis" })).toBeDisabled();
   });
 
-  it("shows the Phoenix Setup menu panel when a legacy Setup Table is found on a non-AMI image", async () => {
+  it("shows the Phoenix Setup menu panel when a legacy Setup Table is found on a non-AMI image, in a screen list + selected-screen detail layout", async () => {
+    const menu: PhoenixSetupMenu = {
+      sections: [
+        {
+          offset: 0,
+          items: [
+            {
+              type: "pick-field",
+              offset: 0,
+              length: 20,
+              prompt: "F12 Boot Menu:",
+              help: "Enabled or Disabled",
+              options: ["Disabled", "Enabled"],
+              rawBytes: new Uint8Array(20),
+            },
+          ],
+        },
+        {
+          offset: 100,
+          items: [
+            {
+              type: "pick-field",
+              offset: 100,
+              length: 20,
+              prompt: "Quiet Boot:",
+              help: null,
+              options: ["Enabled", "Disabled"],
+              rawBytes: new Uint8Array(20),
+            },
+          ],
+        },
+      ],
+    };
+    inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, {
+      target: { files: [imageFile(new Uint8Array(0x100), "phoenix.bin")] },
+    });
+
+    // A real Setup Table is itself Phoenix evidence - the AMI Aptio panel
+    // must not show for an image this scan has already identified.
+    expect(await screen.findByText("Phoenix Setup menu: 2 screen(s), 2 item(s)")).toBeInTheDocument();
+    expect(screen.queryByText("AMI Aptio — generation unresolved")).not.toBeInTheDocument();
+    expect(screen.getByText("PhoenixBIOS 4.0")).toBeInTheDocument();
+
+    // The first screen is selected by default - no click needed to see it.
+    expect(screen.getByText("F12 Boot Menu:")).toBeInTheDocument();
+    expect(screen.getByText("Enabled or Disabled")).toBeInTheDocument();
+    expect(screen.queryByText("Quiet Boot:")).not.toBeInTheDocument();
+
+    // Switching screens swaps the detail pane's contents.
+    fireEvent.click(screen.getByText("Screen 2"));
+    expect(screen.queryByText("F12 Boot Menu:")).not.toBeInTheDocument();
+    expect(screen.getByText("Quiet Boot:")).toBeInTheDocument();
+
+    expect(inspectPhoenixSetupMenu).toHaveBeenCalledOnce();
+  });
+
+  it("lets a Pick Field's option selection be changed, staged only in this browser tab", async () => {
     const menu: PhoenixSetupMenu = {
       sections: [
         {
@@ -378,12 +440,48 @@ describe("BiosImageUpload", () => {
       target: { files: [imageFile(new Uint8Array(0x100), "phoenix.bin")] },
     });
 
-    expect(await screen.findByText("Phoenix Setup menu: 1 screen(s), 1 item(s)")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Screen 1 · 1 item(s)"));
-    expect(screen.getByText("F12 Boot Menu:")).toBeInTheDocument();
-    expect(screen.getByText("Enabled or Disabled")).toBeInTheDocument();
-    expect(screen.getByText("Disabled · Enabled")).toBeInTheDocument();
-    expect(inspectPhoenixSetupMenu).toHaveBeenCalledOnce();
+    await screen.findByText("F12 Boot Menu:");
+    // Mantine's Select also renders a hidden <input> mirroring the value
+    // for form submission - the visible combobox input is the first match.
+    const [select] = screen.getAllByDisplayValue("Disabled");
+    fireEvent.click(select);
+    const options = await screen.findAllByRole("option");
+    fireEvent.click(options[1]);
+
+    await screen.findAllByDisplayValue("Enabled");
+    expect(select).toHaveValue("Enabled");
+  });
+
+  it("de-duplicates a Pick Field's option list before handing it to the Select, which rejects duplicate values outright", async () => {
+    const menu: PhoenixSetupMenu = {
+      sections: [
+        {
+          offset: 0,
+          items: [
+            {
+              type: "pick-field",
+              offset: 0,
+              length: 24,
+              prompt: "Malformed Field:",
+              help: null,
+              options: ["Disabled", "Disabled", "Enabled"],
+              rawBytes: new Uint8Array(24),
+            },
+          ],
+        },
+      ],
+    };
+    inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, {
+      target: { files: [imageFile(new Uint8Array(0x100), "phoenix.bin")] },
+    });
+
+    // Mantine's Select throws (crashing the whole panel) if its `data`
+    // array carries a repeated value - this only doesn't throw because the
+    // duplicate "Disabled" entry was already collapsed to one.
+    expect(await screen.findByText("Malformed Field:")).toBeInTheDocument();
   });
 
   it("never queries the Phoenix Setup Table for an AMI Aptio candidate", async () => {

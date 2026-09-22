@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  Accordion,
   Alert,
   Badge,
   Button,
@@ -8,8 +7,10 @@ import {
   Group,
   List,
   NativeSelect,
+  NavLink,
   Progress,
   ScrollArea,
+  Select,
   Stack,
   Table,
   Text,
@@ -201,69 +202,112 @@ function isPhoenixLabelItem(type: PhoenixSetupItem["type"]) {
   return type === "generic-text" || type === "information";
 }
 
-// The Phoenix counterpart to the AMI Aptio HII menu tree: a read-only
-// inventory of every screen a legacy Phoenix CMOS Setup Table defines,
-// with each item's prompt/help resolved from STRINGS.ROM and a Pick
-// Field's own option list resolved alongside it. Unlike the AMI tree, this
-// never claims a confirmed hierarchy between screens (see
-// docs/phoenix/README.md) and is never editable.
+// The Phoenix counterpart to the AMI Aptio HII menu tree: every screen a
+// legacy Phoenix CMOS Setup Table defines, with each item's prompt/help
+// resolved from STRINGS.ROM and a Pick Field's own option list turned into
+// a real selector. Laid out the same way the AMI editor is - a screen list
+// on the left, the selected screen's items on the right - though unlike
+// the AMI tree this never claims a confirmed hierarchy between screens
+// (see docs/phoenix/README.md). A Pick Field's selection here is staged in
+// this browser tab only: there is no LH5 encoder available yet to
+// recompress an edited TEMPLAT.ROM back into a flashable image, so nothing
+// selected below is written anywhere - see docs/phoenix/README.md.
 function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
-  const totalItems = menu.sections.reduce((sum, section) => sum + section.items.length, 0);
+  const sections = React.useMemo(
+    () => menu.sections.filter((section) => section.items.length > 0),
+    [menu],
+  );
+  const [selectedOffset, setSelectedOffset] = React.useState<number | null>(
+    sections[0]?.offset ?? null,
+  );
+  const [selections, setSelections] = React.useState<Record<number, string>>({});
+
+  const totalItems = sections.reduce((sum, section) => sum + section.items.length, 0);
   if (totalItems === 0) return null;
+  const selectedSection = sections.find((section) => section.offset === selectedOffset) ?? sections[0];
+
   return (
     <Stack gap="xs">
       <Group gap="xs">
         <Badge variant="light" color="grape">
-          Phoenix Setup menu: {String(menu.sections.length)} screen(s), {String(totalItems)} item(s)
+          Phoenix Setup menu: {String(sections.length)} screen(s), {String(totalItems)} item(s)
         </Badge>
       </Group>
       <Text size="xs" c="dimmed">
-        Read-only inventory of a legacy Phoenix CMOS Setup Table - prompts,
-        help text and a Pick Field's own option list, all resolved from
-        STRINGS.ROM. Bold rows are Text/Submenu items, which read as in-line
-        group labels rather than questions. This never confirms a hierarchy
-        between screens, and nothing here is editable; some items may be
-        conditionally hidden on real hardware by embedded firmware logic
-        this inventory can't evaluate - see docs/phoenix/README.md.
+        Prompts, help text and a Pick Field's own option list, all resolved
+        from STRINGS.ROM. Bold rows are Text/Submenu items, which read as
+        in-line group labels rather than questions. This never confirms a
+        hierarchy between screens, and a selection made below is only kept
+        in this browser tab - it isn't written back into the image yet, and
+        some items may be conditionally hidden on real hardware by embedded
+        firmware logic this inventory can't evaluate - see
+        docs/phoenix/README.md.
       </Text>
-      <Accordion variant="contained">
-        {menu.sections.map((section, index) => (
-          <Accordion.Item key={section.offset} value={String(section.offset)}>
-            <Accordion.Control>
-              Screen {String(index + 1)} · {String(section.items.length)} item(s)
-            </Accordion.Control>
-            <Accordion.Panel>
-              <ScrollArea>
-                <Table striped withColumnBorders>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>Type</Table.Th>
-                      <Table.Th>Prompt</Table.Th>
-                      <Table.Th>Help</Table.Th>
-                      <Table.Th>Options</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {section.items.map((item, itemIndex) => {
-                      const isLabel = isPhoenixLabelItem(item.type);
-                      return (
-                        <Table.Tr key={`${String(section.offset)}:${String(itemIndex)}`}>
-                          <Table.Td>{phoenixItemTypeLabel(item.type)}</Table.Td>
-                          <Table.Td fw={isLabel ? 700 : undefined}>
-                            {phoenixText(item.prompt) ?? "—"}
-                          </Table.Td>
-                          <Table.Td>{phoenixText(item.help)}</Table.Td>
-                          <Table.Td>{item.options.map((option) => phoenixText(option)).join(" · ")}</Table.Td>
-                        </Table.Tr>
-                      );
-                    })}
-                  </Table.Tbody>
-                </Table>
-              </ScrollArea>
-            </Accordion.Panel>
-          </Accordion.Item>
-        ))}
-      </Accordion>
+      <Group align="flex-start" gap="md" wrap="nowrap">
+        <ScrollArea.Autosize mah={480} miw={220} maw={220}>
+          <Stack gap={2}>
+            {sections.map((section, index) => (
+              <NavLink
+                key={section.offset}
+                label={`Screen ${String(index + 1)}`}
+                description={`${String(section.items.length)} item(s)`}
+                active={section.offset === selectedSection.offset}
+                onClick={() => {
+                  setSelectedOffset(section.offset);
+                }}
+                variant="light"
+              />
+            ))}
+          </Stack>
+        </ScrollArea.Autosize>
+        <ScrollArea.Autosize mah={480} style={{ flex: 1, minWidth: 0 }}>
+          <Table striped withColumnBorders>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Type</Table.Th>
+                <Table.Th>Prompt</Table.Th>
+                <Table.Th>Help</Table.Th>
+                <Table.Th>Options</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {selectedSection.items.map((item) => {
+                const isLabel = isPhoenixLabelItem(item.type);
+                // Mantine's Select rejects duplicate option values outright
+                // (throws, taking down the whole panel) - two option slots
+                // can resolve to the same text, so de-duplicate defensively.
+                const options = Array.from(
+                  new Set(item.options.map((option) => phoenixText(option) ?? option)),
+                );
+                return (
+                  <Table.Tr key={item.offset}>
+                    <Table.Td>{phoenixItemTypeLabel(item.type)}</Table.Td>
+                    <Table.Td fw={isLabel ? 700 : undefined}>
+                      {phoenixText(item.prompt) ?? "—"}
+                    </Table.Td>
+                    <Table.Td>{phoenixText(item.help)}</Table.Td>
+                    <Table.Td>
+                      {options.length > 0 && (
+                        <Select
+                          size="xs"
+                          data={options}
+                          value={selections[item.offset] ?? options[0]}
+                          onChange={(value) => {
+                            if (value === null) return;
+                            setSelections((current) => ({ ...current, [item.offset]: value }));
+                          }}
+                          allowDeselect={false}
+                          comboboxProps={{ withinPortal: false }}
+                        />
+                      )}
+                    </Table.Td>
+                  </Table.Tr>
+                );
+              })}
+            </Table.Tbody>
+          </Table>
+        </ScrollArea.Autosize>
+      </Group>
     </Stack>
   );
 }
@@ -329,6 +373,29 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
         const menu = await inspectPhoenixSetupMenu(image);
         if (currentOperation !== operation.current) return;
         setPhoenixMenu(menu);
+        // A real Setup Table is itself Phoenix evidence, every bit as good
+        // as inspectPhoenixLegacyBytes's own BCPSYS/BCPFFV-anchored find -
+        // it's the same inventoryPhoenixLegacyBytes couldn't reach here for
+        // lack of a BCP/FFV directory (see phoenixSetupMenu.ts's standalone
+        // module-name fallback). Folding it into vendorGuess/container keeps
+        // VendorSummary's own family check the single source of truth
+        // instead of adding a second "is this vendor evidence" predicate to
+        // the render path below.
+        if (menu?.sections.some((section) => section.items.length > 0)) {
+          setReport((current) =>
+            current?.vendorGuess.family === "unknown"
+              ? {
+                  ...current,
+                  container: "phoenix-rom",
+                  vendorGuess: {
+                    family: "phoenix",
+                    label: "PhoenixBIOS 4.0",
+                    evidence: ["Legacy CMOS Setup Table (TEMPLAT.ROM/STRINGS.ROM)"],
+                  },
+                }
+              : current,
+          );
+        }
       }
 
       if (imageReport.firmwareVolumes.length === 0) return;
