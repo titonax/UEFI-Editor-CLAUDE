@@ -88,6 +88,16 @@ export interface PhoenixSetupItem {
   // Pick Field and Time/Date items carry a second string reference,
   // conventionally help text.
   help: string | null;
+  // Pick Field's selectable value list: a packed array of string
+  // references filling the record's own tail, from +16 up to its end
+  // (so a 20-byte record carries 2 options, a 32-byte one up to 8).
+  // Confirmed against real Enabled/Disabled, memory-size and mode-name
+  // option lists across two independent firmware samples, and matches the
+  // BIOS-modding tutorial's own worked example byte-for-byte. Always empty
+  // for every other item type. An unused trailing slot (reference 0, or one
+  // that doesn't resolve to a string) is left out rather than shown as
+  // blank/garbage.
+  options: string[];
   rawBytes: Uint8Array;
 }
 
@@ -137,7 +147,7 @@ function parseItem(bytes: Uint8Array, offset: number, table: PhoenixStringTable 
   const rawBytes = bytes.subarray(offset, offset + length);
 
   if (type === "free-form-hex") {
-    return { type, offset, length, prompt: null, help: null, rawBytes };
+    return { type, offset, length, prompt: null, help: null, options: [], rawBytes };
   }
 
   const promptRef = length >= 4 ? u16(bytes, offset + 2) : null;
@@ -147,8 +157,29 @@ function parseItem(bytes: Uint8Array, offset: number, table: PhoenixStringTable 
     (type === "pick-field" || type === "time" || type === "date") && helpRef !== null
       ? resolveOrNull(table, helpRef)
       : null;
+  const options = type === "pick-field" ? parsePickFieldOptions(bytes, offset, length, table) : [];
 
-  return { type, offset, length, prompt, help, rawBytes };
+  return { type, offset, length, prompt, help, options, rawBytes };
+}
+
+// Pick Field's option list: a packed array of string references filling
+// the record from +16 to its end. See PhoenixSetupItem.options for how this
+// was confirmed. Reference 0 and any reference that doesn't resolve to text
+// mark an unused trailing slot in a shorter option list and are skipped.
+function parsePickFieldOptions(
+  bytes: Uint8Array,
+  offset: number,
+  length: number,
+  table: PhoenixStringTable | null,
+) {
+  const options: string[] = [];
+  for (let field = offset + 16; field + 2 <= offset + length; field += 2) {
+    const reference = u16(bytes, field);
+    if (reference === 0) continue;
+    const resolved = resolveOrNull(table, reference);
+    if (resolved !== null) options.push(resolved);
+  }
+  return options;
 }
 
 // The number of consecutive valid item records starting at `offset`,

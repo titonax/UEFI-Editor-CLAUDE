@@ -191,10 +191,21 @@ function phoenixText(value: string | null) {
   return value === null ? null : value.replace(/\r/g, " ").trim();
 }
 
+// A Generic Text / Information item reads as an in-line group label rather
+// than a regular question - confirmed against several real records (e.g.
+// "Exit", "Main", "Security") that name the section or a sub-group within
+// it; see docs/phoenix/README.md. This never claims a full, confirmed
+// screen title - only that this particular row reads as a label - so it's
+// a bold row, not a synthesized section name.
+function isPhoenixLabelItem(type: PhoenixSetupItem["type"]) {
+  return type === "generic-text" || type === "information";
+}
+
 // The Phoenix counterpart to the AMI Aptio HII menu tree: a read-only
 // inventory of every screen a legacy Phoenix CMOS Setup Table defines,
-// with each item's prompt/help resolved from STRINGS.ROM. Unlike the AMI
-// tree, this never claims a confirmed hierarchy between screens (see
+// with each item's prompt/help resolved from STRINGS.ROM and a Pick
+// Field's own option list resolved alongside it. Unlike the AMI tree, this
+// never claims a confirmed hierarchy between screens (see
 // docs/phoenix/README.md) and is never editable.
 function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
   const totalItems = menu.sections.reduce((sum, section) => sum + section.items.length, 0);
@@ -207,10 +218,13 @@ function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
         </Badge>
       </Group>
       <Text size="xs" c="dimmed">
-        Read-only inventory of a legacy Phoenix CMOS Setup Table - prompts and
-        help text resolved from STRINGS.ROM. This never confirms a hierarchy
-        between screens, and nothing here is editable; see
-        docs/phoenix/README.md.
+        Read-only inventory of a legacy Phoenix CMOS Setup Table - prompts,
+        help text and a Pick Field's own option list, all resolved from
+        STRINGS.ROM. Bold rows are Text/Submenu items, which read as in-line
+        group labels rather than questions. This never confirms a hierarchy
+        between screens, and nothing here is editable; some items may be
+        conditionally hidden on real hardware by embedded firmware logic
+        this inventory can't evaluate - see docs/phoenix/README.md.
       </Text>
       <Accordion variant="contained">
         {menu.sections.map((section, index) => (
@@ -226,16 +240,23 @@ function PhoenixSetupMenuPanel({ menu }: { menu: PhoenixSetupMenu }) {
                       <Table.Th>Type</Table.Th>
                       <Table.Th>Prompt</Table.Th>
                       <Table.Th>Help</Table.Th>
+                      <Table.Th>Options</Table.Th>
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
-                    {section.items.map((item, itemIndex) => (
-                      <Table.Tr key={`${String(section.offset)}:${String(itemIndex)}`}>
-                        <Table.Td>{phoenixItemTypeLabel(item.type)}</Table.Td>
-                        <Table.Td>{phoenixText(item.prompt) ?? "—"}</Table.Td>
-                        <Table.Td>{phoenixText(item.help)}</Table.Td>
-                      </Table.Tr>
-                    ))}
+                    {section.items.map((item, itemIndex) => {
+                      const isLabel = isPhoenixLabelItem(item.type);
+                      return (
+                        <Table.Tr key={`${String(section.offset)}:${String(itemIndex)}`}>
+                          <Table.Td>{phoenixItemTypeLabel(item.type)}</Table.Td>
+                          <Table.Td fw={isLabel ? 700 : undefined}>
+                            {phoenixText(item.prompt) ?? "—"}
+                          </Table.Td>
+                          <Table.Td>{phoenixText(item.help)}</Table.Td>
+                          <Table.Td>{item.options.map((option) => phoenixText(option)).join(" · ")}</Table.Td>
+                        </Table.Tr>
+                      );
+                    })}
                   </Table.Tbody>
                 </Table>
               </ScrollArea>

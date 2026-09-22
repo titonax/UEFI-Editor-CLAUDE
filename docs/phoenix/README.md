@@ -134,7 +134,16 @@ decompressed firmware (see [Documented cases](#documented-cases)):
   `0x21` Time (prompt + help refs, fixed 10 bytes), `0x22` Date (fixed 18
   bytes seen; not fully decoded beyond its header) and `0x23` Free-form Hex
   (kept as raw bytes only — its layout isn't confirmed). Every field beyond
-  what's named above is kept as `rawBytes` rather than guessed at.
+  what's named above is kept as `rawBytes` rather than guessed at — except a
+  Pick Field's own **option list**: a packed array of string references
+  filling the record from `+16` to its own end (so a 20-byte record carries
+  2 options, a 32-byte one up to 8). Confirmed against real `Enabled`/
+  `Disabled`, memory-size and mode-name option lists across two independent
+  firmware samples, and matches the tutorial's own worked example
+  byte-for-byte (its `CA 05`/`CC 05` fields at the same +16 offset, left
+  unlabeled there). An unused trailing slot (a `0` reference, or one that
+  doesn't resolve to a string) is left out of `PhoenixSetupItem.options`
+  rather than shown as a blank entry.
 
 **Items are laid out sequentially, not through pointer indirection.** An
 earlier hypothesis — that a root/navigation table holds pointers to each
@@ -337,10 +346,14 @@ and its CSV export carries `phoenix_legacy_format`,
 
 The Setup Table menu itself is currently wired into the single-image upload
 screen only: it shows as a `Phoenix Setup menu` badge plus a per-screen
-accordion (type/prompt/help table) once decompression and parsing resolve,
-using the same Mantine accordion/table components the AMI Aptio HII tree
-already uses elsewhere in the same screen. It is not yet wired into the
-corpus runner — a natural follow-up, not yet requested.
+accordion (type/prompt/help/options table) once decompression and parsing
+resolve, using the same Mantine accordion/table components the AMI Aptio
+HII tree already uses elsewhere in the same screen. A Pick Field's own
+option list is shown as its own column; a `Generic Text`/`Information` row
+(a confirmed in-line group label, not a regular question) renders in bold
+rather than being hidden or given a synthesized section title it hasn't
+earned. It is not yet wired into the corpus runner — a natural follow-up,
+not yet requested.
 
 None of this — module inventory or Setup Table menu alike — feeds editing,
 reconstruction, or any write path.
