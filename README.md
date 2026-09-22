@@ -188,13 +188,17 @@ inventory feeds editing, reconstruction, or any write path.
 For a legacy PhoenixBIOS 4.0 CMOS Setup Table specifically, the single-image
 upload screen goes one step further than the module inventory above: it
 LH5-decompresses the Setup's `TEMPLAT.ROM`/`STRINGS.ROM` module pair and
-shows the same kind of read-only screen/item tree the AMI Aptio HII menu
-already gives - type, prompt, help text and a Pick Field's own option list
-(e.g. `Enabled`/`Disabled`) for every entry, grouped by screen - so a
-legacy Phoenix ROM's actual Setup menus are visible without Phoenix's own
-BIOS Editor. This never claims a confirmed hierarchy between screens (a
-real root/tab-navigation table wasn't fully recovered) and stays strictly
-read-only, like everything else Phoenix-related here. See
+shows a screen/item tree laid out the same way the AMI Aptio HII menu is -
+a screen list on the left, the selected screen's items on the right - with
+type, prompt, help text and a Pick Field's own option list (e.g.
+`Enabled`/`Disabled`) for every entry, so a legacy Phoenix ROM's actual
+Setup menus are visible without Phoenix's own BIOS Editor. A Pick Field's
+option is genuinely selectable, staged in this browser tab; nothing
+selected is written back into the image yet, since doing that needs an
+LH5 encoder that doesn't exist anywhere usable in a browser (see
+`docs/phoenix/README.md`'s note on this). This never claims a confirmed
+hierarchy between screens (a real root/tab-navigation table wasn't fully
+recovered). See
 [`docs/phoenix/README.md`](docs/phoenix/README.md) for both documented cases
 and
 [`src/components/scripts/phoenixFirmware.ts`](src/components/scripts/phoenixFirmware.ts)

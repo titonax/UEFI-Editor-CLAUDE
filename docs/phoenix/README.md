@@ -344,16 +344,36 @@ panel shows the same table/provenance (plus any bounds/corruption warnings),
 and its CSV export carries `phoenix_legacy_format`,
 `phoenix_legacy_module_count` and `phoenix_uefi_debug_modules` columns.
 
-The Setup Table menu itself is currently wired into the single-image upload
-screen only: it shows as a `Phoenix Setup menu` badge plus a per-screen
-accordion (type/prompt/help/options table) once decompression and parsing
-resolve, using the same Mantine accordion/table components the AMI Aptio
-HII tree already uses elsewhere in the same screen. A Pick Field's own
-option list is shown as its own column; a `Generic Text`/`Information` row
-(a confirmed in-line group label, not a regular question) renders in bold
-rather than being hidden or given a synthesized section title it hasn't
-earned. It is not yet wired into the corpus runner — a natural follow-up,
-not yet requested.
+A real Setup Table find is itself Phoenix evidence - as good as
+`inspectPhoenixLegacyBytes`'s own BCPSYS/BCPFFV-anchored one - so it's
+folded into the same `report.vendorGuess`/`report.container` the outer
+preflight already computes: an image with no BCP/FFV directory to walk
+(only `findNamedPhoenixModule`'s standalone `_T00`/`_S00` pair) still gets
+the `VendorSummary` panel instead of a nonsensical "AMI Aptio — generation
+unresolved" one once its Setup Table resolves.
 
-None of this — module inventory or Setup Table menu alike — feeds editing,
-reconstruction, or any write path.
+The Setup Table menu itself is currently wired into the single-image
+upload screen only, laid out the same way the AMI editor is: a screen list
+on the left (`NavLink` per screen, the first one selected by default) and
+the selected screen's item table on the right (type/prompt/help/options),
+using the same Mantine table components the AMI Aptio HII tree already
+uses elsewhere in the same screen. A `Generic Text`/`Information` row (a
+confirmed in-line group label, not a regular question) renders in bold
+rather than being hidden or given a synthesized section title it hasn't
+earned. A Pick Field's option list is a real `Select`, not just a
+read-only column - **its selection is genuinely changeable**, but only
+ever held in this browser tab's own React state. It is not yet wired into
+the corpus runner — a natural follow-up, not yet requested.
+
+**Nothing selected in that dropdown is written anywhere.** Turning a
+selection into a rebuilt, flashable ROM needs re-compressing the edited
+`TEMPLAT.ROM` back into LH5 and re-inserting it at the right offset - and
+no LH5 encoder exists for this: `@kirinsaninc/lhats` (used for
+decompression) is read-only by design, and the only compressor found on
+npm (`lzh`) is a native Node C++ addon, unusable in a browser. Writing one
+from scratch (a real LZSS + adaptive-Huffman encoder, validated
+byte-for-byte against real compressed samples before it's trusted with
+anything meant for real hardware - the tutorial's own warning about a
+bricked machine if the rebuilt size doesn't fit isn't hypothetical) is a
+distinct, substantially larger effort than reading the format, not yet
+attempted.
