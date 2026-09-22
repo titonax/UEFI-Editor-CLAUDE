@@ -364,6 +364,7 @@ describe("BiosImageUpload", () => {
               length: 20,
               prompt: "F12 Boot Menu:",
               help: "Enabled or Disabled",
+              options: ["Disabled", "Enabled"],
               rawBytes: new Uint8Array(20),
             },
           ],
@@ -381,6 +382,7 @@ describe("BiosImageUpload", () => {
     fireEvent.click(screen.getByText("Screen 1 · 1 item(s)"));
     expect(screen.getByText("F12 Boot Menu:")).toBeInTheDocument();
     expect(screen.getByText("Enabled or Disabled")).toBeInTheDocument();
+    expect(screen.getByText("Disabled · Enabled")).toBeInTheDocument();
     expect(inspectPhoenixSetupMenu).toHaveBeenCalledOnce();
   });
 

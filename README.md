@@ -189,11 +189,12 @@ For a legacy PhoenixBIOS 4.0 CMOS Setup Table specifically, the single-image
 upload screen goes one step further than the module inventory above: it
 LH5-decompresses the Setup's `TEMPLAT.ROM`/`STRINGS.ROM` module pair and
 shows the same kind of read-only screen/item tree the AMI Aptio HII menu
-already gives - type, prompt and help text for every entry, grouped by
-screen - so a legacy Phoenix ROM's actual Setup menus are visible without
-Phoenix's own BIOS Editor. This never claims a confirmed hierarchy between
-screens (a real root/tab-navigation table wasn't fully recovered) and stays
-strictly read-only, like everything else Phoenix-related here. See
+already gives - type, prompt, help text and a Pick Field's own option list
+(e.g. `Enabled`/`Disabled`) for every entry, grouped by screen - so a
+legacy Phoenix ROM's actual Setup menus are visible without Phoenix's own
+BIOS Editor. This never claims a confirmed hierarchy between screens (a
+real root/tab-navigation table wasn't fully recovered) and stays strictly
+read-only, like everything else Phoenix-related here. See
 [`docs/phoenix/README.md`](docs/phoenix/README.md) for both documented cases
 and
 [`src/components/scripts/phoenixFirmware.ts`](src/components/scripts/phoenixFirmware.ts)

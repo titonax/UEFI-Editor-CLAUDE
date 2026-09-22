@@ -20,7 +20,7 @@ function writeCString(bytes: Uint8Array, offset: number, value: string) {
 // resolving real Prompt/Help pairs through this exact double indirection
 // (table slot -> text offset -> C string) - see docs/phoenix/README.md.
 function stringTableImage() {
-  const bytes = new Uint8Array(0x80);
+  const bytes = new Uint8Array(0xa0);
   bytes.set(ascii("STRPACK-BIOS"), 0);
   // 8 bytes of zero padding (already zero), then language count/id.
   new DataView(bytes.buffer).setUint16(0x14, 1, true); // 1 language
@@ -32,6 +32,13 @@ function stringTableImage() {
   // A second slot/text pair for a Pick Field's help text.
   new DataView(bytes.buffer).setUint16(tableBase + 0x12, 0x28, true);
   writeCString(bytes, tableBase + 0x28, "Enabled or Disabled");
+  // Two more slot/text pairs for a Pick Field's own option list (see
+  // PhoenixSetupItem.options) - confirmed against real "Disabled"/"Enabled"
+  // option pairs from two independent real Phoenix images.
+  new DataView(bytes.buffer).setUint16(tableBase + 0x14, 0x60, true);
+  writeCString(bytes, tableBase + 0x60, "Disabled");
+  new DataView(bytes.buffer).setUint16(tableBase + 0x16, 0x6a, true);
+  writeCString(bytes, tableBase + 0x6a, "Enabled");
   return bytes;
 }
 
@@ -55,15 +62,20 @@ describe("parsePhoenixStringTable / resolvePhoenixString", () => {
 });
 
 // A single Pick Field record: type(1) + length(1) + promptRef(2) +
-// helpRef(2) + the rest of the record (unconfirmed fields, kept as
-// rawBytes) - confirmed against a real "F12 Boot Menu:" / its help text
-// pair from a real Phoenix image.
-function pickFieldItem(promptRef: number, helpRef: number, length = 20) {
+// helpRef(2) + 4 more unconfirmed fields + an option-reference array from
+// +16 to the record's end - confirmed against a real "F12 Boot Menu:" / its
+// help text pair, and real Enabled/Disabled-style option lists, from real
+// Phoenix images.
+function pickFieldItem(promptRef: number, helpRef: number, length = 20, optionRefs: number[] = []) {
   const bytes = new Uint8Array(length);
   bytes[0] = 0x00;
   bytes[1] = length;
-  new DataView(bytes.buffer).setUint16(2, promptRef, true);
-  new DataView(bytes.buffer).setUint16(4, helpRef, true);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(2, promptRef, true);
+  view.setUint16(4, helpRef, true);
+  optionRefs.forEach((ref, index) => {
+    view.setUint16(16 + index * 2, ref, true);
+  });
   return bytes;
 }
 
@@ -100,6 +112,55 @@ function concat(...chunks: Uint8Array[]) {
   }
   return result;
 }
+
+describe("Pick Field options", () => {
+  it("resolves the option-reference array filling a record's own tail", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = concat(
+      pickFieldItem(0x10, 0x12, 20, [0x14, 0x16]),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+    );
+
+    const sections = scanPhoenixSetupSections(templat, table);
+
+    expect(sections[0].items[0].options).toEqual(["Disabled", "Enabled"]);
+  });
+
+  it("skips an unused trailing slot (reference 0) rather than showing it as a blank option", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = concat(
+      pickFieldItem(0x10, 0x12, 24, [0x14, 0x16, 0]),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+    );
+
+    const sections = scanPhoenixSetupSections(templat, table);
+
+    expect(sections[0].items[0].options).toEqual(["Disabled", "Enabled"]);
+  });
+
+  it("is always empty for every other item type", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = concat(
+      genericTextItem(0x10),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+    );
+
+    const sections = scanPhoenixSetupSections(templat, table);
+
+    for (const item of sections[0].items) {
+      expect(item.options).toEqual([]);
+    }
+  });
+});
 
 describe("scanPhoenixSetupSections", () => {
   it("finds one section from a contiguous run of valid item records", () => {
