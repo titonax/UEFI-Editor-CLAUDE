@@ -58,12 +58,13 @@ describe("inspectPhoenixSetupMenu", () => {
     standaloneFfvModule(bytes, "_T00", 0x100, acpi1CompressedBody, 0x78);
     standaloneFfvModule(bytes, "_S00", 0x300, acpi1CompressedBody, 0x78);
 
-    const menu = await inspectPhoenixSetupMenu(bytes);
+    const inventory = await inspectPhoenixSetupMenu(bytes);
 
     // The decompressed ACPI table isn't a Setup Table, so this correctly
     // finds no STRPACK-BIOS header and no item records - the point of this
     // test is that discovery, LH5 decompression and parsing all ran
     // without throwing, not that this particular payload looks like menus.
-    expect(menu).toEqual({ sections: [] });
+    expect(inventory?.menu).toEqual({ sections: [], source: "contiguous-scan" });
+    expect(inventory?.templat).toHaveLength(0x78);
   });
 });

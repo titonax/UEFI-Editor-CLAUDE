@@ -43,12 +43,21 @@ function modulePayload(bytes: Uint8Array, module: PhoenixModule) {
   return bytes.subarray(payloadOffset, payloadOffset + packedSize);
 }
 
+export interface PhoenixSetupInventory {
+  menu: PhoenixSetupMenu;
+  // The decompressed TEMPLAT.ROM buffer the menu was built from - the same
+  // buffer every item offset in `menu` is relative to. Needed to apply
+  // forceItemsVisible and export a patched module via toPbeModuleBytes
+  // (see phoenixSetupTable.ts); never mutated by anything in this module.
+  templat: Uint8Array;
+}
+
 // Finds, decompresses and parses a Phoenix Setup Table (STRINGS0.ROM +
 // TEMPLAT0.ROM) directly from raw firmware bytes. Returns null when either
 // module can't be located, isn't LH5-compressed, or fails to decompress -
 // this is a best-effort inventory, not a requirement for anything else
 // this editor does.
-export async function inspectPhoenixSetupMenu(bytes: Uint8Array): Promise<PhoenixSetupMenu | null> {
+export async function inspectPhoenixSetupMenu(bytes: Uint8Array): Promise<PhoenixSetupInventory | null> {
   const legacy = inspectPhoenixLegacyBytes(bytes);
   const located = locateSetupModules(bytes, legacy?.modules);
   if (!located) return null;
@@ -63,7 +72,7 @@ export async function inspectPhoenixSetupMenu(bytes: Uint8Array): Promise<Phoeni
       decompressPhoenixLh5(templatCompressed, templat.unpackedSize),
       decompressPhoenixLh5(stringsCompressed, strings.unpackedSize),
     ]);
-    return buildPhoenixSetupMenu(templatBytes, stringsBytes);
+    return { menu: buildPhoenixSetupMenu(templatBytes, stringsBytes), templat: templatBytes };
   } catch {
     return null;
   }

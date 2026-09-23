@@ -131,47 +131,82 @@ decompressed firmware (see [Documented cases](#documented-cases)):
   2-byte header. Confirmed types: `0x00`/`0x01` Pick Field (prompt + help
   refs, variable length), `0x10` Generic Text (single string ref, fixed 10
   bytes), `0x11` Information (likely a submenu container, fixed 12 bytes),
-  `0x21` Time (prompt + help refs, fixed 10 bytes), `0x22` Date (fixed 18
-  bytes seen; not fully decoded beyond its header) and `0x23` Free-form Hex
-  (kept as raw bytes only — its layout isn't confirmed). Every field beyond
-  what's named above is kept as `rawBytes` rather than guessed at — except a
-  Pick Field's own **option list**: a packed array of string references
-  filling the record from `+16` to its own end (so a 20-byte record carries
-  2 options, a 32-byte one up to 8). Confirmed against real `Enabled`/
-  `Disabled`, memory-size and mode-name option lists across two independent
-  firmware samples, and matches the tutorial's own worked example
-  byte-for-byte (its `CA 05`/`CC 05` fields at the same +16 offset, left
-  unlabeled there). An unused trailing slot (a `0` reference, or one that
-  doesn't resolve to a string) is left out of `PhoenixSetupItem.options`
+  `0x20` Date (prompt + help refs, fixed 10 bytes — the Main screen's
+  companion to Time, e.g. `System Date:`/`System Time:`), `0x21` Time
+  (prompt + help refs, fixed 10 bytes), `0x22`/`0x24` Action (prompt + help
+  refs, fixed 18/14 bytes — a triggerable action with no editable value of
+  its own, e.g. Security's `Set Supervisor Password` or Exit's `Exit Saving
+  Changes`; `0x22` was previously misidentified as a second Date encoding by
+  naming symmetry alone, before the root table below made its real records
+  resolvable), `0x23` Free-form Hex (kept as raw bytes only — its layout
+  isn't confirmed) and `0x27` Boot Device Slot (fixed 14 bytes, no prompt of
+  its own — the device name isn't static text Phoenix could store at
+  ROM-build time, since it depends on what's plugged in at boot). Every
+  field beyond what's named above is kept as `rawBytes` rather than guessed
+  at — except a Pick Field's own **option list**: a packed array of string
+  references filling the record from `+16` to its own end (so a 20-byte
+  record carries 2 options, a 32-byte one up to 8). Confirmed against real
+  `Enabled`/`Disabled`, memory-size and mode-name option lists across two
+  independent firmware samples, and matches the tutorial's own worked
+  example byte-for-byte (its `CA 05`/`CC 05` fields at the same +16 offset,
+  left unlabeled there). An unused trailing slot (a `0` reference, or one
+  that doesn't resolve to a string) is left out of `PhoenixSetupItem.options`
   rather than shown as a blank entry.
 
-**Items are laid out sequentially, not through pointer indirection.** An
-earlier hypothesis — that a root/navigation table holds pointers to each
-screen's item list — turned out to be a byte-offset counting error; the real
-layout is long, contiguous runs of back-to-back item records ("screens"),
-separated by non-item data (confirmed to include embedded x86 executable
-code stubs between screens in real firmware).
-`scanPhoenixSetupSections` finds these runs directly: at each candidate
-offset it counts how many consecutive bytes frame as valid item records
-(bounded by a small lookahead window), keeps the longest run found, and — if
-that run has at least 5 items — treats it as one screen and continues
-scanning after it; otherwise it advances one byte and retries. This sidesteps
-actually locating the root/tab-navigation table, at the cost of a known
-limitation below.
+**Items live behind a root/tab table — not, as an earlier version of this
+document claimed, purely as contiguous runs.** That earlier claim ("an
+earlier hypothesis... turned out to be a byte-offset counting error") was
+itself wrong: it came from a *generalized, blind scan* for the table's shape
+that produced too many false positives to trust, not from checking the
+table's real, fixed location. `parsePhoenixRootTable` reads it directly, at
+a **fixed** `TEMPLAT.ROM` field — Phoenix BIOS Editor offset `0x0068`
+(`+4` for the raw decompressed-buffer offset, like every pointer below) —
+confirmed as the standard location across two independent, unrelated
+samples of the same laptop family (a pristine factory image and a later,
+differently restructured one). That field holds a pointer to an array of
+`(labelPointer, contentPointer)` pairs, one per real Setup tab, terminated by
+a `(0, 0)` pair:
+
+- **`labelPointer`** resolves (`+4`) to a Generic Text or Information item
+  whose string reference is the tab's real name — `Information`, `Main`,
+  `Security`, `Advanced`, `Advanced2`, `Intel`, `Boot`, `Exit` on the
+  cross-validation samples.
+- **`contentPointer`** resolves (`+4`) to a list of `(itemPointer, 0x0000)`
+  pairs, one per item actually shown on that tab, terminated by an
+  `itemPointer` of `0`. Each `itemPointer` resolves (`+4`) to a full item
+  record — **elsewhere** in `TEMPLAT.ROM`, not contiguous with the content
+  list or with each other. This is exactly why `scanPhoenixSetupSections`'s
+  contiguous-run heuristic can't recover a tab's real membership on its
+  own: a tab's items are interleaved with other tabs' and sub-menus' own
+  items, not laid out back-to-back. Confirmed item-for-item on both
+  cross-validation samples — e.g. `Information`'s 13 entries resolve to
+  exactly `CPU Type:`, `CPU Speed:`, … `UUID:`, the real System Information
+  screen, and `Exit`'s 6 entries resolve to `Exit Saving Changes`, `Exit
+  Discarding Changes`, `Load Setup Defaults`, `Discard Changes`, `Save
+  Changes` plus one separator.
+
+`buildPhoenixSetupMenu` prefers this root table when it's present
+(`PhoenixSetupMenu.source === "root-table"`, each section's `name` set to
+its real tab name), and falls back to `scanPhoenixSetupSections`'s unnamed
+contiguous-run scan (`source === "contiguous-scan"`, `name: null`) only when
+it isn't — e.g. the Acer sample referenced elsewhere in this document, which
+reads back `0` at the fixed field and uses a different, earlier-investigated
+addressing scheme instead.
 
 ### Known limitations
 
-- **Screen names aren't resolved.** The root table linking each screen to its
-  own tab title (`Main`, `Security`, `Boot`, …) was never cracked for the
-  real samples this was verified against, so the UI labels screens
-  generically ("Screen 1", "Screen 2", …) in scan order rather than by their
-  real tab name.
+- **The root table isn't universal.** A firmware that doesn't use the fixed
+  `0x0068` field (or had it patched to point elsewhere) falls back to the
+  unnamed contiguous-run scan, with the same tab-membership blind spot the
+  root table exists to fix.
 - **A callback-based visibility mechanism exists and this parser can't
-  evaluate it.** See
+  evaluate it, only patch its confirmed hide-path outcome.** See
   [Menu visibility: a real, confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism)
   below. Some items are gated at Setup-render time by embedded x86 code this
-  parser has no way to execute, so its item inventory can include an item a
-  real, unmodified BIOS would actually keep hidden.
+  parser can locate and (when the structural checks pass) force visible, but
+  never actually executes or evaluates - so its item inventory can include
+  an item a real, unmodified BIOS would actually keep hidden, and an item
+  without a detected hook offers no way to force it either way.
 
 ### Menu visibility: a real, confirmed callback mechanism
 
@@ -260,18 +295,47 @@ populating an empty slot in a pre-item reference region with a copy of that
 item's own string reference (no code involved for those two). Both are real;
 neither is universal — different items in the same ROM use different gates.
 
-**What this means for the shipped parser.** This parser has no x86
-interpreter and does not attempt to evaluate these callbacks — doing so
-safely and generally is a much larger undertaking than a static byte parser.
+**What this means for the shipped parser.** This parser still has no x86
+interpreter and does not attempt to *evaluate* these callbacks — doing so
+safely and generally (simulating NVRAM tokens and live BIOS RAM state) is a
+much larger undertaking than a static byte parser, and remains out of scope.
 Concretely, this means an item like `"Intel"` above, whose embedded callback
 would make it runtime-invisible on an unpatched Setup, still shows up in
 this tool's inventory: the parser reports every item record it can reach
-structurally, not only the ones a live BIOS would actually render. That is a
-real, working-as-verified limitation now, not an unproven one — replacing
-this document's earlier, incorrect claim that no such condition mechanism
-exists in this format at all. Locating *which* items carry such a callback
-(and where its address is stored — not yet identified) is a natural next
-step, not yet done.
+structurally, not only the ones a live BIOS would actually render.
+
+What *is* now located and editable is the address this section originally
+called "not yet identified": every item record with this mechanism carries
+its own callback's address and its exact patch point in its own last 4
+bytes (`PhoenixVisibilityPatch` in `phoenixSetupTable.ts`) —
+
+```
+[... item-type-specific fields ...][callbackPointer: PBE-relative u16][hidePatchOffset: raw u16]
+```
+
+Confirmed field-for-field against the exact "Intel" item disassembled above:
+its own trailing 4 bytes (`65 3f 8f 3f`) decode to `callbackPointer = 0x3f65`
+(→ raw `0x3f69`, the callback's real `push bp` prologue above) and
+`hidePatchOffset = 0x3f8f` (raw, no `+4` — pointing straight at the "hide"
+path's own `mov ax, imm16` opcode byte at `3f8f` above). `detectVisibilityPatch`
+accepts a record's trailing 4 bytes as this hook only when **both**
+structural checks pass — a real `0x55` (`push bp`) prologue at
+`callbackPointer+4`, and a real `0xb8` (`mov ax, imm16`) opcode at
+`hidePatchOffset` — never guessed at from position alone. Scanning a real
+110 KiB `TEMPLAT.ROM` this way finds the hook on 28 of its 83 items,
+spanning `information`, `action`, `generic-text` and `boot-device-slot`
+types alike, not just the one `"Intel"` case this was originally
+disassembled from — and every one of those 28 independently resolves to a
+real `push bp`/`mov ax, imm16` pair, not a coincidental byte match.
+
+`forceItemsVisible(templat, items)` applies the exact same machine-code edit
+confirmed above — overwriting the hide path's immediate operand to `0x0000`
+— to every given item that carries this hook, working on a copy of the
+buffer (the input is never mutated). Real samples show more than one
+"hidden" sentinel value (`0x13`/`0x14`/`0x15` all seen, not just the `0x13`
+this section disassembles), so an item is only offered as forceable when its
+stored immediate is non-zero — zero already means "hide path returns the
+same thing the show path does," i.e. already unconditionally visible.
 
 The pre-item reference region discussed in an earlier revision of this
 section (the one holding the "Keyboard auto-repeat rate:"/"Set User
@@ -280,13 +344,50 @@ separate table, and remains only partially understood (see this file's git
 history for that narrower investigation if useful); this section now focuses
 on the callback mechanism, which is the one with full, exact confirmation.
 
+### Exporting a visibility patch for Phoenix BIOS Editor
+
+`forceItemsVisible` edits the decompressed `TEMPLAT.ROM` buffer, but a
+flashable image needs that module **LH5-recompressed** back into place - and
+this codebase doesn't have an LH5 encoder, nor is one needed for this. A
+real-world BIOS-modding session (independently obtained, covering the same
+laptop and the same root-table relocation confirmed above) never wrote one
+either: it edited the decompressed module by hand, dropped it into Phoenix
+BIOS Editor's own `TEMP` folder in place of the one PBE had extracted, and
+let **PBE itself** - a real Windows desktop application - recompress and
+rebuild the whole BIOS via its own "Build" feature. The resulting raw ROM
+still needed splicing into the original `.WPH` container by hand (with a hex
+editor), since PBE's own rebuild output is a bare ROM and the real flashable
+`.WPH` carries a further fixed-size platform-data trailer PBE doesn't
+generate. None of that recompression or container work is something this
+codebase can replicate in a browser - PBE is a native `.exe`, not code - so
+`toPbeModuleBytes` targets exactly the one step this *can* do reliably:
+producing the same decompressed module PBE's own `TEMP\TEMPLAT00.ROM`
+already is, patched, ready to replace and let PBE do the rest.
+
+`toPbeModuleBytes(patchedTemplat)` strips the 4-byte
+`[u16 totalSize][marker bytes 00 19]` LH5-container header this codebase's
+own decompression keeps (see "Offset base mismatch" above) but PBE's own
+extracted module never has - confirmed on two independent samples, where
+stripping it lands on exactly the 38,992-byte size that real session's own
+`TEMPLAT00.ROM` was measured at. `savePhoenixSetupChanges` ties this
+together the same way the AMI editor's own `downloadModifiedFiles` does
+(see [`binaryPatcher.ts`](../../src/components/scripts/binaryPatcher.ts)):
+one "save" call that downloads only the file a staged edit actually
+touches - `forceItemsVisible` on every item staged with "Force visible"
+checked, then `toPbeModuleBytes`, named `TEMPLAT00.ROM` and ready to
+replace the one in PBE's `TEMP` folder - plus a `changelog.txt` naming each
+forced-visible item, and reports "no-changes" (no download at all) instead
+of silently exporting nothing when nothing is staged. The panel's "Save
+changes" button (see "Where this is surfaced" below) calls it directly.
+`STRINGS.ROM` is untouched by this patch, so it's never downloaded.
+
 ## Documented cases
 
 | Case | Evidence | What was verified |
 | --- | --- | --- |
 | Acer PhoenixBIOS 4.0 sample | `PhoenixBIOS 4.0 Release 6.1` string, `BCPSYS`/`BCPFFV`/`BCPCMP` records, one FFV volume matched by the real Flash File Volume GUID | BCP/FFV directory walk correctly resolves the FFV volume and enumerates its Setup, template and strings modules with LH5 compression sizes; its `ACPI1.ROM` module's real LH5 body is used verbatim as a decompression test fixture in [`phoenixLh5.test.ts`](../../src/components/scripts/phoenixLh5.test.ts) |
 | Lenovo Flex 2 sample | `RSDS` debug record naming `...\Phoenix\SecCore\Sec\SecCore.pdb`, alongside an unrelated Insyde copyright string elsewhere in the same image | PDB provenance is reported independently of, and can coexist or conflict with, other vendor evidence in the same image — never collapsed into a single family verdict |
-| A laptop's original/modified BIOS pair, plus a third pristine sample of the same platform | `110_MFG.ROM`/`110_MOD.ROM` (a real user edit) and `ORIGINAL.bin` (same laptop platform — identical PDB build paths — genuinely pristine, unlike `110_MFG.ROM` despite its name), all carrying a legacy CMOS Setup Table | Decompressing and diffing all three confirmed the Setup Table format above end to end, including how a hidden chipset debug menu ("Intel") was made visible by relabeling a placeholder section and wiring its item-list linkage. A deeper follow-up disassembled the actual embedded 8086 callback (via Capstone) that conditionally hides the "Intel" item — reading an NVRAM token and a live BIOS RAM bit — and confirmed, byte-for-byte and instruction-for-instruction, exactly how patching its machine code neutralizes the condition; see [Menu visibility: a real, confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism) above |
+| A laptop's original/modified BIOS pair, plus a third pristine sample of the same platform | `110_MFG.ROM`/`110_MOD.ROM` (a real user edit) and `ORIGINAL.bin` (same laptop platform — identical PDB build paths — genuinely pristine, unlike `110_MFG.ROM` despite its name), all carrying a legacy CMOS Setup Table | Decompressing and diffing all three confirmed the Setup Table format above end to end, including how a hidden chipset debug menu ("Intel") was made visible by relabeling a placeholder section and wiring its item-list linkage. A deeper follow-up disassembled the actual embedded 8086 callback (via Capstone) that conditionally hides the "Intel" item — reading an NVRAM token and a live BIOS RAM bit — and confirmed, byte-for-byte and instruction-for-instruction, exactly how patching its machine code neutralizes the condition; see [Menu visibility: a real, confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism) above. A further follow-up located and fully decoded the root/tab table on both `ORIGINAL.bin` (6 tabs: Information, Main, Security, Intel, Boot, Exit) and `110_MFG.ROM`/`110_MOD.ROM` (8 tabs — Advanced/Advanced2 split out of the same content), confirming every tab's real name and its full, non-contiguous item membership item-for-item; see [Setup Table format](#setup-table-format) above. An independently obtained real-world modding session on the same laptop platform (spanning ACPI/DSDT analysis and an unrelated MS-DOS game speed fix as well as this BIOS's own Setup Table) cross-confirmed the root-table relocation byte-for-byte (`TEMPLAT+0x0068`: `2E 02` → `68 08`, i.e. `0x022E` → `0x0868`) and the hide-path sentinel patch (116 `0013h`→`0000h` conversions) independently of this codebase's own investigation, and showed the real recompression step is done by Phoenix BIOS Editor's own "Build" feature, not a custom LH5 encoder — see [Exporting a visibility patch for Phoenix BIOS Editor](#exporting-a-visibility-patch-for-phoenix-bios-editor) above. It also confirmed the visibility-callback hook generalizes far beyond the one "Intel" item first disassembled: scanning `110_MFG.ROM`'s own decoded items finds the same `push bp`/`mov ax, imm16` hook on 28 of its 83 items |
 
 The Acer case and the module-discovery/decompression pipeline are exercised
 by
@@ -355,25 +456,37 @@ unresolved" one once its Setup Table resolves.
 The Setup Table menu itself is currently wired into the single-image
 upload screen only, laid out the same way the AMI editor is: a screen list
 on the left (`NavLink` per screen, the first one selected by default) and
-the selected screen's item table on the right (type/prompt/help/options),
-using the same Mantine table components the AMI Aptio HII tree already
-uses elsewhere in the same screen. A `Generic Text`/`Information` row (a
+the selected screen's item table on the right (type/prompt/help/options/
+visibility), using the same Mantine table components the AMI Aptio HII tree
+already uses elsewhere in the same screen. When the image carries a
+root/tab table (see [Setup Table format](#setup-table-format) above), the
+screen list shows the image's own real tab names and a "Real tab names
+(root table)" badge; otherwise it falls back to generic "Screen N" labels
+in scan order, same as before. A `Generic Text`/`Information` row (a
 confirmed in-line group label, not a regular question) renders in bold
 rather than being hidden or given a synthesized section title it hasn't
-earned. A Pick Field's option list is a real `Select`, not just a
-read-only column - **its selection is genuinely changeable**, but only
-ever held in this browser tab's own React state. It is not yet wired into
-the corpus runner — a natural follow-up, not yet requested.
+earned. Neither is wired into the corpus runner yet — a natural follow-up,
+not yet requested.
 
-**Nothing selected in that dropdown is written anywhere.** Turning a
-selection into a rebuilt, flashable ROM needs re-compressing the edited
-`TEMPLAT.ROM` back into LH5 and re-inserting it at the right offset - and
-no LH5 encoder exists for this: `@kirinsaninc/lhats` (used for
-decompression) is read-only by design, and the only compressor found on
-npm (`lzh`) is a native Node C++ addon, unusable in a browser. Writing one
-from scratch (a real LZSS + adaptive-Huffman encoder, validated
-byte-for-byte against real compressed samples before it's trusted with
-anything meant for real hardware - the tutorial's own warning about a
-bricked machine if the rebuilt size doesn't fit isn't hypothetical) is a
-distinct, substantially larger effort than reading the format, not yet
-attempted.
+Two different kinds of editing live side by side in that item table, and
+they are **not** the same kind of thing:
+
+- **A Pick Field's option list** is a real `Select` - its selection is
+  genuinely changeable - but only ever held in this browser tab's own React
+  state, and never exported. There's no persisted "current value" for a
+  Pick Field anywhere in `TEMPLAT.ROM` to write it to (it lives in NVRAM at
+  runtime instead), so this stays a staged preview by design, not a
+  limitation waiting on an encoder.
+- **"Force visible"** (a `Checkbox`, shown only on an item where
+  `detectVisibilityPatch` found the real hook - see [Menu visibility: a real,
+  confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism)
+  above) is a genuine, exportable edit. Checking one or more items and then
+  clicking "Save changes" calls `savePhoenixSetupChanges` - the same
+  "download only what changed" shape as the AMI editor's own save (see
+  above) - which downloads the patched `TEMPLAT00.ROM` plus a changelog, or
+  shows a "Nothing to download" notification (again matching the AMI
+  editor's own wording) when nothing is checked, rather than silently
+  downloading nothing. See
+  [Exporting a visibility patch for Phoenix BIOS Editor](#exporting-a-visibility-patch-for-phoenix-bios-editor)
+  above for exactly what to do with the downloaded file in PBE, and why no
+  LH5 encoder is needed for this.

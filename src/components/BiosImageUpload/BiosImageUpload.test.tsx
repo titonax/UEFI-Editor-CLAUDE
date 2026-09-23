@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MantineProvider } from "@mantine/core";
+import { Notifications } from "@mantine/notifications";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import BiosImageUpload from "./BiosImageUpload";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
-import type { PhoenixSetupMenu } from "../scripts/phoenixSetupTable";
+import type { PhoenixSetupItem, PhoenixSetupMenu } from "../scripts/phoenixSetupTable";
 
 const extractFirmwareInWorker = vi.hoisted(() => vi.fn());
 const inspectPhoenixSetupMenu = vi.hoisted(() => vi.fn());
+const saveAsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../scripts/aptioIvExtractorClient", () => ({
   extractFirmwareInWorker,
@@ -16,6 +18,12 @@ vi.mock("../scripts/aptioIvExtractorClient", () => ({
 
 vi.mock("../scripts/phoenixSetupMenu", () => ({
   inspectPhoenixSetupMenu,
+}));
+
+vi.mock("file-saver", () => ({
+  saveAs: (blob: Blob, name: string) => {
+    saveAsMock(blob, name);
+  },
 }));
 
 function hexBytes(value: string) {
@@ -146,6 +154,7 @@ function imageFile(bytes: Uint8Array, name: string) {
 function renderUpload(onExtracted: (files: PopulatedFiles) => Promise<void>) {
   const { container } = render(
     <MantineProvider>
+      <Notifications />
       <BiosImageUpload onExtracted={onExtracted} />
     </MantineProvider>,
   );
@@ -183,6 +192,7 @@ afterEach(() => {
   extractFirmwareInWorker.mockReset();
   inspectPhoenixSetupMenu.mockReset();
   inspectPhoenixSetupMenu.mockResolvedValue(null);
+  saveAsMock.mockReset();
 });
 
 inspectPhoenixSetupMenu.mockResolvedValue(null);
@@ -360,6 +370,7 @@ describe("BiosImageUpload", () => {
       sections: [
         {
           offset: 0,
+          name: null,
           items: [
             {
               type: "pick-field",
@@ -368,12 +379,14 @@ describe("BiosImageUpload", () => {
               prompt: "F12 Boot Menu:",
               help: "Enabled or Disabled",
               options: ["Disabled", "Enabled"],
+              visibilityPatch: null,
               rawBytes: new Uint8Array(20),
             },
           ],
         },
         {
           offset: 100,
+          name: null,
           items: [
             {
               type: "pick-field",
@@ -382,13 +395,15 @@ describe("BiosImageUpload", () => {
               prompt: "Quiet Boot:",
               help: null,
               options: ["Enabled", "Disabled"],
+              visibilityPatch: null,
               rawBytes: new Uint8Array(20),
             },
           ],
         },
       ],
+      source: "contiguous-scan",
     };
-    inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
+    inspectPhoenixSetupMenu.mockResolvedValueOnce({ menu, templat: new Uint8Array(0) });
     const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
 
     fireEvent.change(input, {
@@ -419,6 +434,7 @@ describe("BiosImageUpload", () => {
       sections: [
         {
           offset: 0,
+          name: null,
           items: [
             {
               type: "pick-field",
@@ -427,13 +443,15 @@ describe("BiosImageUpload", () => {
               prompt: "F12 Boot Menu:",
               help: "Enabled or Disabled",
               options: ["Disabled", "Enabled"],
+              visibilityPatch: null,
               rawBytes: new Uint8Array(20),
             },
           ],
         },
       ],
+      source: "contiguous-scan",
     };
-    inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
+    inspectPhoenixSetupMenu.mockResolvedValueOnce({ menu, templat: new Uint8Array(0) });
     const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
 
     fireEvent.change(input, {
@@ -452,11 +470,130 @@ describe("BiosImageUpload", () => {
     expect(select).toHaveValue("Enabled");
   });
 
+  it("lets a hidden item be forced visible and exported as a real patched TEMPLAT00.ROM for Phoenix BIOS Editor", async () => {
+    const HIDE_PATCH_OFFSET = 0x10;
+    // The 4-byte LH5-container header toPbeModuleBytes strips, plus a
+    // "mov ax, 0x0013" (hide path) at HIDE_PATCH_OFFSET - the same shape
+    // as the real, disassembly-confirmed "Intel" item's own patch point.
+    const templat = new Uint8Array(0x20);
+    templat.set([0xaa, 0xbb, 0xcc, 0xdd], 0);
+    templat.set([0xb8, 0x13, 0x00], HIDE_PATCH_OFFSET);
+
+    const hiddenItem: PhoenixSetupItem = {
+      type: "generic-text",
+      offset: 0,
+      length: 10,
+      prompt: "Intel",
+      help: null,
+      options: [],
+      visibilityPatch: { callbackOffset: 0x8, hidePatchOffset: HIDE_PATCH_OFFSET, hiddenImmediate: 0x13 },
+      rawBytes: templat.subarray(0, 10),
+    };
+    const menu: PhoenixSetupMenu = {
+      sections: [{ offset: 0, name: "Advanced", items: [hiddenItem] }],
+      source: "root-table",
+    };
+    inspectPhoenixSetupMenu.mockResolvedValueOnce({ menu, templat });
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, {
+      target: { files: [imageFile(new Uint8Array(0x100), "phoenix.bin")] },
+    });
+
+    const checkbox = await screen.findByRole("checkbox", { name: "Force visible" });
+    expect(saveAsMock).not.toHaveBeenCalled();
+    fireEvent.click(checkbox);
+
+    const saveButton = await screen.findByRole("button", { name: "Save changes" });
+    fireEvent.click(saveButton);
+
+    // Mirrors the AMI editor's own "Save": only the file the edit actually
+    // touches, plus a changelog - see savePhoenixSetupChanges.
+    expect(saveAsMock).toHaveBeenCalledTimes(2);
+    const templatCall = saveAsMock.mock.calls.find((call) => call[1] === "TEMPLAT00.ROM");
+    const changelogCall = saveAsMock.mock.calls.find((call) => call[1] === "changelog.txt");
+    if (!templatCall || !changelogCall) throw new Error("expected both files to be saved");
+
+    // jsdom's Blob has no arrayBuffer() implementation; FileReader is the
+    // one jsdom-supported way to read one back out in this environment.
+    const buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(reader.result as ArrayBuffer);
+      };
+      reader.onerror = () => {
+        reject(new Error("failed to read the exported blob"));
+      };
+      reader.readAsArrayBuffer(templatCall[0] as Blob);
+    });
+    const exported = new Uint8Array(buffer);
+    // The header-strip drops the first 4 bytes, so every offset shifts
+    // back by 4 in the exported module - exactly PBE's own TEMP\TEMPLAT00.ROM
+    // convention (see toPbeModuleBytes).
+    expect(exported).toHaveLength(templat.length - 4);
+    expect(Array.from(exported.subarray(HIDE_PATCH_OFFSET - 4, HIDE_PATCH_OFFSET - 4 + 3))).toEqual([
+      0xb8, 0x00, 0x00,
+    ]);
+    // The original buffer this session holds is never mutated.
+    expect(templat[HIDE_PATCH_OFFSET + 1]).toBe(0x13);
+
+    // jsdom's Blob has no text() implementation either; FileReader again.
+    const changelogText = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(reader.result as string);
+      };
+      reader.onerror = () => {
+        reject(new Error("failed to read the changelog blob"));
+      };
+      reader.readAsText(changelogCall[0] as Blob);
+    });
+    expect(changelogText).toContain("Intel");
+  });
+
+  it("shows a notification instead of downloading anything when Save is clicked with nothing staged", async () => {
+    const menu: PhoenixSetupMenu = {
+      sections: [
+        {
+          offset: 0,
+          name: null,
+          items: [
+            {
+              type: "generic-text",
+              offset: 0,
+              length: 10,
+              prompt: "Main",
+              help: null,
+              options: [],
+              visibilityPatch: null,
+              rawBytes: new Uint8Array(10),
+            },
+          ],
+        },
+      ],
+      source: "contiguous-scan",
+    };
+    inspectPhoenixSetupMenu.mockResolvedValueOnce({ menu, templat: new Uint8Array(0) });
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, {
+      target: { files: [imageFile(new Uint8Array(0x100), "phoenix.bin")] },
+    });
+
+    const saveButton = await screen.findByRole("button", { name: "Save changes" });
+    fireEvent.click(saveButton);
+
+    expect(await screen.findByText("Nothing to download")).toBeInTheDocument();
+    expect(screen.getByText("No modifications have been done.")).toBeInTheDocument();
+    expect(saveAsMock).not.toHaveBeenCalled();
+  });
+
   it("de-duplicates a Pick Field's option list before handing it to the Select, which rejects duplicate values outright", async () => {
     const menu: PhoenixSetupMenu = {
       sections: [
         {
           offset: 0,
+          name: null,
           items: [
             {
               type: "pick-field",
@@ -465,13 +602,15 @@ describe("BiosImageUpload", () => {
               prompt: "Malformed Field:",
               help: null,
               options: ["Disabled", "Disabled", "Enabled"],
+              visibilityPatch: null,
               rawBytes: new Uint8Array(24),
             },
           ],
         },
       ],
+      source: "contiguous-scan",
     };
-    inspectPhoenixSetupMenu.mockResolvedValueOnce(menu);
+    inspectPhoenixSetupMenu.mockResolvedValueOnce({ menu, templat: new Uint8Array(0) });
     const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
 
     fireEvent.change(input, {
