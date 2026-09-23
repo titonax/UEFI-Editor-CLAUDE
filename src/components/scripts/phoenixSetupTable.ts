@@ -13,6 +13,8 @@
 // still needs toPbeModuleBytes and PBE itself; see docs/phoenix/README.md's
 // "Menu visibility" section for why no LH5 encoder is needed for this.
 
+import { saveAs } from "file-saver";
+
 function u16(bytes: Uint8Array, offset: number) {
   return bytes[offset] | (bytes[offset + 1] << 8);
 }
@@ -483,4 +485,56 @@ export function forceItemsVisible(templat: Uint8Array, items: PhoenixSetupItem[]
 // offset PBE reads from it will be off by 4.
 export function toPbeModuleBytes(templat: Uint8Array): Uint8Array {
   return templat.subarray(4);
+}
+
+// One-line summary of a forced-visible item for savePhoenixSetupChanges's
+// changelog - the item's own prompt when it has one (Phoenix's \r line
+// breaks collapsed to spaces, like every other place this codebase shows
+// Setup text), its raw offset otherwise.
+function describeItem(item: PhoenixSetupItem): string {
+  return item.prompt !== null ? item.prompt.replace(/\r/g, " ").trim() : `item @0x${item.offset.toString(16)}`;
+}
+
+export interface PhoenixSetupSaveResult {
+  status: "downloaded" | "no-changes";
+}
+
+// The Phoenix counterpart to the AMI editor's own downloadModifiedFiles
+// (see binaryPatcher.ts): one "save" action, downloading only the files a
+// change actually touches - never a bare, unexplained byte dump - plus a
+// changelog, and reporting "no-changes" instead of silently downloading
+// nothing when there's nothing staged. Right now that's only ever
+// TEMPLAT.ROM, since forcing an item visible is the only edit this parser
+// can make; STRINGS.ROM is read but never written by anything here.
+export function savePhoenixSetupChanges(
+  templat: Uint8Array,
+  forcedVisibleItems: PhoenixSetupItem[],
+): PhoenixSetupSaveResult {
+  if (forcedVisibleItems.length === 0) return { status: "no-changes" };
+
+  const moduleBytes = toPbeModuleBytes(forceItemsVisible(templat, forcedVisibleItems));
+  saveAs(new Blob([moduleBytes], { type: "application/octet-stream" }), "TEMPLAT00.ROM");
+
+  const changeLog = forcedVisibleItems
+    .map((item) => {
+      const wasHex = (item.visibilityPatch?.hiddenImmediate ?? 0).toString(16).padStart(4, "0");
+      return `${describeItem(item)} | hide-path immediate 0x${wasHex} -> 0x0000 (forced visible)`;
+    })
+    .join("\n");
+  saveAs(
+    new Blob(
+      [
+        `TEMPLAT00.ROM\n\n${changeLog}\n\n` +
+          "Replace TEMPLAT00.ROM in Phoenix BIOS Editor's own TEMP folder with " +
+          "the downloaded file, then rebuild the BIOS from within PBE - PBE " +
+          "recompresses it back to LH5 itself, no separate encoder needed. " +
+          "STRINGS.ROM and SETUP.ROM are unchanged and don't need replacing. " +
+          "Full steps in docs/phoenix/README.md.\n",
+      ],
+      { type: "text/plain" },
+    ),
+    "changelog.txt",
+  );
+
+  return { status: "downloaded" };
 }

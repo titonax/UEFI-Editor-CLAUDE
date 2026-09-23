@@ -203,14 +203,15 @@ to write it to.
 
 An item hidden by Phoenix's own embedded visibility-callback machine code
 can genuinely be forced visible, though: when the structural checks locate
-its callback and patch point, a "Force visible" checkbox appears, and an
-"Export a patched TEMPLAT00.ROM" button applies that exact machine-code
-edit - confirmed byte-for-byte on real hardware - and downloads the result
-ready to drop into Phoenix BIOS Editor's own `TEMP` folder and rebuild from
-there (PBE recompresses it back to LH5 itself; no separate encoder is
-needed or exists for this - see `docs/phoenix/README.md`'s "Exporting a
-visibility patch for Phoenix BIOS Editor" section for exactly why, and the
-real-world session that confirmed it). See
+its callback and patch point, a "Force visible" checkbox appears, and a
+"Save changes" button - the same "download only what actually changed"
+shape as the AMI editor's own save - applies that exact machine-code edit,
+confirmed byte-for-byte on real hardware, and downloads the result ready to
+drop into Phoenix BIOS Editor's own `TEMP` folder and rebuild from there
+(PBE recompresses it back to LH5 itself; no separate encoder is needed or
+exists for this - see `docs/phoenix/README.md`'s "Exporting a visibility
+patch for Phoenix BIOS Editor" section for exactly why, and the real-world
+session that confirmed it). See
 [`docs/phoenix/README.md`](docs/phoenix/README.md) for both documented cases
 and
 [`src/components/scripts/phoenixFirmware.ts`](src/components/scripts/phoenixFirmware.ts)

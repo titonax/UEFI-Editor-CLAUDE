@@ -369,12 +369,17 @@ already is, patched, ready to replace and let PBE do the rest.
 own decompression keeps (see "Offset base mismatch" above) but PBE's own
 extracted module never has - confirmed on two independent samples, where
 stripping it lands on exactly the 38,992-byte size that real session's own
-`TEMPLAT00.ROM` was measured at. The panel's "Export a patched TEMPLAT00.ROM"
-button (see "Where this is surfaced" below) calls `forceItemsVisible` on every
-item staged with "Force visible" checked, then `toPbeModuleBytes`, and
-downloads the result named `TEMPLAT00.ROM` - ready to replace the one in
-PBE's `TEMP` folder and rebuild from there. `STRINGS.ROM` is untouched by
-this patch, so nothing needs replacing there.
+`TEMPLAT00.ROM` was measured at. `savePhoenixSetupChanges` ties this
+together the same way the AMI editor's own `downloadModifiedFiles` does
+(see [`binaryPatcher.ts`](../../src/components/scripts/binaryPatcher.ts)):
+one "save" call that downloads only the file a staged edit actually
+touches - `forceItemsVisible` on every item staged with "Force visible"
+checked, then `toPbeModuleBytes`, named `TEMPLAT00.ROM` and ready to
+replace the one in PBE's `TEMP` folder - plus a `changelog.txt` naming each
+forced-visible item, and reports "no-changes" (no download at all) instead
+of silently exporting nothing when nothing is staged. The panel's "Save
+changes" button (see "Where this is surfaced" below) calls it directly.
+`STRINGS.ROM` is untouched by this patch, so it's never downloaded.
 
 ## Documented cases
 
@@ -475,10 +480,13 @@ they are **not** the same kind of thing:
 - **"Force visible"** (a `Checkbox`, shown only on an item where
   `detectVisibilityPatch` found the real hook - see [Menu visibility: a real,
   confirmed callback mechanism](#menu-visibility-a-real-confirmed-callback-mechanism)
-  above) is a genuine, exportable edit. Checking one or more and using
-  "Export a patched TEMPLAT00.ROM" calls `forceItemsVisible` then
-  `toPbeModuleBytes` and downloads the result as `TEMPLAT00.ROM` - see
+  above) is a genuine, exportable edit. Checking one or more items and then
+  clicking "Save changes" calls `savePhoenixSetupChanges` - the same
+  "download only what changed" shape as the AMI editor's own save (see
+  above) - which downloads the patched `TEMPLAT00.ROM` plus a changelog, or
+  shows a "Nothing to download" notification (again matching the AMI
+  editor's own wording) when nothing is checked, rather than silently
+  downloading nothing. See
   [Exporting a visibility patch for Phoenix BIOS Editor](#exporting-a-visibility-patch-for-phoenix-bios-editor)
-  above for exactly what to do with that file in PBE, and why no LH5 encoder
-  is needed for this. Nothing is downloaded, and no patch is applied to
-  anything, unless at least one item is checked.
+  above for exactly what to do with the downloaded file in PBE, and why no
+  LH5 encoder is needed for this.

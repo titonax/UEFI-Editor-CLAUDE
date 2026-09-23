@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MantineProvider } from "@mantine/core";
+import { Notifications } from "@mantine/notifications";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import BiosImageUpload from "./BiosImageUpload";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
@@ -153,6 +154,7 @@ function imageFile(bytes: Uint8Array, name: string) {
 function renderUpload(onExtracted: (files: PopulatedFiles) => Promise<void>) {
   const { container } = render(
     <MantineProvider>
+      <Notifications />
       <BiosImageUpload onExtracted={onExtracted} />
     </MantineProvider>,
   );
@@ -502,14 +504,16 @@ describe("BiosImageUpload", () => {
     expect(saveAsMock).not.toHaveBeenCalled();
     fireEvent.click(checkbox);
 
-    const downloadButton = await screen.findByRole("button", {
-      name: /Download patched TEMPLAT00\.ROM/,
-    });
-    fireEvent.click(downloadButton);
+    const saveButton = await screen.findByRole("button", { name: "Save changes" });
+    fireEvent.click(saveButton);
 
-    expect(saveAsMock).toHaveBeenCalledOnce();
-    const [blob, filename] = saveAsMock.mock.calls[0] as [Blob, string];
-    expect(filename).toBe("TEMPLAT00.ROM");
+    // Mirrors the AMI editor's own "Save": only the file the edit actually
+    // touches, plus a changelog - see savePhoenixSetupChanges.
+    expect(saveAsMock).toHaveBeenCalledTimes(2);
+    const templatCall = saveAsMock.mock.calls.find((call) => call[1] === "TEMPLAT00.ROM");
+    const changelogCall = saveAsMock.mock.calls.find((call) => call[1] === "changelog.txt");
+    if (!templatCall || !changelogCall) throw new Error("expected both files to be saved");
+
     // jsdom's Blob has no arrayBuffer() implementation; FileReader is the
     // one jsdom-supported way to read one back out in this environment.
     const buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
@@ -520,7 +524,7 @@ describe("BiosImageUpload", () => {
       reader.onerror = () => {
         reject(new Error("failed to read the exported blob"));
       };
-      reader.readAsArrayBuffer(blob);
+      reader.readAsArrayBuffer(templatCall[0] as Blob);
     });
     const exported = new Uint8Array(buffer);
     // The header-strip drops the first 4 bytes, so every offset shifts
@@ -532,6 +536,56 @@ describe("BiosImageUpload", () => {
     ]);
     // The original buffer this session holds is never mutated.
     expect(templat[HIDE_PATCH_OFFSET + 1]).toBe(0x13);
+
+    // jsdom's Blob has no text() implementation either; FileReader again.
+    const changelogText = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(reader.result as string);
+      };
+      reader.onerror = () => {
+        reject(new Error("failed to read the changelog blob"));
+      };
+      reader.readAsText(changelogCall[0] as Blob);
+    });
+    expect(changelogText).toContain("Intel");
+  });
+
+  it("shows a notification instead of downloading anything when Save is clicked with nothing staged", async () => {
+    const menu: PhoenixSetupMenu = {
+      sections: [
+        {
+          offset: 0,
+          name: null,
+          items: [
+            {
+              type: "generic-text",
+              offset: 0,
+              length: 10,
+              prompt: "Main",
+              help: null,
+              options: [],
+              visibilityPatch: null,
+              rawBytes: new Uint8Array(10),
+            },
+          ],
+        },
+      ],
+      source: "contiguous-scan",
+    };
+    inspectPhoenixSetupMenu.mockResolvedValueOnce({ menu, templat: new Uint8Array(0) });
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, {
+      target: { files: [imageFile(new Uint8Array(0x100), "phoenix.bin")] },
+    });
+
+    const saveButton = await screen.findByRole("button", { name: "Save changes" });
+    fireEvent.click(saveButton);
+
+    expect(await screen.findByText("Nothing to download")).toBeInTheDocument();
+    expect(screen.getByText("No modifications have been done.")).toBeInTheDocument();
+    expect(saveAsMock).not.toHaveBeenCalled();
   });
 
   it("de-duplicates a Pick Field's option list before handing it to the Select, which rejects duplicate values outright", async () => {

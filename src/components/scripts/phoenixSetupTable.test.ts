@@ -1,12 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const saveAsMock = vi.hoisted(() => vi.fn());
+vi.mock("file-saver", () => ({
+  saveAs: (blob: Blob, name: string) => {
+    saveAsMock(blob, name);
+  },
+}));
+
 import {
   buildPhoenixSetupMenu,
   forceItemsVisible,
   parsePhoenixRootTable,
   parsePhoenixStringTable,
   resolvePhoenixString,
+  savePhoenixSetupChanges,
   scanPhoenixSetupSections,
   toPbeModuleBytes,
+  type PhoenixSetupItem,
 } from "./phoenixSetupTable";
 
 const ascii = (value: string) => new TextEncoder().encode(value);
@@ -546,5 +556,71 @@ describe("toPbeModuleBytes", () => {
     const templat = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd, 0x01, 0x02, 0x03]);
 
     expect(Array.from(toPbeModuleBytes(templat))).toEqual([0x01, 0x02, 0x03]);
+  });
+});
+
+// Mirrors the AMI editor's own downloadModifiedFiles (see
+// binaryPatcher.test.ts): a "save" that downloads only what an edit
+// actually touches, plus a changelog, and reports "no-changes" instead of
+// silently downloading nothing when there's nothing staged.
+describe("savePhoenixSetupChanges", () => {
+  const HIDE_PATCH_OFFSET = 0x10;
+
+  function hiddenItem(prompt: string | null): PhoenixSetupItem {
+    return {
+      type: "generic-text",
+      offset: 0,
+      length: 10,
+      prompt,
+      help: null,
+      options: [],
+      visibilityPatch: { callbackOffset: 0x8, hidePatchOffset: HIDE_PATCH_OFFSET, hiddenImmediate: 0x13 },
+      rawBytes: new Uint8Array(10),
+    };
+  }
+
+  it("reports no-changes and downloads nothing when no items are staged", () => {
+    saveAsMock.mockClear();
+    const templat = new Uint8Array(0x20);
+
+    const result = savePhoenixSetupChanges(templat, []);
+
+    expect(result).toEqual({ status: "no-changes" });
+    expect(saveAsMock).not.toHaveBeenCalled();
+  });
+
+  it("downloads only the patched TEMPLAT00.ROM plus a changelog naming each forced-visible item", async () => {
+    saveAsMock.mockClear();
+    const templat = new Uint8Array(0x20);
+    templat.set([0xb8, 0x13, 0x00], HIDE_PATCH_OFFSET);
+
+    const result = savePhoenixSetupChanges(templat, [hiddenItem("Intel")]);
+
+    expect(result).toEqual({ status: "downloaded" });
+    expect(saveAsMock).toHaveBeenCalledTimes(2);
+
+    const [templatBlob, templatName] = saveAsMock.mock.calls[0] as [Blob, string];
+    expect(templatName).toBe("TEMPLAT00.ROM");
+    const exported = new Uint8Array(await templatBlob.arrayBuffer());
+    expect(exported).toHaveLength(templat.length - 4);
+    expect(Array.from(exported.subarray(HIDE_PATCH_OFFSET - 4, HIDE_PATCH_OFFSET - 4 + 3))).toEqual([
+      0xb8, 0x00, 0x00,
+    ]);
+    expect(templat[HIDE_PATCH_OFFSET + 1]).toBe(0x13); // the input buffer is untouched
+
+    const [changelogBlob, changelogName] = saveAsMock.mock.calls[1] as [Blob, string];
+    expect(changelogName).toBe("changelog.txt");
+    expect(await changelogBlob.text()).toContain("Intel");
+  });
+
+  it("falls back to the item's raw offset in the changelog when it has no prompt", async () => {
+    saveAsMock.mockClear();
+    const templat = new Uint8Array(0x20);
+    templat.set([0xb8, 0x13, 0x00], HIDE_PATCH_OFFSET);
+
+    savePhoenixSetupChanges(templat, [hiddenItem(null)]);
+
+    const [changelogBlob] = saveAsMock.mock.calls[1] as [Blob, string];
+    expect(await changelogBlob.text()).toContain("item @0x0");
   });
 });

@@ -16,8 +16,8 @@ import {
   Table,
   Text,
 } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { IconBinary, IconDownload, IconPlayerPlay, IconUpload } from "@tabler/icons-react";
-import { saveAs } from "file-saver";
 import {
   formatHexOffset,
   inspectAmiFirmwareBytes,
@@ -41,7 +41,7 @@ import type { FirmwareSectionCompression } from "../scripts/firmwareSections";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
 import { inspectPhoenixSetupMenu } from "../scripts/phoenixSetupMenu";
 import type { PhoenixSetupInventory } from "../scripts/phoenixSetupMenu";
-import { forceItemsVisible, toPbeModuleBytes } from "../scripts/phoenixSetupTable";
+import { savePhoenixSetupChanges } from "../scripts/phoenixSetupTable";
 import type { PhoenixSetupItem, PhoenixSetupMenu } from "../scripts/phoenixSetupTable";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 
@@ -370,41 +370,45 @@ function PhoenixSetupMenuPanel({ menu, templat }: { menu: PhoenixSetupMenu; temp
           </Table>
         </ScrollArea.Autosize>
       </Group>
-      {forcedVisibleItems.length > 0 && (
-        <Alert variant="light" color="teal" title="Export a patched TEMPLAT00.ROM">
-          <Stack gap="xs">
-            <Text size="xs">
-              {String(forcedVisibleItems.length)} item(s) staged to force visible. This produces a
-              real, patched TEMPLAT00.ROM - not just a preview - by overwriting each item's hide-path
-              immediate operand to 0x0000, the exact machine-code edit confirmed to work on real
-              hardware (see docs/phoenix/README.md). To use it: replace{" "}
-              <Text span ff="monospace" size="xs">
-                TEMPLAT00.ROM
-              </Text>{" "}
-              in Phoenix BIOS Editor&rsquo;s own TEMP folder with the downloaded file, then rebuild the
-              BIOS from within PBE - PBE recompresses it back to LH5 itself, so no separate encoder is
-              needed here. Full steps in docs/phoenix/README.md.
-            </Text>
-            <Group>
-              <Button
-                size="xs"
-                variant="light"
-                leftSection={<IconDownload size={14} />}
-                onClick={() => {
-                  const patched = forceItemsVisible(templat, forcedVisibleItems);
-                  const moduleBytes = toPbeModuleBytes(patched);
-                  saveAs(
-                    new Blob([moduleBytes], { type: "application/octet-stream" }),
-                    "TEMPLAT00.ROM",
-                  );
-                }}
-              >
-                Download patched TEMPLAT00.ROM
-              </Button>
-            </Group>
-          </Stack>
-        </Alert>
-      )}
+      <Alert variant="light" color="teal" title="Save changes">
+        <Stack gap="xs">
+          <Text size="xs">
+            Checking "Force visible" above stages the exact machine-code edit confirmed to work on
+            real hardware (see docs/phoenix/README.md) - overwriting that item's hide-path immediate
+            operand to 0x0000. Saving downloads only the file that edit actually touches -{" "}
+            <Text span ff="monospace" size="xs">
+              TEMPLAT00.ROM
+            </Text>{" "}
+            , already header-stripped for Phoenix BIOS Editor's own{" "}
+            <Text span ff="monospace" size="xs">
+              TEMP
+            </Text>{" "}
+            folder - plus a changelog, the same way the AMI editor's own "Save" only downloads what
+            it actually changed. Replace it there and rebuild from within PBE; PBE recompresses it
+            back to LH5 itself, so no separate encoder is needed here. Full steps in
+            docs/phoenix/README.md.
+          </Text>
+          <Group>
+            <Button
+              size="xs"
+              variant="light"
+              leftSection={<IconDownload size={14} />}
+              onClick={() => {
+                const result = savePhoenixSetupChanges(templat, forcedVisibleItems);
+                if (result.status === "no-changes") {
+                  notifications.show({
+                    color: "blue",
+                    title: "Nothing to download",
+                    message: "No modifications have been done.",
+                  });
+                }
+              }}
+            >
+              Save changes
+            </Button>
+          </Group>
+        </Stack>
+      </Alert>
     </Stack>
   );
 }
