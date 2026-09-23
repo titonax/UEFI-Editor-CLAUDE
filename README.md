@@ -196,11 +196,21 @@ Setup menus are visible without Phoenix's own BIOS Editor. When the image
 carries its own root/tab table, the screen list shows the real tab names
 (`Main`, `Security`, `Boot`, …) with their full, confirmed item membership
 rather than generic "Screen N" labels - see `docs/phoenix/README.md` for how
-that table was located and cross-validated. A Pick Field's
-option is genuinely selectable, staged in this browser tab; nothing
-selected is written back into the image yet, since doing that needs an
-LH5 encoder that doesn't exist anywhere usable in a browser (see
-`docs/phoenix/README.md`'s note on this). See
+that table was located and cross-validated. A Pick Field's option is
+genuinely selectable, staged in this browser tab only - it isn't exported,
+since there's no persisted default value for one anywhere in `TEMPLAT.ROM`
+to write it to.
+
+An item hidden by Phoenix's own embedded visibility-callback machine code
+can genuinely be forced visible, though: when the structural checks locate
+its callback and patch point, a "Force visible" checkbox appears, and an
+"Export a patched TEMPLAT00.ROM" button applies that exact machine-code
+edit - confirmed byte-for-byte on real hardware - and downloads the result
+ready to drop into Phoenix BIOS Editor's own `TEMP` folder and rebuild from
+there (PBE recompresses it back to LH5 itself; no separate encoder is
+needed or exists for this - see `docs/phoenix/README.md`'s "Exporting a
+visibility patch for Phoenix BIOS Editor" section for exactly why, and the
+real-world session that confirmed it). See
 [`docs/phoenix/README.md`](docs/phoenix/README.md) for both documented cases
 and
 [`src/components/scripts/phoenixFirmware.ts`](src/components/scripts/phoenixFirmware.ts)

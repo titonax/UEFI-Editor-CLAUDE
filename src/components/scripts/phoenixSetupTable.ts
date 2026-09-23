@@ -1,11 +1,17 @@
-// Read-only parser for a decompressed Phoenix legacy BIOS Setup "template"
-// pair (STRINGS.ROM + TEMPLAT.ROM), the format Phoenix BIOS Editor and
-// Phoenix SLIC Tool work with once a firmware's SETUP0.ROM/STRINGS0.ROM/
-// TEMPLAT0.ROM modules are LH5-decompressed (see phoenixLh5.ts). Byte
-// layout below is reverse-engineered from a real-world BIOS-modding
-// tutorial plus independent verification against real decompressed Phoenix
-// firmware samples - see docs/phoenix/README.md for both. This only ever
-// inventories what a Setup screen contains; it never edits a template.
+// Parser (and, for the one confirmed patch below, editor) for a
+// decompressed Phoenix legacy BIOS Setup "template" pair (STRINGS.ROM +
+// TEMPLAT.ROM), the format Phoenix BIOS Editor and Phoenix SLIC Tool work
+// with once a firmware's SETUP0.ROM/STRINGS0.ROM/TEMPLAT0.ROM modules are
+// LH5-decompressed (see phoenixLh5.ts). Byte layout below is
+// reverse-engineered from a real-world BIOS-modding tutorial plus
+// independent verification against real decompressed Phoenix firmware
+// samples - see docs/phoenix/README.md for both. Everything here only
+// inventories what a Setup screen contains, except forceItemsVisible: the
+// one machine-code edit confirmed, byte-for-byte, to work on real
+// hardware. It edits the decompressed buffer only - producing something
+// Phoenix BIOS Editor can recompress and rebuild into a flashable image
+// still needs toPbeModuleBytes and PBE itself; see docs/phoenix/README.md's
+// "Menu visibility" section for why no LH5 encoder is needed for this.
 
 function u16(bytes: Uint8Array, offset: number) {
   return bytes[offset] | (bytes[offset + 1] << 8);
@@ -100,7 +106,44 @@ export interface PhoenixSetupItem {
   // that doesn't resolve to a string) is left out rather than shown as
   // blank/garbage.
   options: string[];
+  // The real, confirmed visibility-callback hook this item carries in its
+  // own last 4 bytes, when the structural checks below can find one -
+  // never guessed at for an item that doesn't have it. Null for most
+  // items; see PhoenixVisibilityPatch and forceItemsVisible.
+  visibilityPatch: PhoenixVisibilityPatch | null;
   rawBytes: Uint8Array;
+}
+
+// An item's own hook into the real, disassembly-confirmed Phoenix
+// visibility-callback mechanism (see docs/phoenix/README.md's "Menu
+// visibility" section) - found packed into the record's own last 4 bytes
+// as [callbackPointer: PBE-relative u16][hidePatchOffset: raw u16].
+// Confirmed field-for-field against the "Intel" item this mechanism was
+// originally disassembled from (its trailing bytes resolve to exactly the
+// callback address and hide-path patch point Capstone found independently)
+// - see phoenixSetupTable.test.ts's own fixture. Rejected (this item gets
+// visibilityPatch: null instead) unless BOTH structural checks pass:
+// callbackPointer+4 must be a real 8086 function prologue (push bp, 0x55),
+// and hidePatchOffset must point at a mov-ax-imm16 opcode (0xB8) - two
+// independent, cheap ways to tell a real hook from an item's own unrelated
+// trailing data (e.g. a Pick Field's option list) that happens to land in
+// the same two byte slots.
+export interface PhoenixVisibilityPatch {
+  // Raw TEMPLAT.ROM offset of the callback function's own entry point.
+  // Never itself patched - shown for context/inspection only.
+  callbackOffset: number;
+  // Raw TEMPLAT.ROM offset of the "mov ax, imm16" instruction's opcode
+  // byte on the callback's hide path. The two bytes right after it are
+  // that instruction's immediate operand - overwriting them to 0x00 0x00
+  // is the exact machine-code edit confirmed (byte-for-byte, on real
+  // hardware) to make the hide path return the same thing the show path
+  // does, neutralizing the condition. See forceItemsVisible.
+  hidePatchOffset: number;
+  // The immediate currently stored there. Zero means this item's hide path
+  // already returns 0 - it's already unconditionally visible, nothing to
+  // force. Real samples show more than one non-zero "hidden" value
+  // (0x13/0x14/0x15 seen so far), never assumed to be exactly 0x13.
+  hiddenImmediate: number;
 }
 
 export interface PhoenixSetupSection {
@@ -159,6 +202,24 @@ function resolveOrNull(table: PhoenixStringTable | null, reference: number) {
   return table ? resolvePhoenixString(table, reference) : null;
 }
 
+const PUSH_BP_OPCODE = 0x55;
+const MOV_AX_IMM16_OPCODE = 0xb8;
+
+// See PhoenixVisibilityPatch's own doc comment for the format and the two
+// structural checks this relies on instead of guessing.
+function detectVisibilityPatch(bytes: Uint8Array, offset: number, length: number): PhoenixVisibilityPatch | null {
+  if (length < 4) return null;
+  const callbackPointer = u16(bytes, offset + length - 4);
+  const hidePatchOffset = u16(bytes, offset + length - 2);
+  const callbackOffset = callbackPointer + 4;
+  if (callbackOffset < 0 || callbackOffset >= bytes.length || bytes[callbackOffset] !== PUSH_BP_OPCODE) return null;
+  if (hidePatchOffset < 0 || hidePatchOffset + 3 > bytes.length || bytes[hidePatchOffset] !== MOV_AX_IMM16_OPCODE) {
+    return null;
+  }
+  const hiddenImmediate = u16(bytes, hidePatchOffset + 1);
+  return { callbackOffset, hidePatchOffset, hiddenImmediate };
+}
+
 // Every item type here starts with a 1-byte type + 1-byte total record
 // length (length includes this 2-byte header), confirmed structurally: a
 // real decompressed TEMPLAT.ROM walks as one continuous run of these
@@ -172,9 +233,10 @@ function parseItem(bytes: Uint8Array, offset: number, table: PhoenixStringTable 
   const length = bytes[offset + 1];
   if (type === null || length < 2 || offset + length > bytes.length) return null;
   const rawBytes = bytes.subarray(offset, offset + length);
+  const visibilityPatch = detectVisibilityPatch(bytes, offset, length);
 
   if (type === "free-form-hex" || type === "boot-device-slot") {
-    return { type, offset, length, prompt: null, help: null, options: [], rawBytes };
+    return { type, offset, length, prompt: null, help: null, options: [], visibilityPatch, rawBytes };
   }
 
   const promptRef = length >= 4 ? u16(bytes, offset + 2) : null;
@@ -186,7 +248,7 @@ function parseItem(bytes: Uint8Array, offset: number, table: PhoenixStringTable 
       : null;
   const options = type === "pick-field" ? parsePickFieldOptions(bytes, offset, length, table) : [];
 
-  return { type, offset, length, prompt, help, options, rawBytes };
+  return { type, offset, length, prompt, help, options, visibilityPatch, rawBytes };
 }
 
 // Pick Field's option list: a packed array of string references filling
@@ -391,4 +453,34 @@ export function buildPhoenixSetupMenu(templat: Uint8Array, strings: Uint8Array):
   const rootTableSections = parsePhoenixRootTable(templat, table);
   if (rootTableSections) return { sections: rootTableSections, source: "root-table" };
   return { sections: scanPhoenixSetupSections(templat, table), source: "contiguous-scan" };
+}
+
+// Applies the real visibility-callback patch (see PhoenixVisibilityPatch)
+// to every given item that has one, returning a new buffer - `templat`
+// itself is never mutated. An item without a detected patch (most of them)
+// is silently skipped rather than treated as an error, so callers can pass
+// a mixed selection without pre-filtering it themselves.
+export function forceItemsVisible(templat: Uint8Array, items: PhoenixSetupItem[]): Uint8Array {
+  const patched = new Uint8Array(templat);
+  for (const item of items) {
+    if (!item.visibilityPatch) continue;
+    patched[item.visibilityPatch.hidePatchOffset + 1] = 0;
+    patched[item.visibilityPatch.hidePatchOffset + 2] = 0;
+  }
+  return patched;
+}
+
+// The 4-byte [u16 totalSize][marker bytes 00 19] LH5-container header this
+// codebase's own decompression keeps (see phoenixLh5.ts) but Phoenix BIOS
+// Editor's own extracted TEMP\TEMPLAT00.ROM never has (see
+// docs/phoenix/README.md's "offset base mismatch" note - the same +4 this
+// whole module corrects for on every pointer). Confirmed on two
+// independent real samples: byte 0 here always equals this buffer's own
+// length as a little-endian u16 (38996 for both cross-validation samples),
+// and stripping it lands on exactly the 38992-byte size the BIOS-modding
+// transcript's own TEMPLAT00.ROM was measured at. Exporting anything meant
+// to replace PBE's own extracted module must strip this first, or every
+// offset PBE reads from it will be off by 4.
+export function toPbeModuleBytes(templat: Uint8Array): Uint8Array {
+  return templat.subarray(4);
 }

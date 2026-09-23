@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPhoenixSetupMenu,
+  forceItemsVisible,
   parsePhoenixRootTable,
   parsePhoenixStringTable,
   resolvePhoenixString,
   scanPhoenixSetupSections,
+  toPbeModuleBytes,
 } from "./phoenixSetupTable";
 
 const ascii = (value: string) => new TextEncoder().encode(value);
@@ -139,6 +141,23 @@ function bootDeviceSlotItem() {
   const bytes = new Uint8Array(14);
   bytes[0] = 0x27;
   bytes[1] = 14;
+  return bytes;
+}
+
+// A Generic Text record carrying the real visibility-callback hook in its
+// own last 4 bytes: type(1) + length(1) + stringRef(2) + reserved(2) +
+// callbackPointer(2, PBE-relative) + hidePatchOffset(2, raw). Confirmed
+// field-for-field against the real "Intel" item this mechanism was
+// disassembled from - see PhoenixVisibilityPatch's own doc comment and
+// docs/phoenix/README.md's "Menu visibility" section.
+function genericTextItemWithVisibilityHook(stringRef: number, callbackRaw: number, hidePatchRaw: number) {
+  const bytes = new Uint8Array(10);
+  bytes[0] = 0x10;
+  bytes[1] = 10;
+  const view = new DataView(bytes.buffer);
+  view.setUint16(2, stringRef, true);
+  view.setUint16(6, callbackRaw - 4, true);
+  view.setUint16(8, hidePatchRaw, true);
   return bytes;
 }
 
@@ -425,5 +444,107 @@ describe("buildPhoenixSetupMenu with a root table", () => {
     expect(menu.sections).toHaveLength(2);
     expect(menu.sections[0].name).toBe("Main");
     expect(menu.sections[1].name).toBe("Main");
+  });
+});
+
+describe("visibility-callback patch (forceItemsVisible)", () => {
+  const CALLBACK_RAW = 0x60;
+  const HIDE_PATCH_RAW = 0x70;
+
+  // A hidden item (the hook's structural checks both pass) followed by 4
+  // plain items, so scanPhoenixSetupSections's 5-item minimum finds it as
+  // a section - the callback stub and patch target sit well past the item
+  // records themselves, exactly like real TEMPLAT.ROM (see
+  // readTabItems's own doc comment on items never being contiguous with
+  // what references them).
+  function templatWithHiddenItem() {
+    const items = concat(
+      genericTextItemWithVisibilityHook(0x10, CALLBACK_RAW, HIDE_PATCH_RAW),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+    );
+    const bytes = new Uint8Array(0x80);
+    bytes.set(items, 0);
+    bytes[CALLBACK_RAW] = 0x55; // push bp - a real function prologue
+    bytes[CALLBACK_RAW + 1] = 0x89; // mov bp, sp - harmless filler
+    bytes[CALLBACK_RAW + 2] = 0xe5;
+    bytes[HIDE_PATCH_RAW] = 0xb8; // mov ax, imm16
+    bytes[HIDE_PATCH_RAW + 1] = 0x13; // the "hidden" sentinel's low byte
+    bytes[HIDE_PATCH_RAW + 2] = 0x00;
+    return bytes;
+  }
+
+  it("detects the hook via its two structural checks: a real callback prologue and a mov-ax-imm16 opcode", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = templatWithHiddenItem();
+
+    const sections = scanPhoenixSetupSections(templat, table);
+    const item = sections[0].items[0];
+
+    expect(item.visibilityPatch).toEqual({
+      callbackOffset: CALLBACK_RAW,
+      hidePatchOffset: HIDE_PATCH_RAW,
+      hiddenImmediate: 0x13,
+    });
+  });
+
+  it("is null for an item that doesn't carry the hook", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = concat(
+      genericTextItem(0x10),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+    );
+
+    const sections = scanPhoenixSetupSections(templat, table);
+
+    expect(sections[0].items[0].visibilityPatch).toBeNull();
+  });
+
+  it("overwrites only the hide path's immediate operand, never mutating the input buffer", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = templatWithHiddenItem();
+    const sections = scanPhoenixSetupSections(templat, table);
+    const item = sections[0].items[0];
+
+    const patched = forceItemsVisible(templat, [item]);
+
+    expect(Array.from(patched.subarray(HIDE_PATCH_RAW, HIDE_PATCH_RAW + 3))).toEqual([0xb8, 0x00, 0x00]);
+    expect(templat[HIDE_PATCH_RAW + 1]).toBe(0x13); // the input buffer is untouched
+    let diffCount = 0;
+    for (let i = 0; i < templat.length; i++) {
+      if (templat[i] !== patched[i]) diffCount++;
+    }
+    // Only the immediate's low byte actually differs - its high byte was
+    // already 0, exactly like the real "Intel" item's own confirmed patch.
+    expect(diffCount).toBe(1);
+  });
+
+  it("skips an item with no detected hook rather than throwing", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = concat(
+      genericTextItem(0x10),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+      timeItem(0x10, 0x12),
+    );
+    const sections = scanPhoenixSetupSections(templat, table);
+
+    const patched = forceItemsVisible(templat, sections[0].items);
+
+    expect(patched).toEqual(templat);
+  });
+});
+
+describe("toPbeModuleBytes", () => {
+  it("strips the 4-byte LH5-container header this codebase's decompression keeps but PBE's own extracted module never has", () => {
+    const templat = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd, 0x01, 0x02, 0x03]);
+
+    expect(Array.from(toPbeModuleBytes(templat))).toEqual([0x01, 0x02, 0x03]);
   });
 });
