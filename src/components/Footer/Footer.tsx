@@ -1,6 +1,6 @@
 import { Button, FileButton, Group, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconDownload, IconUpload } from "@tabler/icons-react";
+import { IconDownload, IconListCheck, IconUpload } from "@tabler/icons-react";
 import { saveAs } from "file-saver";
 import React from "react";
 import type { Updater } from "use-immer";
@@ -12,11 +12,15 @@ import { refreshSingleFormSetNavigation } from "../scripts/singleFormSetNavigati
 import { calculateJsonChecksum } from "../scripts/hashing";
 import { version } from "../scripts/ifrParser";
 import type { Data, Suppression } from "../scripts/types";
+import DataChangeQueueDialog from "../ChangeQueue/DataChangeQueueDialog";
+import type { DataChangeQueueController } from "../ChangeQueue/useDataChangeQueue";
 import s from "./Footer.module.css";
 
 interface FooterProps {
   files: PopulatedFiles;
   data: Data;
+  appliedData: Data;
+  changeQueue: DataChangeQueueController;
   setData: Updater<Data>;
   currentFormIndex: number;
 }
@@ -25,10 +29,16 @@ export default function Footer({
   files,
   currentFormIndex,
   data,
+  appliedData,
+  changeQueue,
   setData,
 }: FooterProps) {
   const resetRef = React.useRef<() => void>(null);
   const [input, setInput] = React.useState("05");
+  const [queueOpened, setQueueOpened] = React.useState(false);
+  const queueApplied =
+    changeQueue.analysis.canApply &&
+    changeQueue.appliedFingerprint === changeQueue.analysis.fingerprint;
 
   return (
     <div className={s.root}>
@@ -132,21 +142,27 @@ export default function Footer({
             // Extracted-file patches are what the user reinserts with
             // UEFITool themselves, whatever the generation; only a complete
             // image lacks that path, since the modified Setup module cannot
-            // be put back into the image it came from yet.
+            // be put back into the image it came from yet. Staged, unreviewed
+            // change queue entries must be applied first, same as GPT's own
+            // fork: this button always exports the applied plan, never the
+            // live preview.
             disabled={
               files.firmwareSource !== undefined ||
-              (data.rootVisibilityEdits?.length ?? 0) > 0
+              (appliedData.rootVisibilityEdits?.length ?? 0) > 0 ||
+              !queueApplied
             }
             title={
-              (data.rootVisibilityEdits?.length ?? 0) > 0
-                ? "Root visibility changes require the verified full-image reconstruction path"
-                : files.firmwareSource !== undefined
-                  ? "Exporting extracted files from a complete image is disabled until safe reinsertion is implemented; keep your edits with data.json"
-                  : undefined
+              !queueApplied
+                ? "Apply the change queue before exporting UEFI files"
+                : (appliedData.rootVisibilityEdits?.length ?? 0) > 0
+                  ? "Root visibility changes require the verified full-image reconstruction path"
+                  : files.firmwareSource !== undefined
+                    ? "Exporting extracted files from a complete image is disabled until safe reinsertion is implemented; keep your edits with data.json"
+                    : undefined
             }
             onClick={() => {
               try {
-                const result = downloadModifiedFiles(data, files);
+                const result = downloadModifiedFiles(appliedData, files);
                 if (result.status === "no-changes") {
                   notifications.show({
                     color: "blue",
@@ -166,6 +182,24 @@ export default function Footer({
           >
             UEFI files
           </Button>
+
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<IconListCheck />}
+            onClick={() => {
+              setQueueOpened(true);
+            }}
+          >
+            Change queue ({changeQueue.entries.length})
+          </Button>
+          <DataChangeQueueDialog
+            opened={queueOpened}
+            queue={changeQueue}
+            onClose={() => {
+              setQueueOpened(false);
+            }}
+          />
         </Group>
 
         {currentFormIndex >= 0 && (

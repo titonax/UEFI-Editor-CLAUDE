@@ -1,6 +1,6 @@
 import React from "react";
 import s from "./App.module.css";
-import { useImmer, type Updater } from "use-immer";
+import { useImmer } from "use-immer";
 import { AppShell, Button, Divider, Group, Stack } from "@mantine/core";
 import type { Data } from "./components/scripts/types";
 import type { Files, PopulatedFiles } from "./components/FileUploads/fileModel";
@@ -15,7 +15,27 @@ import CorpusRunner from "./components/CorpusRunner/CorpusRunner";
 import { parseData } from "./components/scripts/ifrParser";
 import { TOP_LEVEL_MENU_VIEW } from "./formNavigation";
 import { buildMenuTree } from "./components/Navigation/menuTree";
-import { applyLoadedData } from "./loadedData";
+import { useDataChangeQueue } from "./components/ChangeQueue/useDataChangeQueue";
+
+// use-immer's Updater<Data> needs a real Data to produce a draft from, so
+// the change queue (see useDataChangeQueue.ts) is created with this
+// placeholder up front rather than waiting for real data to exist; `loaded`
+// below is what actually gates rendering the editor.
+const emptyData: Data = {
+  firmwareFamily: "ami-aptio",
+  menu: [],
+  forms: [],
+  varStores: [],
+  suppressions: [],
+  version: "",
+  hashes: {
+    setupTxt: "",
+    setupSct: "",
+    amitseSct: "",
+    setupdataBin: "",
+    offsetChecksum: "",
+  },
+};
 
 interface AppProps {
   navigationWidth: number;
@@ -39,15 +59,18 @@ export default function App({
     setupdataBinContainer: { isWrongFile: false },
   });
 
-  const [data, setData] = useImmer<Data | null>(null);
-
-  // Typed as Updater<Data> so children (rendered only once data is loaded)
-  // don't need a `Data | null` type themselves - no `{} as Data` placeholder
-  // and no casts. applyLoadedData still accepts the very first, initial
-  // assignment (a plain Data value while draft is still null).
-  const setLoadedData: Updater<Data> = (recipe) => {
-    setData((draft) => applyLoadedData(recipe, draft));
-  };
+  // Every edit handler below (Navigation, FormUi and everything under it,
+  // Footer's own quick actions) still calls `setData(draft => {...})`
+  // exactly as before - `setData` is now the queue's own enqueueData, a
+  // drop-in Updater<Data>, so each edit stages a described, toggleable
+  // Change queue entry instead of committing immediately. See
+  // ChangeQueue/useDataChangeQueue.ts for the mechanism and
+  // docs/change-queue.md for why this is safe to bolt on without touching
+  // any existing edit logic.
+  const dataQueue = useDataChangeQueue(emptyData);
+  const data = dataQueue.previewData;
+  const setData = dataQueue.enqueueData;
+  const [loaded, setLoaded] = React.useState(false);
 
   const [currentFormIndex, setCurrentFormIndex] = React.useState(
     TOP_LEVEL_MENU_VIEW,
@@ -57,14 +80,15 @@ export default function App({
   // and FormUi - it's a non-trivial recursive walk of the whole form graph
   // (cycle detection, orphan detection, profile inference), and all three
   // need the exact same result on every `data` change.
-  const tree = React.useMemo(() => (data ? buildMenuTree(data) : null), [
+  const tree = React.useMemo(() => (loaded ? buildMenuTree(data) : null), [
     data,
+    loaded,
   ]);
 
   // `data` only ever exists once all four files were loaded and parsed.
   const loadedFiles = files as PopulatedFiles;
 
-  if (!data || !tree) {
+  if (!loaded || !tree) {
     return (
       <Stack className={s.padding} gap="xl">
         <BiosImageUpload
@@ -77,7 +101,11 @@ export default function App({
             parsed.firmwareFamily =
               generation === "unresolved" ? "ami-aptio" : generation;
             setFiles(extractedFiles);
-            setLoadedData(parsed);
+            // The very first load starts a fresh queue on this firmware's
+            // own data, rather than being staged as a reviewable "edit" of
+            // the emptyData placeholder.
+            dataQueue.replaceBase(parsed);
+            setLoaded(true);
           }}
         />
         <Divider label="Or measure a local firmware corpus" />
@@ -113,7 +141,7 @@ export default function App({
       <AppShell.Navbar>
         <Navigation
           data={data}
-          setData={setLoadedData}
+          setData={setData}
           tree={tree}
           currentFormIndex={currentFormIndex}
           setCurrentFormIndex={setCurrentFormIndex}
@@ -145,14 +173,16 @@ export default function App({
           currentFormIndex={currentFormIndex}
           files={loadedFiles}
           data={data}
-          setData={setLoadedData}
+          appliedData={dataQueue.appliedData}
+          changeQueue={dataQueue}
+          setData={setData}
         />
       </AppShell.Footer>
       <AppShell.Main>
         <FormUi
           data={data}
           tree={tree}
-          setData={setLoadedData}
+          setData={setData}
           originalSetupSct={loadedFiles.setupSctContainer.textContent}
           currentFormIndex={currentFormIndex}
           setCurrentFormIndex={setCurrentFormIndex}

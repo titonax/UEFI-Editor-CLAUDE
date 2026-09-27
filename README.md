@@ -295,6 +295,14 @@ HII effect column.
 re-uploaded file is validated against the loaded firmware's hashes, its
 offset checksum and its schema before anything is applied.
 
+Every edit above is staged, not committed immediately: the **Change
+queue** button in the footer opens a review dialog listing each staged
+entry with a plain-language description, a checkbox to include or exclude
+it, and a remove button. **Apply selected** commits the checked entries as
+the plan **UEFI files** export acts on. See
+[`docs/ami/change-queue.md`](docs/ami/change-queue.md) for the mechanism
+and its provenance.
+
 If a firmware's forms cross-reference each other from an unusually large
 number of paths, the menu tree stops expanding past a safety cap instead of
 hanging the tab; a yellow banner in the sidebar says so when it happens.
