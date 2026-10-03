@@ -18,3 +18,25 @@ if (typeof Element !== "undefined") {
     return nativeMatches.call(this, selectors);
   };
 }
+
+// Under jsdom the global ArrayBuffer/Uint8Array belong to jsdom's realm, and
+// Node 20's crypto.subtle.digest() only accepts buffers from Node's own realm
+// ("2nd argument is not instance of ArrayBuffer, Buffer, TypedArray, or
+// DataView"); Node 22 accepts both. Buffer.from() takes any ArrayBuffer or
+// view and returns a Node-realm Buffer over the same memory, so route every
+// digest input through it. Production code is untouched: real browsers have a
+// single realm.
+interface NodeBufferConstructor {
+  from(buffer: ArrayBufferLike, byteOffset?: number, length?: number): Uint8Array;
+}
+const NodeBuffer = (globalThis as { Buffer?: NodeBufferConstructor }).Buffer;
+if (NodeBuffer && typeof crypto !== "undefined" && "subtle" in crypto) {
+  const nativeDigest = crypto.subtle.digest.bind(crypto.subtle);
+  crypto.subtle.digest = (algorithm: AlgorithmIdentifier, data: BufferSource) =>
+    nativeDigest(
+      algorithm,
+      ArrayBuffer.isView(data)
+        ? NodeBuffer.from(data.buffer, data.byteOffset, data.byteLength)
+        : NodeBuffer.from(data),
+    );
+}
