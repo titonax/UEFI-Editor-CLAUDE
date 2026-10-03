@@ -14,8 +14,14 @@ import { buildPhoenixSetupMenu, type PhoenixSetupMenu } from "./phoenixSetupTabl
 const templatNamePattern = /^TEMPLAT\d+\.ROM$/i;
 const stringsNamePattern = /^STRINGS\d+\.ROM$/i;
 
-function findModule(modules: PhoenixModule[], pattern: RegExp) {
-  return modules.find((module) => pattern.test(module.name) && module.packedSize !== undefined);
+// Only an LH5-compressed module may be handed to the LH5 decoder. A legacy
+// module-chain entry records packedSize even when its compression byte says
+// "none" or something this editor does not decode, and feeding such a body to
+// the decoder would yield garbage that still looks like a menu.
+export function findLh5Module(modules: PhoenixModule[], pattern: RegExp) {
+  return modules.find(
+    (module) => pattern.test(module.name) && module.compression === "lh5" && module.packedSize !== undefined,
+  );
 }
 
 // Locates the two modules a Setup menu needs, either from an already-run
@@ -25,10 +31,10 @@ function findModule(modules: PhoenixModule[], pattern: RegExp) {
 // modules), by scanning directly for each module's own FFV header.
 function locateSetupModules(bytes: Uint8Array, legacyModules: PhoenixModule[] | undefined) {
   const templat =
-    (legacyModules && findModule(legacyModules, templatNamePattern)) ??
+    (legacyModules && findLh5Module(legacyModules, templatNamePattern)) ??
     findNamedPhoenixModule(bytes, "TEMPLAT0.ROM");
   const strings =
-    (legacyModules && findModule(legacyModules, stringsNamePattern)) ??
+    (legacyModules && findLh5Module(legacyModules, stringsNamePattern)) ??
     findNamedPhoenixModule(bytes, "STRINGS0.ROM");
   if (!templat || !strings || templat.payloadOffset === undefined || strings.payloadOffset === undefined) {
     return null;
@@ -56,7 +62,9 @@ export interface PhoenixSetupInventory {
 // TEMPLAT0.ROM) directly from raw firmware bytes. Returns null when either
 // module can't be located, isn't LH5-compressed, or fails to decompress -
 // this is a best-effort inventory, not a requirement for anything else
-// this editor does.
+// this editor does. A failure while parsing the decompressed tables is a
+// bug or an unrecognised layout, not "no Setup Table", so it is thrown with
+// context instead of being reported as null.
 export async function inspectPhoenixSetupMenu(bytes: Uint8Array): Promise<PhoenixSetupInventory | null> {
   const legacy = inspectPhoenixLegacyBytes(bytes);
   const located = locateSetupModules(bytes, legacy?.modules);
@@ -67,13 +75,23 @@ export async function inspectPhoenixSetupMenu(bytes: Uint8Array): Promise<Phoeni
   if (!templatCompressed || !stringsCompressed || templat.unpackedSize === undefined || strings.unpackedSize === undefined) {
     return null;
   }
+  let templatBytes: Uint8Array;
+  let stringsBytes: Uint8Array;
   try {
-    const [templatBytes, stringsBytes] = await Promise.all([
+    [templatBytes, stringsBytes] = await Promise.all([
       decompressPhoenixLh5(templatCompressed, templat.unpackedSize),
       decompressPhoenixLh5(stringsCompressed, strings.unpackedSize),
     ]);
-    return { menu: buildPhoenixSetupMenu(templatBytes, stringsBytes), templat: templatBytes };
   } catch {
+    // The module names matched but the body is not a decodable LH5 stream:
+    // this image has no usable Phoenix Setup Table.
     return null;
+  }
+  try {
+    return { menu: buildPhoenixSetupMenu(templatBytes, stringsBytes), templat: templatBytes };
+  } catch (reason) {
+    throw new Error(
+      `Phoenix Setup Table could not be parsed: ${reason instanceof Error ? reason.message : String(reason)}`,
+    );
   }
 }

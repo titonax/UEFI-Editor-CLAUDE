@@ -277,7 +277,15 @@ interface ExtractionGraph {
   // walking the rest of the image - one bad section (a trapped decompressor,
   // an unsupported scheme) should not cost every other branch's evidence.
   decodeFailures: string[];
+  // Decoded buffers left in the breadth-first queue when the search limit was
+  // reached. Anything inside them was never looked at, so it is reported
+  // instead of being treated as absent.
+  unsearchedBuffers: number;
 }
+
+// Upper bound on how many buffers (the image plus everything decoded out of
+// it) locateFirmwareFiles will search for Setup/AMITSE/SetupData.
+const maxSearchedBuffers = 64;
 
 function createExtractionGraph(
   image: Uint8Array,
@@ -289,6 +297,7 @@ function createExtractionGraph(
     nextId: 1,
     decompress,
     decodeFailures: [],
+    unsearchedBuffers: 0,
   };
 }
 
@@ -458,13 +467,14 @@ async function locateFirmwareFiles(
   const located = new Map<string, LocatedFile[]>(
     wantedGuids.map((fileGuid) => [fileGuid, []]),
   );
-  for (let index = 0; index < queue.length && index < 64; index++) {
+  for (let index = 0; index < queue.length && index < maxSearchedBuffers; index++) {
     const current = queue[index];
     for (const file of findFiles(current, wanted)) {
       located.get(file.guid)?.push(file);
     }
     queue.push(...(await nestedBuffers(graph, current)));
   }
+  graph.unsearchedBuffers = Math.max(0, queue.length - maxSearchedBuffers);
   return { graph, located };
 }
 
@@ -881,10 +891,14 @@ export async function extractAptioIvBytes(
   // aborts the whole walk (see tryDecodeEncapsulation) - if that cost us the
   // only path to a Setup context, say so; otherwise it becomes a warning on
   // whichever context was still found, below.
-  const decodeFailureContext = () =>
-    graph.decodeFailures.length > 0
-      ? ` ${String(graph.decodeFailures.length)} section(s) could not be decoded; first: ${graph.decodeFailures[0]}`
+  const unsearchedWarning =
+    graph.unsearchedBuffers > 0
+      ? `${String(graph.unsearchedBuffers)} decoded buffer(s) were not searched (limit ${String(maxSearchedBuffers)}); other firmware contexts may be missing.`
       : "";
+  const decodeFailureContext = () =>
+    (graph.decodeFailures.length > 0
+      ? ` ${String(graph.decodeFailures.length)} section(s) could not be decoded; first: ${graph.decodeFailures[0]}`
+      : "") + (unsearchedWarning ? ` ${unsearchedWarning}` : "");
   if ((files.get(setupGuid) ?? []).length === 0) {
     throw new Error(
       `Setup FFS was not found after recursive decompression.${decodeFailureContext()}`,
@@ -899,6 +913,9 @@ export async function extractAptioIvBytes(
   if (graph.decodeFailures.length > 0) {
     const warning = `${String(graph.decodeFailures.length)} nested section(s) could not be decoded; other firmware contexts may be missing. ${graph.decodeFailures[0]}`;
     for (const set of sets) set.summary.warnings.push(warning);
+  }
+  if (unsearchedWarning) {
+    for (const set of sets) set.summary.warnings.push(unsearchedWarning);
   }
   const selected = options.artifactSetId
     ? sets.find((set) => set.summary.id === options.artifactSetId)

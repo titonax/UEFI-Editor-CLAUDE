@@ -552,10 +552,31 @@ describe("visibility-callback patch (forceItemsVisible)", () => {
 });
 
 describe("toPbeModuleBytes", () => {
-  it("strips the 4-byte LH5-container header this codebase's decompression keeps but PBE's own extracted module never has", () => {
-    const templat = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd, 0x01, 0x02, 0x03]);
+  function withHeader(body: number[]) {
+    const total = 4 + body.length;
+    return new Uint8Array([total & 0xff, total >> 8, 0x00, 0x19, ...body]);
+  }
 
-    expect(Array.from(toPbeModuleBytes(templat))).toEqual([0x01, 0x02, 0x03]);
+  it("strips the 4-byte LH5-container header this codebase's decompression keeps but PBE's own extracted module never has", () => {
+    expect(Array.from(toPbeModuleBytes(withHeader([0x01, 0x02, 0x03])))).toEqual([0x01, 0x02, 0x03]);
+  });
+
+  it("refuses a buffer whose length field does not match instead of dropping 4 real bytes", () => {
+    const templat = withHeader([0x01, 0x02, 0x03]);
+    templat[0] = 0x99;
+
+    expect(() => toPbeModuleBytes(templat)).toThrow(/header/i);
+  });
+
+  it("refuses a buffer without the 00 19 marker", () => {
+    const templat = withHeader([0x01, 0x02, 0x03]);
+    templat[3] = 0x00;
+
+    expect(() => toPbeModuleBytes(templat)).toThrow(/header/i);
+  });
+
+  it("refuses a buffer shorter than the header", () => {
+    expect(() => toPbeModuleBytes(new Uint8Array([0x03, 0x00, 0x00]))).toThrow(/header/i);
   });
 });
 
@@ -592,6 +613,7 @@ describe("savePhoenixSetupChanges", () => {
   it("downloads only the patched TEMPLAT00.ROM plus a changelog naming each forced-visible item", async () => {
     saveAsMock.mockClear();
     const templat = new Uint8Array(0x20);
+    templat.set([0x20, 0x00, 0x00, 0x19], 0);
     templat.set([0xb8, 0x13, 0x00], HIDE_PATCH_OFFSET);
 
     const result = savePhoenixSetupChanges(templat, [hiddenItem("Intel")]);
@@ -616,11 +638,21 @@ describe("savePhoenixSetupChanges", () => {
   it("falls back to the item's raw offset in the changelog when it has no prompt", async () => {
     saveAsMock.mockClear();
     const templat = new Uint8Array(0x20);
+    templat.set([0x20, 0x00, 0x00, 0x19], 0);
     templat.set([0xb8, 0x13, 0x00], HIDE_PATCH_OFFSET);
 
     savePhoenixSetupChanges(templat, [hiddenItem(null)]);
 
     const [changelogBlob] = saveAsMock.mock.calls[1] as [Blob, string];
     expect(await changelogBlob.text()).toContain("item @0x0");
+  });
+
+  it("refuses to export, and downloads nothing, when the TEMPLAT buffer lacks the container header", () => {
+    saveAsMock.mockClear();
+    const templat = new Uint8Array(0x20);
+    templat.set([0xb8, 0x13, 0x00], HIDE_PATCH_OFFSET);
+
+    expect(() => savePhoenixSetupChanges(templat, [hiddenItem("Intel")])).toThrow(/header/i);
+    expect(saveAsMock).not.toHaveBeenCalled();
   });
 });

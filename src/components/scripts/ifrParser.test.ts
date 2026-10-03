@@ -10,6 +10,38 @@ function guidToUefiHex(value: string) {
   return (reverse(parts[0]) + reverse(parts[1]) + reverse(parts[2]) + parts[3] + parts[4]).toUpperCase();
 }
 
+describe("parseData robustness", () => {
+  it("keeps a literal | character in prompt text instead of turning it into a line break", async () => {
+    const files = await buildFixtureFiles();
+    files.setupTxtContainer.textContent = files.setupTxtContainer.textContent.replace(
+      '"Enable Feature"',
+      '"Enable|Feature"',
+    );
+
+    const data = await parseData(files);
+
+    const checkBox = data.forms
+      .flatMap((form) => form.children)
+      .find((child) => child.type === "CheckBox");
+    expect(checkBox?.name).toBe("Enable|Feature");
+  });
+
+  it("fails with a clear error, instead of hanging, when a scoped condition is never closed", async () => {
+    const formSetGuid = FIXTURE_FORM_SET_GUID;
+    const files = await buildFixtureFiles({
+      lines: [
+        `0x00000010: FormSet Guid: ${formSetGuid}, Title: "Main Setup", Help: "Root help"`,
+        `0x00000014: Form FormId: 0x1, Title: "Main Page" { 01 86 }`,
+        `0x00000016: \tSuppressIf { 0A 82 }`,
+        `0x00000018: \t\tAnd { 15 82 }`,
+        `0x0000001A: \t\t\tTrue { 01 06 }`,
+      ],
+    });
+
+    await expect(parseData(files)).rejects.toThrow(/Unterminated condition scope/);
+  });
+});
+
 describe("parseData", () => {
   it("parses forms, suppressions, and cross-form references from a verbose IFR dump", async () => {
     const files = await buildFixtureFiles();
