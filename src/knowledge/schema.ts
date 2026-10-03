@@ -107,6 +107,12 @@ export interface FirmwareCase {
   notes?: string[];
 }
 
+// "ami-aptio" keeps the short "ami" directory and id prefix the first cases
+// used; every other family uses its own name.
+export function caseDirectory(family: FirmwareVendorFamily): string {
+  return family === "ami-aptio" ? "ami" : family;
+}
+
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; errors: string[] };

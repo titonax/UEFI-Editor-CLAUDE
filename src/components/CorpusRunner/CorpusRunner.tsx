@@ -53,6 +53,7 @@ import {
   type CorpusStageStatus,
   type CorpusVolumeCounts,
 } from "../scripts/corpusDashboard";
+import { caseFilePath, caseFromEntry, serializeCase } from "../../knowledge/caseFromEntry";
 import { classifyEntry, type KnowledgeVerdict } from "../../knowledge/corpusKnowledge";
 import { knownCases } from "../../knowledge";
 import CorpusDashboard from "./CorpusDashboard";
@@ -258,6 +259,53 @@ function tabOperationRows(operations: CorpusTabOperation[]) {
   ]);
 }
 
+// Downloads this image's metadata as a firmware case file (see
+// src/knowledge). The file holds the SHA-256, sizes, counts and stage
+// outcomes only; no firmware byte is included and nothing leaves the browser.
+function AddCase({ entry }: { entry: CorpusRunEntry }) {
+  const [message, setMessage] = React.useState<{ ok: boolean; text: string } | null>(null);
+  const verdict = classifyEntry(entry, knownCases);
+  if (verdict.kind === "exact") {
+    return (
+      <Text size="xs" c="dimmed">
+        This image is already the recorded case {verdict.case.id}.
+      </Text>
+    );
+  }
+  const add = () => {
+    const result = caseFromEntry(entry);
+    if (!result.ok) {
+      setMessage({ ok: false, text: result.errors.join(" ") });
+      return;
+    }
+    saveAs(
+      new Blob([serializeCase(result.value)], { type: "application/json" }),
+      `${result.value.id}.json`,
+    );
+    setMessage({
+      ok: true,
+      text: `Saved ${result.value.id}.json (metadata only). Add it to the repository as ${caseFilePath(result.value)} and run npm run cases:check.`,
+    });
+  };
+  return (
+    <Stack gap="xs">
+      <Group gap="xs">
+        <Button size="xs" variant="light" leftSection={<IconDownload size={14} />} onClick={add}>
+          Add case
+        </Button>
+        <Text size="xs" c="dimmed">
+          Downloads this image&apos;s metadata as a case file. No firmware is included.
+        </Text>
+      </Group>
+      {message && (
+        <Alert color={message.ok ? "teal" : "red"} p="xs">
+          {message.text}
+        </Alert>
+      )}
+    </Stack>
+  );
+}
+
 function FileDetails({ entry }: { entry: CorpusRunEntry }) {
   const report = entry.report;
   const totals = entryTotals(entry);
@@ -266,6 +314,7 @@ function FileDetails({ entry }: { entry: CorpusRunEntry }) {
       <Text size="xs" c="dimmed" className={s.hash}>
         SHA-256: {entry.sha256 || "not calculated"}
       </Text>
+      <AddCase entry={entry} />
       <ScrollArea>
         <Table striped withColumnBorders className={s.detailsTable}>
           <Table.Thead>

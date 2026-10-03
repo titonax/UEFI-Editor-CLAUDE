@@ -28,15 +28,24 @@ vendor or generation.
 
 ## Adding a case
 
-1. Run the image through the corpus runner (`CorpusRunner`) and keep only the
-   metadata it reports.
-2. Write `cases/<family>/<id>.json` where `id` is `<family>-<first 8 hex of the
-   SHA-256>`. If the same image is already a case, add the new file name to its
-   `names` instead of creating a second case.
-3. Omit any field that was not observed. Keep `generation: "unresolved"` unless
+1. Run the image through the corpus runner (`Local firmware corpus runner`).
+   Its detail panel has an **Add case** button (hidden for an image that is
+   already a recorded case). It downloads `<id>.json`: metadata only, no
+   firmware, nothing leaves the browser.
+2. Put the file at `src/knowledge/cases/<family>/<id>.json` (the button prints
+   the exact path; `ami-aptio` images go under `ami/`). `id` is `<family>-<first
+   8 hex of the SHA-256>`. If the same image is already a case, add the new file
+   name to its `names` instead of creating a second case.
+3. Run `npm run cases:check`.
+4. Omit any field that was not observed. Keep `generation: "unresolved"` unless
    the evidence resolves it (see `docs/ami/sample-corpus.md`).
-4. `npm test` validates the file and checks the collection; the AMI cases are
-   also checked against the table in `docs/ami/sample-corpus.md`.
+
+`npm run cases:check` validates every case (strict shape, closed vocabularies,
+short text only, generation/evidence consistency), rejects two cases for one
+image or one id, and requires each file to sit at `cases/<family>/<id>.json`.
+It runs the `src/knowledge` tests, and so does `npm test` (and therefore CI).
+Cases recorded from `docs/ami/sample-corpus.md` are additionally checked against
+that table.
 
 Do not commit firmware. A case that needs bytes to make sense is not a case.
 

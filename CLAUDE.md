@@ -15,6 +15,7 @@ npm ci
 npm run lint     # eslint
 npm test         # vitest (jsdom); must stay green
 npm run build    # tsc -b && vite build
+npm run cases:check   # validate src/knowledge/cases (also part of npm test)
 ```
 
 CI (`.github/workflows/deploy.yaml`) runs lint, test and build. The `.wasm`
