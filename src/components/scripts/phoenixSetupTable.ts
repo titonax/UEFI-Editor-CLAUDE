@@ -484,6 +484,16 @@ export function forceItemsVisible(templat: Uint8Array, items: PhoenixSetupItem[]
 // to replace PBE's own extracted module must strip this first, or every
 // offset PBE reads from it will be off by 4.
 export function toPbeModuleBytes(templat: Uint8Array): Uint8Array {
+  const hasHeader =
+    templat.length >= 4 &&
+    (templat[0] | (templat[1] << 8)) === templat.length &&
+    templat[2] === 0x00 &&
+    templat[3] === 0x19;
+  if (!hasHeader) {
+    throw new Error(
+      "TEMPLAT buffer does not start with the expected [u16 length][00 19] header; refusing to strip 4 bytes blindly.",
+    );
+  }
   return templat.subarray(4);
 }
 

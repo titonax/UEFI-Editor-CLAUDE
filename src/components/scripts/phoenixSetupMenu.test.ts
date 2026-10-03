@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { inspectPhoenixSetupMenu } from "./phoenixSetupMenu";
+import type { PhoenixModule } from "./phoenixFirmware";
+import { findLh5Module, inspectPhoenixSetupMenu } from "./phoenixSetupMenu";
 
 const ascii = (value: string) => new TextEncoder().encode(value);
 
@@ -66,5 +67,45 @@ describe("inspectPhoenixSetupMenu", () => {
     // without throwing, not that this particular payload looks like menus.
     expect(inventory?.menu).toEqual({ sections: [], source: "contiguous-scan" });
     expect(inventory?.templat).toHaveLength(0x78);
+  });
+});
+
+describe("findLh5Module", () => {
+  const pattern = /^TEMPLAT\d+\.ROM$/i;
+  const module = (overrides: Partial<PhoenixModule>): PhoenixModule => ({
+    name: "TEMPLAT0.ROM",
+    kind: "legacy module",
+    offset: 0,
+    size: 0x40,
+    compression: "lh5",
+    packedSize: 0x20,
+    unpackedSize: 0x40,
+    payloadOffset: 0x10,
+    ...overrides,
+  });
+
+  it("returns an LH5-compressed module with a payload", () => {
+    const lh5 = module({});
+
+    expect(findLh5Module([module({ name: "OTHER.ROM" }), lh5], pattern)).toBe(lh5);
+  });
+
+  it("refuses a module whose compression is none or unknown instead of feeding it to the LH5 decoder", () => {
+    expect(findLh5Module([module({ compression: "none" })], pattern)).toBeUndefined();
+    expect(findLh5Module([module({ compression: "unknown" })], pattern)).toBeUndefined();
+  });
+
+  it("refuses a module with no packed size", () => {
+    expect(findLh5Module([module({ packedSize: undefined })], pattern)).toBeUndefined();
+  });
+});
+
+describe("inspectPhoenixSetupMenu failure reporting", () => {
+  it("returns null when the LH5 body cannot be decoded (best-effort inventory)", async () => {
+    const bytes = new Uint8Array(0x1000);
+    standaloneFfvModule(bytes, "_T00", 0x100, new Uint8Array(20), 0x78);
+    standaloneFfvModule(bytes, "_S00", 0x300, new Uint8Array(20), 0x78);
+
+    expect(await inspectPhoenixSetupMenu(bytes)).toBeNull();
   });
 });

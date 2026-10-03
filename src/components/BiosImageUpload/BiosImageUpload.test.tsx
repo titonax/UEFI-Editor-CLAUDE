@@ -476,7 +476,7 @@ describe("BiosImageUpload", () => {
     // "mov ax, 0x0013" (hide path) at HIDE_PATCH_OFFSET - the same shape
     // as the real, disassembly-confirmed "Intel" item's own patch point.
     const templat = new Uint8Array(0x20);
-    templat.set([0xaa, 0xbb, 0xcc, 0xdd], 0);
+    templat.set([0x20, 0x00, 0x00, 0x19], 0);
     templat.set([0xb8, 0x13, 0x00], HIDE_PATCH_OFFSET);
 
     const hiddenItem: PhoenixSetupItem = {

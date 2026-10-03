@@ -490,3 +490,19 @@ they are **not** the same kind of thing:
   [Exporting a visibility patch for Phoenix BIOS Editor](#exporting-a-visibility-patch-for-phoenix-bios-editor)
   above for exactly what to do with the downloaded file in PBE, and why no
   LH5 encoder is needed for this.
+
+### Failure handling guarantees
+
+- Only a module whose compression byte says LH5 is handed to the LH5 decoder
+  (`findLh5Module`). A legacy module-chain entry with compression `none` or
+  an unrecognised algorithm is skipped, because decoding it as LH5 would
+  produce garbage that can still look like a menu. The decoder itself rejects
+  output whose length differs from the declared unpacked size; Phoenix modules
+  carry no CRC, so length and the Setup Table's structural checks are the
+  integrity evidence available.
+- A body that does not decode means "no usable Setup Table" (`null`). A
+  failure while parsing the decoded tables is thrown with context instead,
+  so it is not mistaken for an image that simply has no Phoenix menu.
+- `toPbeModuleBytes` strips the 4-byte `[u16 length][00 19]` header only
+  after checking it. A buffer without it makes "Save changes" throw and
+  download nothing, rather than export a module shifted by 4 bytes.

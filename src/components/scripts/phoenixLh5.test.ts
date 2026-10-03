@@ -31,4 +31,8 @@ describe("decompressPhoenixLh5", () => {
   it("rejects a compressed body that isn't a valid LH5 stream", async () => {
     await expect(decompressPhoenixLh5(new Uint8Array(20), 100)).rejects.toThrow();
   });
+
+  it("rejects output whose length differs from the declared unpacked size", async () => {
+    await expect(decompressPhoenixLh5(acpi1CompressedBody, 0x80)).rejects.toThrow();
+  });
 });
