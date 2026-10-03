@@ -29,6 +29,9 @@ decompressors and IFRExtractor are built on CI and git-ignored
 - `src/components/Navigation`, `FormUi`, `ChangeQueue`, `CorpusRunner`,
   `BiosImageUpload` - UI and analysis that consume `Data` but never touch
   bytes.
+- `src/knowledge/` - metadata-only cases of analysed images, their structural
+  fingerprint and a matcher (see its README). Observational: never choose a
+  code path from a case or a vendor family.
 - `tools/` - Rust (`lzma-wasi`) and C (`tiano-wasi`) decompressors built to
   WASI.
 

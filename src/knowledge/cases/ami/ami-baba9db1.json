@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-baba9db1",
+  "sha256": "baba9db1b7f98b88cd00ff4a9b1ab2c246bef173813776026997cc23d23cdaa5",
+  "size": 16777216,
+  "names": [
+    "X399TC4.03"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "vendor-image",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 4,
+    "ffs2Files": 4,
+    "ffs3Files": 0,
+    "directSetupFiles": 0
+  },
+  "blockers": [],
+  "source": "docs/ami/sample-corpus.md"
+}

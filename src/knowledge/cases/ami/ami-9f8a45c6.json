@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-9f8a45c6",
+  "sha256": "9f8a45c657c4cdb0ac594a8df478e093a00dc47d0e01114899c74d54c8bd044a",
+  "size": 16777216,
+  "names": [
+    "X399AORUSGaming7.F13d"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "vendor-image",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 5,
+    "ffs2Files": 5,
+    "ffs3Files": 0,
+    "directSetupFiles": 0
+  },
+  "blockers": [],
+  "source": "docs/ami/sample-corpus.md"
+}

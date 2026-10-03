@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-dc86ddfe",
+  "sha256": "dc86ddfec044a92a91cc4ded3173b2297de2095778a1070460e2dba00dccdb8d",
+  "size": 16777216,
+  "names": [
+    "E7B09AMS.1C0"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "vendor-image",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 3,
+    "ffs2Files": 3,
+    "ffs3Files": 0,
+    "directSetupFiles": 1
+  },
+  "blockers": [],
+  "source": "docs/ami/sample-corpus.md"
+}

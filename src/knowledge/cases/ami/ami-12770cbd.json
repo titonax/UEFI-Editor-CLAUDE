@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-12770cbd",
+  "sha256": "12770cbddbab0fd071e91142afe6b1882c7a50c0e7b438866f6b99b5c660da64",
+  "size": 20971520,
+  "names": [
+    "FNCML357.0067.CAP"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "firmware-volume-image",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 19,
+    "ffs2Files": 19,
+    "ffs3Files": 0,
+    "directSetupFiles": 0
+  },
+  "blockers": [],
+  "source": "docs/ami/sample-corpus.md"
+}
