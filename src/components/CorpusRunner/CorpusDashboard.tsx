@@ -86,6 +86,21 @@ export default function CorpusDashboard({ dashboard }: { dashboard: CorpusDashbo
           {String(dashboard.unknownManufacturer)} unknown manufacturer
         </Badge>
       </Group>
+      <Group gap="xs">
+        <Badge variant="light" color="teal">
+          {String(dashboard.knowledge.exact)} known case(s)
+        </Badge>
+        <Badge variant="light" color="yellow">
+          {String(dashboard.knowledge.similar)} similar to a known case
+        </Badge>
+        <Badge variant="light" color="grape">
+          {String(dashboard.knowledge.novel)} new case(s)
+        </Badge>
+      </Group>
+      <Text size="xs" c="dimmed">
+        Compared with the recorded firmware cases by SHA-256, then by structure. Similarity
+        is the share of comparable fields that agree, not a probability.
+      </Text>
       <ScrollArea>
         <Table striped withColumnBorders className={s.dashboardTable}>
           <Table.Thead>

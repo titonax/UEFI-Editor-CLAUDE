@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "cases:check": "vitest run src/knowledge"
   },
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "^0.4.2",

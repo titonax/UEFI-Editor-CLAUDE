@@ -8,6 +8,14 @@ import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
 
 const extractFirmwareInWorker = vi.hoisted(() => vi.fn());
 
+const saveAsMock = vi.hoisted(() => vi.fn());
+
+vi.mock("file-saver", () => ({
+  saveAs: (blob: Blob, name: string) => {
+    saveAsMock(blob, name);
+  },
+}));
+
 vi.mock("../scripts/aptioIvExtractorClient", () => ({
   extractFirmwareInWorker,
 }));
@@ -166,6 +174,23 @@ describe("CorpusRunner", () => {
       expect(within(itemA).getByText("Partial")).toBeInTheDocument();
       expect(within(itemB).getByText("Unsupported")).toBeInTheDocument();
     });
+    // Neither synthetic image is a recorded firmware case, so each is new
+    // (similarity is never claimed without evidence). Both fixtures carry the
+    // same bytes, so the dashboard counts them as one distinct case.
+    expect(within(itemA).getByText("New case")).toBeInTheDocument();
+    expect(within(itemB).getByText("New case")).toBeInTheDocument();
+    expect(screen.getByText("1 new case(s)")).toBeInTheDocument();
+    expect(screen.getByText("0 known case(s)")).toBeInTheDocument();
+    expect(screen.getByText("0 similar to a known case")).toBeInTheDocument();
+    // "Add case" downloads this image's metadata as a case file, named after
+    // the case id, and tells the user where to put it.
+    fireEvent.click(within(itemA).getByRole("button", { name: "Add case", hidden: true }));
+    expect(saveAsMock).toHaveBeenCalledTimes(1);
+    const [caseBlob, caseName] = saveAsMock.mock.calls[0] as [Blob, string];
+    expect(caseName).toMatch(/^[a-z-]+-[0-9a-f]{8}\.json$/);
+    expect(caseBlob.type).toBe("application/json");
+    expect(caseBlob.size).toBeGreaterThan(0);
+    expect(within(itemA).getByText(/Saved .*\.json \(metadata only\)/)).toBeInTheDocument();
     expect(
       screen.getAllByText("Setup FFS was not found after recursive decompression.", {
         exact: false,
