@@ -266,6 +266,55 @@ describe("extractAptioIvArtifacts", () => {
     ).toBe(true);
   });
 
+  describe("when the image holds more nested buffers than the search limit", () => {
+    // One FFS file whose body is `count` Disposable sections; each decodes to
+    // its own nested buffer, so the breadth-first search queue grows past its
+    // 64-buffer limit. `payloads[index]` is the content of section `index`.
+    function imageWithDisposableSections(count: number, payloads: Map<number, Uint8Array>) {
+      const filler = new Uint8Array(4);
+      const sections: Uint8Array[] = [];
+      for (let index = 0; index < count; index++) {
+        const payload = payloads.get(index) ?? filler;
+        const section = new Uint8Array((4 + payload.length + 3) & ~3);
+        writeUint24(section, 0, 4 + payload.length);
+        section[3] = 0x03;
+        section.set(payload, 4);
+        sections.push(section);
+      }
+      const body = new Uint8Array(sections.reduce((total, section) => total + section.length, 0));
+      let cursor = 0;
+      for (const section of sections) {
+        body.set(section, cursor);
+        cursor += section.length;
+      }
+      return firmwareVolumeWithFile("11111111-2222-3333-4444-555555555555", body);
+    }
+
+    it("says so, instead of reporting a plain miss, when the only Setup sits in an unsearched buffer", async () => {
+      const image = imageWithDisposableSections(70, new Map([[69, setupVolume(new Uint8Array([0x01]))]]));
+
+      await expect(extractAptioIvBytes(image, () => Promise.resolve(""))).rejects.toThrow(
+        /Setup FFS was not found.*not searched/,
+      );
+    });
+
+    it("attaches a warning to a context that was found while later buffers went unsearched", async () => {
+      const image = imageWithDisposableSections(70, new Map([[0, setupVolume(new Uint8Array([0x01]))]]));
+
+      const artifacts = await extractAptioIvBytes(image, () => Promise.resolve("FormSet Guid: a"));
+
+      expect(artifacts.artifactSets[0].warnings.some((warning) => warning.includes("not searched"))).toBe(true);
+    });
+
+    it("adds no warning when everything was searched", async () => {
+      const image = imageWithDisposableSections(3, new Map([[0, setupVolume(new Uint8Array([0x01]))]]));
+
+      const artifacts = await extractAptioIvBytes(image, () => Promise.resolve("FormSet Guid: a"));
+
+      expect(artifacts.artifactSets[0].warnings.some((warning) => warning.includes("not searched"))).toBe(false);
+    });
+  });
+
   it("keeps duplicated firmware slots coherent and selects them explicitly", async () => {
     const firstContext = artifactContext(0xa1);
     const secondContext = artifactContext(0xb2);
