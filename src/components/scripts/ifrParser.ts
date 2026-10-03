@@ -225,6 +225,11 @@ function determineCondition(
   let openScopes = 1;
   let currentIndex = index + 2;
   while (openScopes !== 0) {
+    if (currentIndex >= setupTxtArray.length) {
+      throw new Error(
+        `Unterminated condition scope starting at IFR line ${String(index + 1)}: no matching "{ 29 02 }" before the end of the dump.`,
+      );
+    }
     const line = setupTxtArray[currentIndex];
 
     const anyOpcode = /\{ (.*) \}/.exec(line);
@@ -999,7 +1004,7 @@ export async function parseData(files: PopulatedFiles) {
     throw new Error("Setup SCT and IFR Extractor output TXT SHA256 mismatch");
   }
 
-  setupTxt = setupTxt.replace(/[\r\n|\n|\r](?!0x[0-9A-F]{3})/g, "<br>");
+  setupTxt = setupTxt.replace(/[\r\n](?!0x[0-9A-F]{3})/g, "<br>");
 
   const {
     formSetIds,
