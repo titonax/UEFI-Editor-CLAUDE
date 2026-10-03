@@ -70,8 +70,9 @@ export const caseStageStatuses: readonly CaseStageStatus[] = [
 // records what the analysers actually reported.
 export interface FirmwareCaseFeatures {
   firmwareVolumes?: number;
-  ffs2Files?: number;
-  ffs3Files?: number;
+  // Firmware volumes whose file system is FFS2 / FFS3.
+  ffs2Volumes?: number;
+  ffs3Volumes?: number;
   // Setup FFS files the outer byte scan can see without decompressing anything.
   directSetupFiles?: number;
   contextCount?: number;
@@ -131,8 +132,8 @@ const topLevelKeys = new Set([
 ]);
 const featureNumberKeys = [
   "firmwareVolumes",
-  "ffs2Files",
-  "ffs3Files",
+  "ffs2Volumes",
+  "ffs3Volumes",
   "directSetupFiles",
   "contextCount",
   "formSets",

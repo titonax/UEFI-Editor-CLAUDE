@@ -166,6 +166,14 @@ describe("CorpusRunner", () => {
       expect(within(itemA).getByText("Partial")).toBeInTheDocument();
       expect(within(itemB).getByText("Unsupported")).toBeInTheDocument();
     });
+    // Neither synthetic image is a recorded firmware case, so each is new
+    // (similarity is never claimed without evidence). Both fixtures carry the
+    // same bytes, so the dashboard counts them as one distinct case.
+    expect(within(itemA).getByText("New case")).toBeInTheDocument();
+    expect(within(itemB).getByText("New case")).toBeInTheDocument();
+    expect(screen.getByText("1 new case(s)")).toBeInTheDocument();
+    expect(screen.getByText("0 known case(s)")).toBeInTheDocument();
+    expect(screen.getByText("0 similar to a known case")).toBeInTheDocument();
     expect(
       screen.getAllByText("Setup FFS was not found after recursive decompression.", {
         exact: false,

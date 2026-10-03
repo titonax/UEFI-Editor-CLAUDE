@@ -14,7 +14,7 @@ function validCase(overrides: Record<string, unknown> = {}): Record<string, unkn
     container: "intel-flash",
     generation: "unresolved",
     generationEvidence: "unresolved",
-    features: { firmwareVolumes: 12, ffs2Files: 12, ffs3Files: 0, directSetupFiles: 0 },
+    features: { firmwareVolumes: 12, ffs2Volumes: 12, ffs3Volumes: 0, directSetupFiles: 0 },
     blockers: [],
     source: "docs/ami/sample-corpus.md",
     ...overrides,

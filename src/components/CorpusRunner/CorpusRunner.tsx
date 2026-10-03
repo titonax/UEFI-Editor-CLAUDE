@@ -51,7 +51,10 @@ import {
   type CorpusRunEntry,
   type CorpusStageResult,
   type CorpusStageStatus,
+  type CorpusVolumeCounts,
 } from "../scripts/corpusDashboard";
+import { classifyEntry, type KnowledgeVerdict } from "../../knowledge/corpusKnowledge";
+import { knownCases } from "../../knowledge";
 import CorpusDashboard from "./CorpusDashboard";
 import s from "./CorpusRunner.module.css";
 
@@ -144,6 +147,32 @@ function summarizeRun(entries: CorpusRunEntry[]) {
   };
 }
 
+// What the shallow preflight scan counted, kept on the entry so the image can
+// be fingerprinted against the recorded firmware cases.
+function volumeCounts(preflight: ReturnType<typeof inspectAmiFirmwareBytes>): CorpusVolumeCounts {
+  return {
+    firmwareVolumes: preflight.firmwareVolumes.length,
+    ffs2Volumes: preflight.ffs2Volumes.length,
+    ffs3Volumes: preflight.ffs3Volumes.length,
+    directSetupFiles: preflight.setupFfs.length,
+  };
+}
+
+function knowledgeBadge(verdict: KnowledgeVerdict) {
+  switch (verdict.kind) {
+    case "exact":
+      return { color: "teal", label: "Known case", title: `Same SHA-256 as case ${verdict.case.id}` };
+    case "similar":
+      return {
+        color: "yellow",
+        label: `≈ ${String(Math.round(verdict.similarity * 100))}% like ${verdict.case.id}`,
+        title: `Structural similarity over ${String(verdict.compared)} comparable fields; not a probability that it is the same kind of firmware.`,
+      };
+    case "novel":
+      return { color: "grape", label: "New case", title: "No recorded case matches this image's structure." };
+  }
+}
+
 function csvCell(value: string | number) {
   const text = String(value);
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -173,10 +202,13 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
     "phoenix_legacy_format",
     "phoenix_legacy_module_count",
     "phoenix_uefi_debug_modules",
+    "knowledge",
+    "knowledge_case",
     "failure",
   ];
   const rows = entries.map((entry) => {
     const totals = entryTotals(entry);
+    const verdict = classifyEntry(entry, knownCases);
     return [
       entry.fileName,
       entry.sha256,
@@ -200,6 +232,8 @@ function entriesToCsv(entries: CorpusRunEntry[]) {
       entry.phoenixLegacy?.format ?? "",
       entry.phoenixLegacy?.modules.length ?? "",
       entry.phoenixUefi?.debugModules.join("; ") ?? "",
+      verdict.kind,
+      verdict.kind === "novel" ? "" : verdict.case.id,
       entry.failureMessage ?? "",
     ];
   });
@@ -594,6 +628,7 @@ export default function CorpusRunner() {
         container: preflight.container,
         generation,
         contextCount: extracted.artifactSets.length,
+        volumes: volumeCounts(preflight),
         reconstructionComplete: reconstruction.traceComplete,
         reconstructionBlockers: reconstruction.blockers,
         stages,
@@ -636,6 +671,7 @@ export default function CorpusRunner() {
         status: knownNonAmi ? "unsupported" : "failed",
         container: preflight?.container,
         contextCount: 0,
+        volumes: preflight ? volumeCounts(preflight) : undefined,
         reconstructionBlockers: [],
         stages,
         failureMessage: message,
@@ -780,7 +816,7 @@ export default function CorpusRunner() {
             <Metric label="Navigation" value={`${String(summary.navigationRate)}%`} />
             <Metric label="HII editable" value={`${String(summary.hiiEditRate)}%`} />
           </SimpleGrid>
-          <CorpusDashboard dashboard={buildCorpusDashboard(entries, files.length)} />
+          <CorpusDashboard dashboard={buildCorpusDashboard(entries, files.length, knownCases)} />
           <Group>
             <Button
               variant="default"
@@ -837,6 +873,14 @@ export default function CorpusRunner() {
                             H {String(totals.hide)} · S {String(totals.show)}
                           </Badge>
                         )}
+                        {(() => {
+                          const badge = knowledgeBadge(classifyEntry(entry, knownCases));
+                          return (
+                            <Badge color={badge.color} variant="light" title={badge.title}>
+                              {badge.label}
+                            </Badge>
+                          );
+                        })()}
                         {entry.vendorGuess && (
                           <Badge color="gray" variant="light">
                             {entry.vendorGuess.label}

@@ -15,7 +15,7 @@ function makeCase(hex: string, overrides: Partial<FirmwareCase> = {}): FirmwareC
     container: "intel-flash",
     generation: "unresolved",
     generationEvidence: "unresolved",
-    features: { firmwareVolumes: 12, ffs2Files: 12, ffs3Files: 0, directSetupFiles: 0 },
+    features: { firmwareVolumes: 12, ffs2Volumes: 12, ffs3Volumes: 0, directSetupFiles: 0 },
     blockers: [],
     source: "test",
     ...overrides,
@@ -35,11 +35,11 @@ describe("compareFingerprints", () => {
 
   it("lists the fields that disagree", () => {
     const result = compareFingerprints(
-      { container: "intel-flash", firmwareVolumes: 12, ffs3Files: 0 },
-      { container: "vendor-image", firmwareVolumes: 12, ffs3Files: 0 },
+      { container: "intel-flash", firmwareVolumes: 12, ffs3Volumes: 0 },
+      { container: "vendor-image", firmwareVolumes: 12, ffs3Volumes: 0 },
     );
     expect(result.differing).toEqual(["container"]);
-    expect(result.agreeing).toEqual(["firmwareVolumes", "ffs3Files"]);
+    expect(result.agreeing).toEqual(["firmwareVolumes", "ffs3Volumes"]);
     expect(result.similarity).toBeCloseTo(2 / 3);
   });
 
@@ -51,7 +51,7 @@ describe("compareFingerprints", () => {
 describe("matchCases", () => {
   const a = makeCase("a");
   const b = makeCase("b", { container: "vendor-image" });
-  const c = makeCase("c", { features: { firmwareVolumes: 3, ffs2Files: 3, ffs3Files: 0, directSetupFiles: 1 } });
+  const c = makeCase("c", { features: { firmwareVolumes: 3, ffs2Volumes: 3, ffs3Volumes: 0, directSetupFiles: 1 } });
   const subject = fingerprintFromCase(a);
 
   it("finds the exact case by SHA-256, ignoring letter case", () => {

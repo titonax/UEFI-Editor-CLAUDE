@@ -12,8 +12,8 @@ export interface FirmwareFingerprint {
   vendorFamily?: FirmwareVendorFamily;
   generation?: AmiFirmwareGeneration;
   firmwareVolumes?: number;
-  ffs2Files?: number;
-  ffs3Files?: number;
+  ffs2Volumes?: number;
+  ffs3Volumes?: number;
   directSetupFiles?: number;
   contextCount?: number;
   formSets?: number;
@@ -27,8 +27,8 @@ export const fingerprintFields = [
   "vendorFamily",
   "generation",
   "firmwareVolumes",
-  "ffs2Files",
-  "ffs3Files",
+  "ffs2Volumes",
+  "ffs3Volumes",
   "directSetupFiles",
   "contextCount",
   "formSets",
@@ -64,6 +64,10 @@ export function fingerprintFromEntry(entry: CorpusRunEntry): FirmwareFingerprint
         ? undefined
         : entry.vendorGuess.family,
     generation: entry.generation?.generation,
+    firmwareVolumes: entry.volumes?.firmwareVolumes,
+    ffs2Volumes: entry.volumes?.ffs2Volumes,
+    ffs3Volumes: entry.volumes?.ffs3Volumes,
+    directSetupFiles: entry.volumes?.directSetupFiles,
     contextCount: entry.contextCount,
     formSets: report?.counts.formSets,
     forms: report?.counts.forms,

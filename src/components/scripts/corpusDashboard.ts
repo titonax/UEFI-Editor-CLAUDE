@@ -2,6 +2,8 @@ import type { AmiGenerationAssessment, FirmwareContainer, FirmwareVendorGuess } 
 import type { BrandClassification } from "./brandKnowledge";
 import { reportNavigationDetected, type CorpusReport } from "./corpusReport";
 import type { PhoenixLegacyInventory, PhoenixUefiInventory } from "./phoenixFirmware";
+import { knowledgeBreakdown, type KnowledgeBreakdown } from "../../knowledge/corpusKnowledge";
+import type { FirmwareCase } from "../../knowledge/schema";
 
 // The browser corpus runner's per-file result shape - richer than
 // CorpusReport (see corpusReport.ts), which only ever describes a
@@ -24,6 +26,14 @@ export interface CorpusStageResult {
   detail: string;
 }
 
+export interface CorpusVolumeCounts {
+  firmwareVolumes: number;
+  ffs2Volumes: number;
+  ffs3Volumes: number;
+  // Setup FFS files the outer byte scan sees without decompressing anything.
+  directSetupFiles: number;
+}
+
 export interface CorpusRunEntry {
   fileName: string;
   size: number;
@@ -32,6 +42,9 @@ export interface CorpusRunEntry {
   container?: FirmwareContainer;
   generation?: AmiGenerationAssessment;
   contextCount: number;
+  // What the preflight scan counted, so an image can be fingerprinted (see
+  // src/knowledge). Absent when the run never reached preflight.
+  volumes?: CorpusVolumeCounts;
   reconstructionComplete?: boolean;
   reconstructionBlockers: string[];
   stages: CorpusStageResult[];
@@ -308,6 +321,9 @@ export interface CorpusDashboardData {
   generations: CorpusDashboardCohort[];
   noHiiEdit: number;
   fullImageBlocked: number;
+  // How the distinct cases relate to the recorded firmware cases (see
+  // src/knowledge): already known, structurally similar to one, or novel.
+  knowledge: KnowledgeBreakdown;
 }
 
 // `selected` (how many files were chosen, before Cancel may have cut the
@@ -316,6 +332,7 @@ export interface CorpusDashboardData {
 export function buildCorpusDashboard(
   entries: CorpusRunEntry[],
   selected = entries.length,
+  knownCases: readonly FirmwareCase[] = [],
 ): CorpusDashboardData {
   const unique = distinctEntries(entries);
   return {
@@ -339,5 +356,6 @@ export function buildCorpusDashboard(
     fullImageBlocked: unique.filter(
       (entry) => extractedStatuses.includes(entry.status) && !entry.reconstructionComplete,
     ).length,
+    knowledge: knowledgeBreakdown(unique, knownCases),
   };
 }

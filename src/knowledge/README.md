@@ -39,3 +39,25 @@ vendor or generation.
    also checked against the table in `docs/ami/sample-corpus.md`.
 
 Do not commit firmware. A case that needs bytes to make sense is not a case.
+
+## Where it shows up
+
+The corpus runner (`src/components/CorpusRunner`) fingerprints every analysed
+image from what it already measured (container, vendor family, generation,
+context count, the preflight volume counts, HII counts, navigation mechanism)
+and calls `classifyEntry()` (`corpusKnowledge.ts`):
+
+- **Known case**: the SHA-256 is a recorded case.
+- **Similar** (`≈ N% like <id>`): no exact case, but a case agrees on at least
+  `similarThreshold` (80%) of at least `minimumComparedFields` comparable fields.
+- **New case**: nothing resembles it closely enough; a candidate to record.
+
+Each file shows one badge, the dashboard counts the three classes over distinct
+cases, and the CSV export gains `knowledge` and `knowledge_case` columns. None
+of this changes how an image is analysed.
+
+The volume counts come from the shallow preflight scan
+(`inspectAmiFirmwareBytes`): `firmwareVolumes`, `ffs2Volumes`, `ffs3Volumes`
+and `directSetupFiles` (Setup FFS files visible without decompressing). The
+bundled cases take the same four numbers from the table in
+`docs/ami/sample-corpus.md`.

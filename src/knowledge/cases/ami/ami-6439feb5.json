@@ -12,8 +12,8 @@
   "generationEvidence": "unresolved",
   "features": {
     "firmwareVolumes": 8,
-    "ffs2Files": 6,
-    "ffs3Files": 2,
+    "ffs2Volumes": 6,
+    "ffs3Volumes": 2,
     "directSetupFiles": 0
   },
   "blockers": [],
