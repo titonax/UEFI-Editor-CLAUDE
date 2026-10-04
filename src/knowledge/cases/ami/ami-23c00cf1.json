@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-23c00cf1",
+  "sha256": "23c00cf1c97a1f03c5bda1ff24bf10bee75facf20914b5404205b28436561d70",
+  "size": 16777216,
+  "names": [
+    "X399AG7.F12"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "vendor-image",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 3,
+    "ffs2Volumes": 3,
+    "ffs3Volumes": 0,
+    "directSetupFiles": 0
+  },
+  "blockers": [],
+  "source": "docs/ami/sample-corpus.md"
+}

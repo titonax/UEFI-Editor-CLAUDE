@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-6439feb5",
+  "sha256": "6439feb56eea3e18ed8372e507a9b089badd617a6e071a26449a465a782eb882",
+  "size": 33554432,
+  "names": [
+    "BIOS_H12SSL-1B95_20260513_3.7_STDsp.bin"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "vendor-image",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 8,
+    "ffs2Volumes": 6,
+    "ffs3Volumes": 2,
+    "directSetupFiles": 0
+  },
+  "blockers": [],
+  "source": "docs/ami/sample-corpus.md"
+}

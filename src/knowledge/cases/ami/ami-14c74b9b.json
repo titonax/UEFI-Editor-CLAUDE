@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-14c74b9b",
+  "sha256": "14c74b9b80e71d3302c13aea0dfea3560e1452a55c698c20e457c5b495154443",
+  "size": 33554432,
+  "names": [
+    "image1.bin"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "intel-flash",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 12,
+    "ffs2Volumes": 12,
+    "ffs3Volumes": 0,
+    "directSetupFiles": 0
+  },
+  "blockers": [],
+  "source": "docs/ami/sample-corpus.md"
+}

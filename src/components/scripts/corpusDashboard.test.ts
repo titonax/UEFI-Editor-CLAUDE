@@ -14,6 +14,7 @@ import {
   stageBreakdown,
   type CorpusRunEntry,
 } from "./corpusDashboard";
+import type { FirmwareCase } from "../../knowledge/schema";
 
 function stage(id: CorpusRunEntry["stages"][number]["id"], status: CorpusRunEntry["stages"][number]["status"]) {
   return { id, status, detail: "" };
@@ -308,6 +309,43 @@ describe("buildCorpusDashboard", () => {
     expect(dashboard.unknownManufacturer).toBe(2);
     expect(dashboard.families.map((cohort) => cohort.label)).toContain("AMI Aptio");
     expect(dashboard.recognitionBlockers.reduce((total, entry) => total + entry.cases, 0)).toBe(4);
+  });
+
+  it("relates the distinct cases to the recorded firmware cases", () => {
+    const knownCase: FirmwareCase = {
+      schemaVersion: 1,
+      id: "ami-aaaaaaaa",
+      sha256: "a".repeat(64),
+      size: 100,
+      names: ["known.bin"],
+      vendorFamily: "ami-aptio",
+      container: "intel-flash",
+      generation: "aptio-v",
+      generationEvidence: "probable",
+      features: { contextCount: 1 },
+      blockers: [],
+      source: "test",
+    };
+    const entries = [
+      recognizedEntry({ sha256: "a".repeat(64) }),
+      recognizedEntry({ fileName: "dup.bin", sha256: "a".repeat(64) }),
+      partialEntry(),
+    ];
+
+    const dashboard = buildCorpusDashboard(entries, entries.length, [knownCase]);
+
+    // The duplicate is not counted twice; the other image shares too little
+    // with the case to be called similar.
+    expect(dashboard.knowledge.exact).toBe(1);
+    expect(dashboard.knowledge.exact + dashboard.knowledge.similar + dashboard.knowledge.novel).toBe(
+      dashboard.uniqueCases,
+    );
+  });
+
+  it("reports every distinct case as novel when no cases are recorded", () => {
+    const entries = [recognizedEntry(), partialEntry()];
+
+    expect(buildCorpusDashboard(entries).knowledge).toEqual({ exact: 0, similar: 0, novel: 2 });
   });
 
   it("counts a duplicate-hash entry once for distinct-case purposes", () => {

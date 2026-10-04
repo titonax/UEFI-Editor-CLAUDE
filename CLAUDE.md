@@ -15,6 +15,7 @@ npm ci
 npm run lint     # eslint
 npm test         # vitest (jsdom); must stay green
 npm run build    # tsc -b && vite build
+npm run cases:check   # validate src/knowledge/cases (also part of npm test)
 ```
 
 CI (`.github/workflows/deploy.yaml`) runs lint, test and build. The `.wasm`
@@ -29,6 +30,9 @@ decompressors and IFRExtractor are built on CI and git-ignored
 - `src/components/Navigation`, `FormUi`, `ChangeQueue`, `CorpusRunner`,
   `BiosImageUpload` - UI and analysis that consume `Data` but never touch
   bytes.
+- `src/knowledge/` - metadata-only cases of analysed images, their structural
+  fingerprint and a matcher (see its README). Observational: never choose a
+  code path from a case or a vendor family.
 - `tools/` - Rust (`lzma-wasi`) and C (`tiano-wasi`) decompressors built to
   WASI.
 
