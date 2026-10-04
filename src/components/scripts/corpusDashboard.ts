@@ -2,7 +2,13 @@ import type { AmiGenerationAssessment, FirmwareContainer, FirmwareVendorGuess } 
 import type { BrandClassification } from "./brandKnowledge";
 import { reportNavigationDetected, type CorpusReport } from "./corpusReport";
 import type { PhoenixLegacyInventory, PhoenixUefiInventory } from "./phoenixFirmware";
-import { knowledgeBreakdown, type KnowledgeBreakdown } from "../../knowledge/corpusKnowledge";
+import { isIncompleteSearchMessage, notSearchedPhrase } from "./extractionMessages";
+import {
+  knowledgeBreakdown,
+  noveltyReasons,
+  type KnowledgeBreakdown,
+  type NoveltyReasons,
+} from "../../knowledge/corpusKnowledge";
 import type { FirmwareCase } from "../../knowledge/schema";
 
 // The browser corpus runner's per-file result shape - richer than
@@ -265,6 +271,7 @@ export type CorpusFailureCode =
   | "NO_SETUP_FFS"
   | "NO_COHERENT_CONTEXT"
   | "SECTION_DECODE_FAILED"
+  | "SEARCH_INCOMPLETE"
   | "FRAMEWORK_HII"
   | "EXTRACTION_TIMEOUT"
   | "TOO_LARGE"
@@ -272,6 +279,11 @@ export type CorpusFailureCode =
 
 function classifyFailureMessage(message: string): CorpusFailureCode {
   if (message.includes("No valid UEFI firmware volumes")) return "NO_FIRMWARE_VOLUME";
+  // A search that skipped or could not decode part of the image says nothing
+  // about whether Setup exists, so it is not filed under "not found".
+  if (isIncompleteSearchMessage(message)) {
+    return message.includes(notSearchedPhrase) ? "SEARCH_INCOMPLETE" : "SECTION_DECODE_FAILED";
+  }
   if (message.includes("Setup FFS was not found")) return "NO_SETUP_FFS";
   if (message.includes("No Setup context contains")) return "NO_COHERENT_CONTEXT";
   if (message.includes("Failed to decompress")) return "SECTION_DECODE_FAILED";
@@ -324,6 +336,8 @@ export interface CorpusDashboardData {
   // How the distinct cases relate to the recorded firmware cases (see
   // src/knowledge): already known, structurally similar to one, or novel.
   knowledge: KnowledgeBreakdown;
+  // Which fields keep the new cases apart from the closest recorded case.
+  novelty: NoveltyReasons;
 }
 
 // `selected` (how many files were chosen, before Cancel may have cut the
@@ -357,5 +371,6 @@ export function buildCorpusDashboard(
       (entry) => extractedStatuses.includes(entry.status) && !entry.reconstructionComplete,
     ).length,
     knowledge: knowledgeBreakdown(unique, knownCases),
+    novelty: noveltyReasons(unique, knownCases),
   };
 }

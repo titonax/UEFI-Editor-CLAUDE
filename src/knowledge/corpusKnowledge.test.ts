@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyEntry, knowledgeBreakdown, similarThreshold } from "./corpusKnowledge";
+import { classifyEntry, knowledgeBreakdown, noveltyReasons, similarThreshold } from "./corpusKnowledge";
 import { fingerprintFromEntry } from "./fingerprint";
 import type { FirmwareCase } from "./schema";
 import type { CorpusRunEntry } from "../components/scripts/corpusDashboard";
@@ -104,5 +104,109 @@ describe("knowledgeBreakdown", () => {
       }),
     ];
     expect(knowledgeBreakdown(entries, [known])).toEqual({ exact: 1, similar: 1, novel: 1 });
+  });
+});
+
+describe("why an image is similar or new", () => {
+  const farAway = (overrides: Partial<CorpusRunEntry> = {}) =>
+    entry({
+      container: "vendor-image",
+      volumes: { firmwareVolumes: 3, ffs2Volumes: 0, ffs3Volumes: 3, directSetupFiles: 1 },
+      ...overrides,
+    });
+
+  it("lists what a similar image shares with its case and where it differs, with both values", () => {
+    const verdict = classifyEntry(
+      entry({ volumes: { firmwareVolumes: 12, ffs2Volumes: 12, ffs3Volumes: 1, directSetupFiles: 0 } }),
+      [known],
+    );
+
+    expect(verdict.kind).toBe("similar");
+    if (verdict.kind !== "similar") return;
+    expect(verdict.differing).toEqual([{ field: "ffs3Volumes", image: 1, recorded: 0 }]);
+    expect(verdict.agreeing).toEqual(
+      expect.arrayContaining(["container", "vendorFamily", "generation", "firmwareVolumes", "ffs2Volumes", "directSetupFiles"]),
+    );
+  });
+
+  it("names the closest case, and what differs from it, for a new image", () => {
+    const verdict = classifyEntry(farAway(), [known]);
+
+    expect(verdict.kind).toBe("novel");
+    if (verdict.kind !== "novel") return;
+    expect(verdict.nearest?.case.id).toBe("ami-aaaaaaaa");
+    expect(verdict.nearest?.similarity).toBeLessThan(similarThreshold);
+    expect(verdict.nearest?.differing).toEqual(
+      expect.arrayContaining([
+        { field: "container", image: "vendor-image", recorded: "intel-flash" },
+        { field: "firmwareVolumes", image: 3, recorded: 12 },
+      ]),
+    );
+    expect(verdict.nearest?.agreeing).toEqual(expect.arrayContaining(["vendorFamily"]));
+  });
+
+  it("says there is nothing to compare with when too little was observed, instead of inventing a closest case", () => {
+    const verdict = classifyEntry(
+      entry({ volumes: undefined, generation: undefined, vendorGuess: undefined, contextCount: 0 }),
+      [known],
+    );
+
+    expect(verdict).toEqual({ kind: "novel" });
+  });
+
+  it("is quiet for an exact case", () => {
+    const verdict = classifyEntry(entry({ sha256: known.sha256 }), [known]);
+    expect(verdict.kind).toBe("exact");
+  });
+});
+
+describe("noveltyReasons", () => {
+  const farAway = (sha: string, overrides: Partial<CorpusRunEntry> = {}) =>
+    entry({
+      sha256: sha,
+      container: "vendor-image",
+      volumes: { firmwareVolumes: 3, ffs2Volumes: 0, ffs3Volumes: 3, directSetupFiles: 1 },
+      ...overrides,
+    });
+
+  it("tallies which fields keep new images apart from the closest recorded case", () => {
+    const entries = [
+      farAway("1".repeat(64)),
+      farAway("2".repeat(64), { container: "intel-flash" }),
+      entry({ sha256: known.sha256 }),
+      entry({ sha256: "3".repeat(64) }),
+    ];
+
+    const reasons = noveltyReasons(entries, [known]);
+
+    // Two new images differ in firmwareVolumes/ffs2Volumes/ffs3Volumes/
+    // directSetupFiles; only the first also differs in container.
+    expect(reasons.byField).toContainEqual({ field: "firmwareVolumes", cases: 2 });
+    expect(reasons.byField).toContainEqual({ field: "container", cases: 1 });
+    expect(reasons.byField.find((reason) => reason.field === "vendorFamily")).toBeUndefined();
+    expect(reasons.noComparableCase).toBe(0);
+  });
+
+  it("counts new images that had nothing comparable apart", () => {
+    const bare = entry({
+      sha256: "4".repeat(64),
+      volumes: undefined,
+      generation: undefined,
+      vendorGuess: undefined,
+      contextCount: 0,
+    });
+
+    const reasons = noveltyReasons([bare], [known]);
+
+    expect(reasons).toEqual({ byField: [], noComparableCase: 1 });
+  });
+
+  it("orders the most common reason first and ignores images that are known or similar", () => {
+    const entries = [farAway("5".repeat(64)), farAway("6".repeat(64)), farAway("7".repeat(64), { container: "intel-flash" })];
+
+    const reasons = noveltyReasons(entries, [known]);
+
+    expect(reasons.byField[0].cases).toBeGreaterThanOrEqual(reasons.byField[reasons.byField.length - 1].cases);
+    expect(noveltyReasons([entry({ sha256: known.sha256 }), entry()], [known])).toEqual({ byField: [], noComparableCase: 0 });
   });
 });

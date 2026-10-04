@@ -64,7 +64,13 @@ and calls `classifyEntry()` (`corpusKnowledge.ts`):
 - **New case**: nothing resembles it closely enough; a candidate to record.
 
 Each file shows one badge, the dashboard counts the three classes over distinct
-cases, and the CSV export gains `knowledge` and `knowledge_case` columns. None
+cases, and the CSV export gains `knowledge` and `knowledge_case` columns. A file
+that is not an exact case also says why: the closest recorded case, the fields
+the two agree on and the fields where they differ, with both values ("Differ:
+Forms (2 here, 229 in the case)"). The dashboard tallies those differences over
+the new cases ("Why the new cases are new") and counts the new cases that had no
+recorded case close enough to compare against. This points at where to work on
+an image; it is not a verdict on it. None
 of this changes how an image is analysed.
 
 The volume counts come from the shallow preflight scan

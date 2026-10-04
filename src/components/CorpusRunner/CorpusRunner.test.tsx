@@ -125,6 +125,55 @@ afterEach(() => {
   extractFirmwareInWorker.mockReset();
 });
 
+describe("CorpusRunner failure classification", () => {
+  async function runOne(message: string) {
+    extractFirmwareInWorker.mockRejectedValueOnce(new Error(message));
+    const { container } = render(
+      <MantineProvider>
+        <CorpusRunner />
+      </MantineProvider>,
+    );
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("expected the corpus file input");
+    fireEvent.change(input, { target: { files: [firmwareFile("board-c.bin")] } });
+    await waitFor(() => {
+      expect(screen.getByText("1 file(s) selected · 384 B total")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run local corpus analysis" }));
+    // The file name is also shown in the file picker, so wait for the result
+    // row itself: the run is over once its accordion item exists.
+    let item: HTMLElement | undefined;
+    await waitFor(() => {
+      item = screen
+        .queryAllByText("board-c.bin")
+        .map((element) => element.closest(".mantine-Accordion-item"))
+        .find((element): element is HTMLElement => element !== null);
+      if (!item) throw new Error("the run has not produced a result row yet");
+    });
+    if (!item) throw new Error("expected an accordion item for board-c.bin");
+    return item;
+  }
+
+  it("reports a plain 'Setup FFS not found' as unsupported: a structurally understood non-AMI image", async () => {
+    const item = await runOne("Setup FFS was not found after recursive decompression.");
+
+    await waitFor(() => {
+      expect(within(item).getByText("Unsupported")).toBeInTheDocument();
+    });
+  });
+
+  it("reports the same miss as failed when sections could not be decoded, since Setup may be inside them", async () => {
+    const item = await runOne(
+      "Setup FFS was not found after recursive decompression. 2 section(s) could not be decoded; first: Failed to decompress a lzma section.",
+    );
+
+    await waitFor(() => {
+      expect(within(item).getByText("Failed")).toBeInTheDocument();
+    });
+    expect(within(item).queryByText("Unsupported")).not.toBeInTheDocument();
+  });
+});
+
 describe("CorpusRunner", () => {
   it("analyses every selected file and reports its navigation/Hide-Show shape", async () => {
     extractFirmwareInWorker.mockResolvedValueOnce(await fixtureArtifacts());
@@ -179,6 +228,16 @@ describe("CorpusRunner", () => {
     // same bytes, so the dashboard counts them as one distinct case.
     expect(within(itemA).getByText("New case")).toBeInTheDocument();
     expect(within(itemB).getByText("New case")).toBeInTheDocument();
+    // A new image says which recorded case it is closest to and why it is not
+    // that kind of image: the shared fields and the differing ones, both values.
+    expect(
+      within(itemA).getByText(/^Closest recorded case: [a-z-]+-[0-9a-f]{8} · \d+% over \d+ comparable field\(s\)$/),
+    ).toBeInTheDocument();
+    expect(within(itemA).getByText(/^Agree: /)).toBeInTheDocument();
+    expect(within(itemA).getByText(/^Differ: .+ here, .+ in the case\)/)).toBeInTheDocument();
+    // The dashboard tallies the same differences over the new cases.
+    expect(screen.getByText("Why the new cases are new")).toBeInTheDocument();
+    expect(screen.getByText("Differs in")).toBeInTheDocument();
     expect(screen.getByText("1 new case(s)")).toBeInTheDocument();
     expect(screen.getByText("0 known case(s)")).toBeInTheDocument();
     expect(screen.getByText("0 similar to a known case")).toBeInTheDocument();
