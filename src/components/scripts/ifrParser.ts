@@ -1052,18 +1052,29 @@ export async function parseData(files: PopulatedFiles) {
       },
     ];
   });
+  // The AMITSE entry whose FormId a SetupData root rewrites at export. One
+  // entry for the FormSet is unambiguous. When the FormSet is registered more
+  // than once, only an entry for the root's own Form qualifies, and it must
+  // be the only one: picking the first hit would let an edit overwrite
+  // another page's slot, so an ambiguous root gets no offset instead.
+  const amitseOffsetFor = (entry: Menu[number]) => {
+    const sameFormSet = discoveredMenu.filter(
+      (candidate) =>
+        candidate.formSetGuid?.toLowerCase() === entry.formSetGuid?.toLowerCase(),
+    );
+    if (sameFormSet.length <= 1) {
+      return sameFormSet[0]?.offset ?? null;
+    }
+    const sameForm = sameFormSet.filter((candidate) =>
+      sameHexId(candidate.formId, entry.formId),
+    );
+    return sameForm.length === 1 ? sameForm[0].offset : null;
+  };
   const setupDataMenu = discoverSetupDataMenu(formSetRoots, setupdataBin).map(
-    (entry) => {
-      const executableEntry = discoveredMenu.find(
-        (candidate) =>
-          candidate.formSetGuid?.toLowerCase() ===
-          entry.formSetGuid?.toLowerCase(),
-      );
-      return {
-        ...entry,
-        offset: executableEntry?.offset ?? null,
-      };
-    },
+    (entry) => ({
+      ...entry,
+      offset: amitseOffsetFor(entry),
+    }),
   );
   // A single FormSet whose entry Form fans out into the tabs is its own
   // menu: the hub is the only root and its direct Refs are the tabs, so the

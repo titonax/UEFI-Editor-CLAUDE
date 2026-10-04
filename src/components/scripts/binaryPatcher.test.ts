@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { decToHexString, downloadModifiedFiles, validateByteInput } from "./binaryPatcher";
+import { decToHexString, downloadModifiedFiles, hexToBytes, validateByteInput } from "./binaryPatcher";
 import { parseData } from "./ifrParser";
 import { buildFixtureFiles, buildMoveFixture } from "./testFixtures";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
@@ -30,6 +30,22 @@ describe("validateByteInput", () => {
   it("rejects non-hex characters", () => {
     expect(validateByteInput("G0")).toBe(false);
     expect(validateByteInput("Z")).toBe(false);
+  });
+});
+
+describe("hexToBytes", () => {
+  it("decodes upper- and lower-case hex pairs", () => {
+    expect([...hexToBytes("00ff0AbC")]).toEqual([0x00, 0xff, 0x0a, 0xbc]);
+    expect(hexToBytes("")).toHaveLength(0);
+  });
+
+  it("rejects odd-length text instead of dropping the last nibble", () => {
+    expect(() => hexToBytes("ABC")).toThrow(/odd length/i);
+  });
+
+  it("rejects non-hex characters instead of turning them into zero bytes", () => {
+    expect(() => hexToBytes("0G")).toThrow(/not hexadecimal/i);
+    expect(() => hexToBytes("12-4")).toThrow(/not hexadecimal/i);
   });
 });
 
@@ -985,6 +1001,70 @@ describe("downloadModifiedFiles", () => {
     expect(changelogText).toContain("Access Level 00 -> 05");
     expect(changelogText).toContain("Failsafe 00 -> 0A");
     expect(changelogText).toContain("Optimal 00 -> 0F");
+  });
+
+  function setupDataFixture() {
+    return buildFixtureFiles().then(async (files) => {
+      const data = await parseData(files);
+      files.setupdataBinContainer.textContent = "000000";
+      const checkBox = data.forms[0].children.find((child) => child.type === "CheckBox");
+      if (!checkBox) throw new Error("expected a CheckBox child");
+      checkBox.offsets = { accessLevel: "0x0", failsafe: "0x1", optimal: "0x2" };
+      return { files, data, checkBox };
+    });
+  }
+
+  it("applies the SetupData fields that have a value even when another one is blank", async () => {
+    const { files, data, checkBox } = await setupDataFixture();
+    checkBox.accessLevel = "05";
+    checkBox.failsafe = "";
+    checkBox.optimal = "0F";
+
+    saveAsMock.mockClear();
+    const result = downloadModifiedFiles(data, files);
+
+    expect(result).toEqual({ status: "downloaded" });
+    const [patchedBlob] = saveAsMock.mock.calls[0] as [Blob, string];
+    // The blank Failsafe field is left alone, not zeroed, and does not stop
+    // the other two edits from being written.
+    expect([...new Uint8Array(await patchedBlob.arrayBuffer())]).toEqual([0x05, 0x00, 0x0f]);
+    const changelogText = await (saveAsMock.mock.calls[1] as [Blob, string])[0].text();
+    expect(changelogText).toContain("Access Level 00 -> 05");
+    expect(changelogText).toContain("Optimal 00 -> 0F");
+    expect(changelogText).not.toContain("Failsafe");
+  });
+
+  it("refuses a SetupData offset outside the file instead of reporting a write that never happened", async () => {
+    const { files, data, checkBox } = await setupDataFixture();
+    checkBox.accessLevel = "05";
+    checkBox.failsafe = "0A";
+    checkBox.optimal = "0F";
+    checkBox.offsets = { accessLevel: "0x0", failsafe: "0x1", optimal: "0x9" };
+
+    saveAsMock.mockClear();
+
+    expect(() => downloadModifiedFiles(data, files)).toThrow(/outside SetupData/i);
+    expect(saveAsMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an AMITSE menu offset outside the file", async () => {
+    const files = await buildFixtureFiles({ amitseSct: "1234123456789abc0100" });
+    const data = await parseData(files);
+    data.menu[0].offset = "0x40";
+    data.menu[0].formId = "0x2";
+
+    saveAsMock.mockClear();
+
+    expect(() => downloadModifiedFiles(data, files)).toThrow(/outside AMITSE/i);
+    expect(saveAsMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a container whose text is not valid hexadecimal", async () => {
+    const files = await buildFixtureFiles();
+    const data = await parseData(files);
+    files.setupdataBinContainer.textContent = "0Z";
+
+    expect(() => downloadModifiedFiles(data, files)).toThrow(/not hexadecimal/i);
   });
 
   it("shifts a nested suppression's offsets by exactly one End opcode's width", async () => {

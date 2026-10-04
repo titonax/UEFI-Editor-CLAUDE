@@ -278,6 +278,58 @@ describe("parseData", () => {
     ]);
   });
 
+  describe("AMITSE offset attached to a SetupData root", () => {
+    // Three copies of the FormSet's encoded GUID make one SetupData page list.
+    const setupdataBin =
+      "0300000078563412341234121234123456789abc" +
+      "0500000078563412341234121234123456789abc" +
+      "0600000078563412341234121234123456789abc";
+
+    it("takes the AMITSE entry with the root's own FormId when the FormSet is registered twice", async () => {
+      // AMITSE registers the same FormSet for Form 0x2 first (offset 0x8) and
+      // for Form 0x1 second (offset 0x12). The SetupData roots are Form 0x1.
+      const files = await buildFixtureFiles({
+        setupdataBin,
+        amitseSct: "1234123456789abc0200" + "1234123456789abc0100",
+      });
+
+      const data = await parseData(files);
+
+      expect(data.menu.map((entry) => entry.source)).toEqual(["setupdata", "setupdata", "setupdata"]);
+      expect(data.menu.map((entry) => entry.offset)).toEqual(["0x12", "0x12", "0x12"]);
+    });
+
+    it("attaches no offset when several AMITSE entries could belong to the root and none is its own Form", async () => {
+      const files = await buildFixtureFiles({
+        setupdataBin,
+        amitseSct: "1234123456789abc0200" + "1234123456789abc0200",
+      });
+
+      const data = await parseData(files);
+
+      expect(data.menu.map((entry) => entry.offset)).toEqual([null, null, null]);
+    });
+
+    it("attaches no offset when the same FormSet and Form are registered at two different places", async () => {
+      const files = await buildFixtureFiles({
+        setupdataBin,
+        amitseSct: "1234123456789abc0100" + "1234123456789abc0100",
+      });
+
+      const data = await parseData(files);
+
+      expect(data.menu.map((entry) => entry.offset)).toEqual([null, null, null]);
+    });
+
+    it("keeps the single AMITSE entry for the FormSet whatever its FormId, as before", async () => {
+      const files = await buildFixtureFiles({ setupdataBin, amitseSct: "1234123456789abc0200" });
+
+      const data = await parseData(files);
+
+      expect(data.menu.map((entry) => entry.offset)).toEqual(["0x8", "0x8", "0x8"]);
+    });
+  });
+
   it("accepts a non-power-of-two SetupData page selector and matches its GUID case-insensitively", async () => {
     // Three copies of the FormSet's encoded GUID, each preceded by a
     // little-endian page-selector value that is not a bitmask (0x3/0x5/0x6

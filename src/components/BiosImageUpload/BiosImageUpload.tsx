@@ -257,6 +257,7 @@ function PhoenixSetupMenuPanel({ menu, templat }: { menu: PhoenixSetupMenu; temp
   );
 
   const totalItems = sections.reduce((sum, section) => sum + section.items.length, 0);
+  const totalUnparsed = sections.reduce((sum, section) => sum + (section.unparsedItems ?? 0), 0);
   if (totalItems === 0) return null;
   const selectedSection = sections.find((section) => section.offset === selectedOffset) ?? sections[0];
   const hasRealTabs = menu.source === "root-table";
@@ -273,6 +274,11 @@ function PhoenixSetupMenuPanel({ menu, templat }: { menu: PhoenixSetupMenu; temp
         {hasRealTabs && (
           <Badge variant="light" color="teal">
             Real tab names (root table)
+          </Badge>
+        )}
+        {totalUnparsed > 0 && (
+          <Badge variant="light" color="orange">
+            {String(totalUnparsed)} item(s) could not be parsed
           </Badge>
         )}
       </Group>
@@ -295,7 +301,12 @@ function PhoenixSetupMenuPanel({ menu, templat }: { menu: PhoenixSetupMenu; temp
               <NavLink
                 key={section.offset}
                 label={phoenixText(section.name) ?? `Screen ${String(index + 1)}`}
-                description={`${String(section.items.length)} item(s)`}
+                description={
+                  `${String(section.items.length)} item(s)` +
+                  ((section.unparsedItems ?? 0) > 0
+                    ? ` · ${String(section.unparsedItems)} unparsed`
+                    : "")
+                }
                 active={section.offset === selectedSection.offset}
                 onClick={() => {
                   setSelectedOffset(section.offset);

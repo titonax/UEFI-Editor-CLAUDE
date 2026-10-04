@@ -435,6 +435,21 @@ describe("parsePhoenixRootTable", () => {
     expect(sections?.[1].items.map((item) => item.type)).toEqual(["date"]);
   });
 
+  it("counts the items it cannot parse instead of silently dropping them", () => {
+    const table = parsePhoenixStringTable(stringTableImage());
+    const templat = rootTableTemplat();
+    // Tab 0 gains a third pointer, to a zeroed (unrecognised) record at raw
+    // 0xd0; the list still ends with its sentinel at 0xcc.
+    writeU16(templat, 0xc8, 0xd0 - 4);
+    writeU16(templat, 0xcc, 0);
+
+    const sections = parsePhoenixRootTable(templat, table);
+
+    expect(sections?.[0].items.map((item) => item.type)).toEqual(["pick-field", "time"]);
+    expect(sections?.[0].unparsedItems).toBe(1);
+    expect(sections?.[1].unparsedItems).toBe(0);
+  });
+
   it("returns null when the root field is zero, so callers fall back to the contiguous-run scan", () => {
     const table = parsePhoenixStringTable(stringTableImage());
     const templat = new Uint8Array(0x100); // root field left at 0
