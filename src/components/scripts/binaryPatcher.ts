@@ -25,12 +25,32 @@ function byteHex(byte: number) {
   return byte.toString(16).toUpperCase().padStart(2, "0");
 }
 
+// Decodes a hex string into bytes. Anything that is not whole hex pairs is
+// refused: parseInt would otherwise turn a bad pair into NaN, which a
+// Uint8Array stores as 0, silently corrupting the file.
 export function hexToBytes(hex: string) {
+  if (hex.length % 2 !== 0) {
+    throw new Error(`Hex text has an odd length (${String(hex.length)} characters).`);
+  }
+  const invalid = /[^0-9a-fA-F]/.exec(hex);
+  if (invalid) {
+    throw new Error(`Hex text is not hexadecimal at character ${String(invalid.index)}.`);
+  }
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return bytes;
+}
+
+// Typed-array writes outside the buffer are silently ignored, and reads
+// return undefined, so every offset is checked before it is used.
+function assertInside(bytes: Uint8Array, offset: number, width: number, file: string, what: string) {
+  if (!Number.isInteger(offset) || offset < 0 || offset + width > bytes.length) {
+    throw new Error(
+      `${what} at offset ${decToHexString(offset)} is outside ${file} (${String(bytes.length)} bytes); refusing to export.`,
+    );
+  }
 }
 
 const END_OPCODE = [0x29, 0x02];
@@ -438,6 +458,7 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
       }
 
       const formIdOffset = parseHexId(child.formIdOffset);
+      assertInside(modifiedSetupSct, formIdOffset, 2, "Setup", `FormId of "${child.name}"`);
       const oldFormId =
         modifiedSetupSct[formIdOffset] |
         (modifiedSetupSct[formIdOffset + 1] << 8);
@@ -580,6 +601,7 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
 
     const newFormId = parseHexId(entry.formId);
     const index = parseHexId(entry.offset);
+    assertInside(modifiedAmitseSct, index, 2, "AMITSE", `Menu entry "${entry.name}"`);
     const oldFormId = modifiedAmitseSct[index] | (modifiedAmitseSct[index + 1] << 8);
 
     if (newFormId !== oldFormId) {
@@ -612,38 +634,27 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
 
   for (const form of data.forms) {
     for (const child of form.children) {
-      if (
-        child.offsets &&
-        child.accessLevel &&
-        child.failsafe &&
-        child.optimal
-      ) {
-        const accessLevelIndex = parseHexId(child.offsets.accessLevel);
-        const oldAccessLevel = modifiedSetupdataBin[accessLevelIndex];
-        const newAccessLevel = parseHexId(child.accessLevel);
-        if (oldAccessLevel !== newAccessLevel) {
-          modifiedSetupdataBin[accessLevelIndex] = newAccessLevel;
-          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Access Level ${byteHex(oldAccessLevel)} -> ${byteHex(newAccessLevel)}\n`;
-
-          wasSetupdataBinModified = true;
+      if (!child.offsets) {
+        continue;
+      }
+      // Each field is its own byte. A blank field means "leave it as it is",
+      // so it never blocks the fields that do have a value.
+      const fields = [
+        { label: "Access Level", offset: child.offsets.accessLevel, value: child.accessLevel },
+        { label: "Failsafe", offset: child.offsets.failsafe, value: child.failsafe },
+        { label: "Optimal", offset: child.offsets.optimal, value: child.optimal },
+      ];
+      for (const field of fields) {
+        if (!field.value) {
+          continue;
         }
-
-        const failsafeIndex = parseHexId(child.offsets.failsafe);
-        const oldFailsafe = modifiedSetupdataBin[failsafeIndex];
-        const newFailsafe = parseHexId(child.failsafe);
-        if (oldFailsafe !== newFailsafe) {
-          modifiedSetupdataBin[failsafeIndex] = newFailsafe;
-          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Failsafe ${byteHex(oldFailsafe)} -> ${byteHex(newFailsafe)}\n`;
-
-          wasSetupdataBinModified = true;
-        }
-
-        const optimalIndex = parseHexId(child.offsets.optimal);
-        const oldOptimal = modifiedSetupdataBin[optimalIndex];
-        const newOptimal = parseHexId(child.optimal);
-        if (oldOptimal !== newOptimal) {
-          modifiedSetupdataBin[optimalIndex] = newOptimal;
-          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: Optimal ${byteHex(oldOptimal)} -> ${byteHex(newOptimal)}\n`;
+        const index = parseHexId(field.offset);
+        assertInside(modifiedSetupdataBin, index, 1, "SetupData", `${field.label} of "${child.name}"`);
+        const oldValue = modifiedSetupdataBin[index];
+        const newValue = parseHexId(field.value);
+        if (oldValue !== newValue) {
+          modifiedSetupdataBin[index] = newValue;
+          setupdataBinChangeLog += `${child.name} | QuestionId ${child.questionId}: ${field.label} ${byteHex(oldValue)} -> ${byteHex(newValue)}\n`;
 
           wasSetupdataBinModified = true;
         }
