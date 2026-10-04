@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "cases:check": "vitest run src/knowledge"
+    "cases:check": "vitest run src/knowledge --reporter=default"
   },
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "^0.4.2",

@@ -14,8 +14,10 @@ family either: `vendorFamily` is informational.
 | `schema.ts` | `FirmwareCase` type and `validateFirmwareCase()`: strict shape check (unknown keys rejected, short text only, closed vocabularies, generation/evidence consistency) plus `findCollectionProblems()` (one case per SHA-256, unique ids). |
 | `fingerprint.ts` | `FirmwareFingerprint`: the comparable shape of an analysed image, built from a case (`fingerprintFromCase`) or from a corpus runner result (`fingerprintFromEntry`). A field that was not observed is absent, never guessed. |
 | `caseMatcher.ts` | `matchCases()`: exact match by SHA-256, then structurally similar cases. |
-| `index.ts` | `knownCases`: every `cases/**/*.json`, validated at load. |
+| `index.ts` | `knownCases` and `knownRules`: every `cases/**/*.json` and `rules/*.json`, validated at load. |
 | `cases/<family>/<id>.json` | One case per image. |
+| `ruleSchema.ts` | `FirmwareRule` type, `validateFirmwareRule()`, `findRuleProblems()` (rule ids unique, every validated case is a recorded case) and `ruleWarnings()` (rules resting on a single case). |
+| `rules/<id>.json` | One rule per generalisation, for example `AMI-HUB-001`. |
 
 ## Similarity is not probability
 
@@ -70,3 +72,37 @@ The volume counts come from the shallow preflight scan
 and `directSetupFiles` (Setup FFS files visible without decompressing). The
 bundled cases take the same four numbers from the table in
 `docs/ami/sample-corpus.md`.
+
+## Cases and rules
+
+A **case** is a fact: one image was observed to have this structure. A **rule**
+is a generalisation the editor relies on ("this pattern means that"). They are
+kept apart so a pattern seen on one image cannot quietly become a rule.
+
+A rule is recorded with the cases that back it (`validatedCases`), the code that
+applies it (`implementation`), the tests that pin it (`tests`) and, where it
+exists, the documentation (`documentation`). Its `evidence` level says how
+strongly it is backed:
+
+| `evidence` | Meaning | Requirement |
+| --- | --- | --- |
+| `single-sample` | A candidate seen once. | Exactly one validated case. `npm run cases:check` prints a warning for it. |
+| `multi-sample` | Seen on several recorded cases. | At least two validated cases and `minimumCases` of at least 2. |
+| `externally-confirmed` | Backed by knowledge from outside this editor (the vendor, AMIBCP, a datasheet). | At least one case and `documentation` naming the source. |
+
+Rules are a register, not an engine: no parser consults them. Do not add a
+branch to a parser because a case looks like another one; add a rule only once
+the behaviour is implemented, tested and seen on more than one case.
+
+The check counts distinct recorded cases. It cannot tell whether two cases are
+independent (two firmware versions of one board count as two), so independence
+is a judgement for whoever adds the rule.
+
+### Adding a rule
+
+1. Record the cases first (see "Adding a case").
+2. Write `rules/<id>.json` with `id` as `<AREA>-<TOPIC>-<NNN>` (for example
+   `AMI-ROOT-002`), the file name equal to the id.
+3. Point `implementation`, `tests` and `documentation` at files that exist.
+4. Run `npm run cases:check`. It validates the rule, that every validated case is
+   recorded, that the files exist, and lists any rule that rests on one case.
