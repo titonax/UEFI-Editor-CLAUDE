@@ -2,6 +2,7 @@ import type { AmiGenerationAssessment, FirmwareContainer, FirmwareVendorGuess } 
 import type { BrandClassification } from "./brandKnowledge";
 import { reportNavigationDetected, type CorpusReport } from "./corpusReport";
 import type { PhoenixLegacyInventory, PhoenixUefiInventory } from "./phoenixFirmware";
+import { isIncompleteSearchMessage, notSearchedPhrase } from "./extractionMessages";
 import { knowledgeBreakdown, type KnowledgeBreakdown } from "../../knowledge/corpusKnowledge";
 import type { FirmwareCase } from "../../knowledge/schema";
 
@@ -265,6 +266,7 @@ export type CorpusFailureCode =
   | "NO_SETUP_FFS"
   | "NO_COHERENT_CONTEXT"
   | "SECTION_DECODE_FAILED"
+  | "SEARCH_INCOMPLETE"
   | "FRAMEWORK_HII"
   | "EXTRACTION_TIMEOUT"
   | "TOO_LARGE"
@@ -272,6 +274,11 @@ export type CorpusFailureCode =
 
 function classifyFailureMessage(message: string): CorpusFailureCode {
   if (message.includes("No valid UEFI firmware volumes")) return "NO_FIRMWARE_VOLUME";
+  // A search that skipped or could not decode part of the image says nothing
+  // about whether Setup exists, so it is not filed under "not found".
+  if (isIncompleteSearchMessage(message)) {
+    return message.includes(notSearchedPhrase) ? "SEARCH_INCOMPLETE" : "SECTION_DECODE_FAILED";
+  }
   if (message.includes("Setup FFS was not found")) return "NO_SETUP_FFS";
   if (message.includes("No Setup context contains")) return "NO_COHERENT_CONTEXT";
   if (message.includes("Failed to decompress")) return "SECTION_DECODE_FAILED";

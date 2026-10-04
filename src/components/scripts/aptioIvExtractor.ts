@@ -5,6 +5,7 @@ import {
   PreopenDirectory,
   WASI,
 } from "@bjorn3/browser_wasi_shim";
+import { decodeFailedPhrase, notSearchedPhrase } from "./extractionMessages";
 import {
   encapsulatedFirmwareSection,
   readFirmwareSection,
@@ -893,11 +894,11 @@ export async function extractAptioIvBytes(
   // whichever context was still found, below.
   const unsearchedWarning =
     graph.unsearchedBuffers > 0
-      ? `${String(graph.unsearchedBuffers)} decoded buffer(s) were not searched (limit ${String(maxSearchedBuffers)}); other firmware contexts may be missing.`
+      ? `${String(graph.unsearchedBuffers)} decoded buffer(s) ${notSearchedPhrase} (limit ${String(maxSearchedBuffers)}); other firmware contexts may be missing.`
       : "";
   const decodeFailureContext = () =>
     (graph.decodeFailures.length > 0
-      ? ` ${String(graph.decodeFailures.length)} section(s) could not be decoded; first: ${graph.decodeFailures[0]}`
+      ? ` ${String(graph.decodeFailures.length)} section(s) ${decodeFailedPhrase}; first: ${graph.decodeFailures[0]}`
       : "") + (unsearchedWarning ? ` ${unsearchedWarning}` : "");
   if ((files.get(setupGuid) ?? []).length === 0) {
     throw new Error(
@@ -911,7 +912,7 @@ export async function extractAptioIvBytes(
     );
   }
   if (graph.decodeFailures.length > 0) {
-    const warning = `${String(graph.decodeFailures.length)} nested section(s) could not be decoded; other firmware contexts may be missing. ${graph.decodeFailures[0]}`;
+    const warning = `${String(graph.decodeFailures.length)} nested section(s) ${decodeFailedPhrase}; other firmware contexts may be missing. ${graph.decodeFailures[0]}`;
     for (const set of sets) set.summary.warnings.push(warning);
   }
   if (unsearchedWarning) {

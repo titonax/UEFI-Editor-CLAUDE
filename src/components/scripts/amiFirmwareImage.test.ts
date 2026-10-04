@@ -430,6 +430,33 @@ describe("sniffNonAmiFailure", () => {
     expect(sniffNonAmiFailure("Extraction timed out after 90s.")).toBe(false);
   });
 
+  it("does not call an image non-AMI when the search for Setup was incomplete", () => {
+    // The extractor appends these to its "Setup FFS was not found" /
+    // "No Setup context ..." errors when a section could not be decoded or
+    // buffers were left unsearched: Setup may sit in exactly that part, so
+    // this is a failure to investigate, not proof the image has no AMI Setup.
+    expect(
+      sniffNonAmiFailure(
+        "Setup FFS was not found after recursive decompression. 2 section(s) could not be decoded; first: Failed to decompress a lzma section.",
+      ),
+    ).toBe(false);
+    expect(
+      sniffNonAmiFailure(
+        "Setup FFS was not found after recursive decompression. 7 decoded buffer(s) were not searched (limit 64); other firmware contexts may be missing.",
+      ),
+    ).toBe(false);
+    expect(
+      sniffNonAmiFailure(
+        "No Setup context contains a usable HII package or Setup PE32 section. 1 section(s) could not be decoded; first: boom",
+      ),
+    ).toBe(false);
+  });
+
+  it("still recognizes the plain messages, with the Framework HII case untouched", () => {
+    expect(sniffNonAmiFailure("Setup FFS was not found after recursive decompression.")).toBe(true);
+    expect(sniffNonAmiFailure("Only UEFI is supported.")).toBe(true);
+  });
+
   it("exposes a distinct vendor guess for the legacy Framework HII case", () => {
     expect(legacyFrameworkHiiGuess.family).toBe("legacy-framework-hii");
   });

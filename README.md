@@ -128,7 +128,13 @@ IFRExtractor itself reports as Framework rather than UEFI - its rough
 FormSet/form/reference inventory is still shown, read-only), or embedded
 Linux firmware that was never a PC BIOS at all (a router or appliance dump)
 - rather than the generic **Failed** reserved for a genuinely unexpected
-error (a truncated file, a worker crash, the 512 MiB safety cap). Most of
+error (a truncated file, a worker crash, the 512 MiB safety cap). A
+"Setup not found" outcome only counts as Unsupported when the search was
+complete: if sections could not be decoded, or decoded buffers went
+unsearched (the extractor says so in its error), Setup may be inside the part
+that was skipped, so the image stays **Failed** and the failure taxonomy files
+it under `SECTION_DECODE_FAILED` or `SEARCH_INCOMPLETE` instead of
+`NO_SETUP_FFS`. Most of
 these guesses come from the same shallow byte-signature scan the AMI
 preflight already runs (`src/components/scripts/amiFirmwareImage.ts`); none
 of them are ever parsed further, so a guess stays a label, not a claim of
