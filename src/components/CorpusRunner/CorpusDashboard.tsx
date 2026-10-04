@@ -1,4 +1,5 @@
 import { Badge, Group, ScrollArea, SimpleGrid, Stack, Table, Tabs, Text, Title } from "@mantine/core";
+import { fingerprintFieldLabels } from "../../knowledge/fingerprint";
 import type {
   CorpusDashboardCohort,
   CorpusDashboardData,
@@ -101,6 +102,40 @@ export default function CorpusDashboard({ dashboard }: { dashboard: CorpusDashbo
         Compared with the recorded firmware cases by SHA-256, then by structure. Similarity
         is the share of comparable fields that agree, not a probability.
       </Text>
+      {dashboard.knowledge.novel > 0 && (
+        <>
+          <Title order={5}>Why the new cases are new</Title>
+          <Text size="xs" c="dimmed">
+            Fields on which a new case differs from its closest recorded case. It says where to
+            look, not what is wrong.
+          </Text>
+          {dashboard.novelty.byField.length > 0 && (
+            <ScrollArea>
+              <Table striped withColumnBorders className={s.dashboardTable}>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>Differs in</Table.Th>
+                    <Table.Th>New cases / total</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {dashboard.novelty.byField.map((reason) => (
+                    <Table.Tr key={reason.field}>
+                      <Table.Td>{fingerprintFieldLabels[reason.field]}</Table.Td>
+                      <Table.Td>{fraction(reason.cases, dashboard.knowledge.novel)}</Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </ScrollArea>
+          )}
+          {dashboard.novelty.noComparableCase > 0 && (
+            <Text size="xs" c="dimmed">
+              {`${String(dashboard.novelty.noComparableCase)} new case(s) have no recorded case with enough observed fields to compare.`}
+            </Text>
+          )}
+        </>
+      )}
       <ScrollArea>
         <Table striped withColumnBorders className={s.dashboardTable}>
           <Table.Thead>

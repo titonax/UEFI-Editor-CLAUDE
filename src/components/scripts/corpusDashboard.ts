@@ -3,7 +3,12 @@ import type { BrandClassification } from "./brandKnowledge";
 import { reportNavigationDetected, type CorpusReport } from "./corpusReport";
 import type { PhoenixLegacyInventory, PhoenixUefiInventory } from "./phoenixFirmware";
 import { isIncompleteSearchMessage, notSearchedPhrase } from "./extractionMessages";
-import { knowledgeBreakdown, type KnowledgeBreakdown } from "../../knowledge/corpusKnowledge";
+import {
+  knowledgeBreakdown,
+  noveltyReasons,
+  type KnowledgeBreakdown,
+  type NoveltyReasons,
+} from "../../knowledge/corpusKnowledge";
 import type { FirmwareCase } from "../../knowledge/schema";
 
 // The browser corpus runner's per-file result shape - richer than
@@ -331,6 +336,8 @@ export interface CorpusDashboardData {
   // How the distinct cases relate to the recorded firmware cases (see
   // src/knowledge): already known, structurally similar to one, or novel.
   knowledge: KnowledgeBreakdown;
+  // Which fields keep the new cases apart from the closest recorded case.
+  novelty: NoveltyReasons;
 }
 
 // `selected` (how many files were chosen, before Cancel may have cut the
@@ -364,5 +371,6 @@ export function buildCorpusDashboard(
       (entry) => extractedStatuses.includes(entry.status) && !entry.reconstructionComplete,
     ).length,
     knowledge: knowledgeBreakdown(unique, knownCases),
+    novelty: noveltyReasons(unique, knownCases),
   };
 }

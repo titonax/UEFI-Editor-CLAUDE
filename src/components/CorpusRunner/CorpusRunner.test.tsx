@@ -228,6 +228,16 @@ describe("CorpusRunner", () => {
     // same bytes, so the dashboard counts them as one distinct case.
     expect(within(itemA).getByText("New case")).toBeInTheDocument();
     expect(within(itemB).getByText("New case")).toBeInTheDocument();
+    // A new image says which recorded case it is closest to and why it is not
+    // that kind of image: the shared fields and the differing ones, both values.
+    expect(
+      within(itemA).getByText(/^Closest recorded case: [a-z-]+-[0-9a-f]{8} · \d+% over \d+ comparable field\(s\)$/),
+    ).toBeInTheDocument();
+    expect(within(itemA).getByText(/^Agree: /)).toBeInTheDocument();
+    expect(within(itemA).getByText(/^Differ: .+ here, .+ in the case\)/)).toBeInTheDocument();
+    // The dashboard tallies the same differences over the new cases.
+    expect(screen.getByText("Why the new cases are new")).toBeInTheDocument();
+    expect(screen.getByText("Differs in")).toBeInTheDocument();
     expect(screen.getByText("1 new case(s)")).toBeInTheDocument();
     expect(screen.getByText("0 known case(s)")).toBeInTheDocument();
     expect(screen.getByText("0 similar to a known case")).toBeInTheDocument();

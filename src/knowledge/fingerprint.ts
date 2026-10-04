@@ -38,6 +38,22 @@ export const fingerprintFields = [
 ] as const satisfies readonly (keyof FirmwareFingerprint)[];
 export type FingerprintField = (typeof fingerprintFields)[number];
 
+// Readable names for the fingerprint fields, for the UI.
+export const fingerprintFieldLabels: Record<FingerprintField, string> = {
+  container: "container",
+  vendorFamily: "firmware family",
+  generation: "Aptio generation",
+  firmwareVolumes: "firmware volumes",
+  ffs2Volumes: "FFS2 volumes",
+  ffs3Volumes: "FFS3 volumes",
+  directSetupFiles: "direct Setup files",
+  contextCount: "contexts",
+  formSets: "FormSets",
+  forms: "Forms",
+  refs: "Refs",
+  navigation: "navigation mechanism",
+};
+
 function compact(fingerprint: FirmwareFingerprint): FirmwareFingerprint {
   return Object.fromEntries(
     Object.entries(fingerprint).filter(([, value]) => value !== undefined),

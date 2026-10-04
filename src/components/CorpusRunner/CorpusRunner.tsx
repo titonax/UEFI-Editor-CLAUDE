@@ -54,6 +54,7 @@ import {
   type CorpusVolumeCounts,
 } from "../scripts/corpusDashboard";
 import { caseFilePath, caseFromEntry, serializeCase } from "../../knowledge/caseFromEntry";
+import { fingerprintFieldLabels } from "../../knowledge/fingerprint";
 import { classifyEntry, type KnowledgeVerdict } from "../../knowledge/corpusKnowledge";
 import { knownCases } from "../../knowledge";
 import CorpusDashboard from "./CorpusDashboard";
@@ -306,6 +307,41 @@ function AddCase({ entry }: { entry: CorpusRunEntry }) {
   );
 }
 
+// Why this image is similar to, or different from, the recorded cases: the
+// closest case, the fields they agree on and the fields where they differ,
+// with both values. It says where to look when an image is new; it is not a
+// verdict on the image.
+function KnowledgeNote({ entry }: { entry: CorpusRunEntry }) {
+  const verdict = classifyEntry(entry, knownCases);
+  if (verdict.kind === "exact") return null;
+  const nearest = verdict.kind === "similar" ? verdict : verdict.nearest;
+  if (!nearest) {
+    return (
+      <Text size="xs" c="dimmed">
+        No recorded case shares enough observed fields with this image to be compared.
+      </Text>
+    );
+  }
+  const label = (field: keyof typeof fingerprintFieldLabels) => fingerprintFieldLabels[field];
+  return (
+    <Stack gap={2}>
+      <Text size="xs" c="dimmed">
+        {`Closest recorded case: ${nearest.case.id} · ${String(Math.round(nearest.similarity * 100))}% over ${String(nearest.compared)} comparable field(s)`}
+      </Text>
+      {nearest.agreeing.length > 0 && (
+        <Text size="xs" c="dimmed">
+          {`Agree: ${nearest.agreeing.map(label).join(", ")}`}
+        </Text>
+      )}
+      {nearest.differing.length > 0 && (
+        <Text size="xs">
+          {`Differ: ${nearest.differing.map((difference) => `${label(difference.field)} (${String(difference.image)} here, ${String(difference.recorded)} in the case)`).join("; ")}`}
+        </Text>
+      )}
+    </Stack>
+  );
+}
+
 function FileDetails({ entry }: { entry: CorpusRunEntry }) {
   const report = entry.report;
   const totals = entryTotals(entry);
@@ -314,6 +350,7 @@ function FileDetails({ entry }: { entry: CorpusRunEntry }) {
       <Text size="xs" c="dimmed" className={s.hash}>
         SHA-256: {entry.sha256 || "not calculated"}
       </Text>
+      <KnowledgeNote entry={entry} />
       <AddCase entry={entry} />
       <ScrollArea>
         <Table striped withColumnBorders className={s.detailsTable}>

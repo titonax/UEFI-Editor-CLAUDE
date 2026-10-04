@@ -363,6 +363,15 @@ describe("buildCorpusDashboard", () => {
     );
   });
 
+  it("explains why new cases are new", () => {
+    const entries = [recognizedEntry(), partialEntry()];
+
+    const dashboard = buildCorpusDashboard(entries, entries.length, []);
+
+    // With nothing recorded there is no closest case to compare against.
+    expect(dashboard.novelty).toEqual({ byField: [], noComparableCase: 2 });
+  });
+
   it("reports every distinct case as novel when no cases are recorded", () => {
     const entries = [recognizedEntry(), partialEntry()];
 
