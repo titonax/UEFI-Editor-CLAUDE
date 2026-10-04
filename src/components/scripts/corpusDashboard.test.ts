@@ -288,6 +288,27 @@ describe("failureCodeBreakdown", () => {
     );
   });
 
+  it("does not file an incomplete search under 'Setup FFS not found'", () => {
+    const failure = (message: string, sha: string) =>
+      failedEntry({ sha256: sha, failureMessage: message, stages: [stage("preflight", "passed"), stage("extraction", "failed")] });
+
+    const breakdown = failureCodeBreakdown([
+      failure("Setup FFS was not found after recursive decompression.", "a1"),
+      failure(
+        "Setup FFS was not found after recursive decompression. 2 section(s) could not be decoded; first: Failed to decompress a lzma section.",
+        "a2",
+      ),
+      failure(
+        "Setup FFS was not found after recursive decompression. 7 decoded buffer(s) were not searched (limit 64); other firmware contexts may be missing.",
+        "a3",
+      ),
+    ]);
+
+    expect(breakdown).toContainEqual(expect.objectContaining({ code: "NO_SETUP_FFS", cases: 1 }));
+    expect(breakdown).toContainEqual(expect.objectContaining({ code: "SECTION_DECODE_FAILED", cases: 1 }));
+    expect(breakdown).toContainEqual(expect.objectContaining({ code: "SEARCH_INCOMPLETE", cases: 1 }));
+  });
+
   it("skips entries with no failure message", () => {
     expect(failureCodeBreakdown([recognizedEntry()])).toEqual([]);
   });

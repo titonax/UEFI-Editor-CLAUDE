@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sniffNonAmiFailure } from "./amiFirmwareImage";
 import { extractAptioIvArtifacts, extractAptioIvBytes, selectBestIfrTexts } from "./aptioIvExtractor";
 
 const setupGuid = "899407D7-99FE-43D8-9A21-79EC328CAC21";
@@ -234,6 +235,26 @@ describe("extractAptioIvArtifacts", () => {
     expect(message).toContain("LZMA decompression rejected the stream");
   });
 
+  it("words an undecodable Setup so it is never mistaken for a non-AMI image", async () => {
+    const lzmaGuid = "EE4E5898-3914-4259-9D6E-DC7BD79403CF";
+    const hii = freeformSection(hiiGuid, new Uint8Array([0x01, 0x02, 0x03]));
+    const image = firmwareVolumeWithFile(setupGuid, guidDefinedSection(lzmaGuid, hii));
+
+    const error = await extractAptioIvBytes(
+      image,
+      () => Promise.resolve(""),
+      () => Promise.reject(new Error("LZMA decompression rejected the stream")),
+    ).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toMatch(/could not be decoded/);
+    expect(sniffNonAmiFailure(message)).toBe(false);
+  });
+
   it("keeps recovering other firmware contexts after one section fails to decompress, with a warning attached", async () => {
     const lzmaGuid = "EE4E5898-3914-4259-9D6E-DC7BD79403CF";
     const workingHii = new Uint8Array([0xaa, 0xbb, 0xcc]);
@@ -296,6 +317,18 @@ describe("extractAptioIvArtifacts", () => {
       await expect(extractAptioIvBytes(image, () => Promise.resolve(""))).rejects.toThrow(
         /Setup FFS was not found.*not searched/,
       );
+    });
+
+    it("words an unsearched buffer so the miss is never mistaken for a non-AMI image", async () => {
+      const image = imageWithDisposableSections(70, new Map([[69, setupVolume(new Uint8Array([0x01]))]]));
+
+      const error = await extractAptioIvBytes(image, () => Promise.resolve("")).then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect(sniffNonAmiFailure((error as Error).message)).toBe(false);
     });
 
     it("attaches a warning to a context that was found while later buffers went unsearched", async () => {

@@ -1,3 +1,4 @@
+import { isIncompleteSearchMessage } from "./extractionMessages";
 import { scanHiiFormsPackages } from "./hiiPackages";
 import type { BrandMarker, FirmwareBrand } from "./brandKnowledge";
 import {
@@ -863,6 +864,10 @@ const knownNonAmiExtractionFailures = [
   "Only UEFI is supported.",
 ];
 
+// A message that also says part of the image was not decoded or not searched
+// is not evidence of a non-AMI image: Setup may be inside the part that was
+// skipped, so it stays a failure to investigate.
 export function sniffNonAmiFailure(message: string): boolean {
+  if (isIncompleteSearchMessage(message)) return false;
   return knownNonAmiExtractionFailures.some((known) => message.includes(known));
 }
