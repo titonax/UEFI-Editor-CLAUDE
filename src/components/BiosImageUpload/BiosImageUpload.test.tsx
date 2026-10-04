@@ -462,6 +462,40 @@ describe("BiosImageUpload", () => {
     expect(inspectPhoenixSetupMenu).toHaveBeenCalledOnce();
   });
 
+  it("says so when a Phoenix tab has items the parser could not read, instead of presenting the tab as complete", async () => {
+    const menu: PhoenixSetupMenu = {
+      sections: [
+        {
+          offset: 0,
+          name: "Main",
+          unparsedItems: 2,
+          items: [
+            {
+              type: "pick-field",
+              offset: 0,
+              length: 20,
+              prompt: "F12 Boot Menu:",
+              help: null,
+              options: ["Disabled", "Enabled"],
+              visibilityPatch: null,
+              rawBytes: new Uint8Array(20),
+            },
+          ],
+        },
+      ],
+      source: "root-table",
+    };
+    inspectPhoenixSetupMenu.mockResolvedValueOnce({ menu, templat: new Uint8Array(0) });
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, {
+      target: { files: [imageFile(new Uint8Array(0x100), "phoenix.bin")] },
+    });
+
+    expect(await screen.findByText("2 item(s) could not be parsed")).toBeInTheDocument();
+    expect(screen.getByText("1 item(s) · 2 unparsed")).toBeInTheDocument();
+  });
+
   it("lets a Pick Field's option selection be changed, staged only in this browser tab", async () => {
     const menu: PhoenixSetupMenu = {
       sections: [

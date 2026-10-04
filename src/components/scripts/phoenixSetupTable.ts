@@ -161,6 +161,10 @@ export interface PhoenixSetupSection {
   // known - see PhoenixSetupMenu.source.
   name: string | null;
   items: PhoenixSetupItem[];
+  // How many entries of the tab's pointer list pointed at a record this
+  // parser could not read (unknown type, short length, past the buffer), so
+  // `items` is known to be incomplete. Only the root-table path reports it.
+  unparsedItems?: number;
 }
 
 // Confirmed against the per-tab item-pointer list a root/tab table indexes
@@ -395,16 +399,22 @@ function readTabLabel(bytes: Uint8Array, table: PhoenixStringTable | null, label
 // source once it resolves. Confirmed item-for-item against two independent
 // samples: e.g. Information's 13 entries resolve to exactly "CPU Type:",
 // "CPU Speed:", ... "UUID:" - the real System Information screen.
-function readTabItems(bytes: Uint8Array, table: PhoenixStringTable | null, contentPointer: number): PhoenixSetupItem[] {
+function readTabItems(
+  bytes: Uint8Array,
+  table: PhoenixStringTable | null,
+  contentPointer: number,
+): { items: PhoenixSetupItem[]; unparsed: number } {
   const items: PhoenixSetupItem[] = [];
+  let unparsed = 0;
   let cursor = pbeToRaw(contentPointer);
   for (let step = 0; step < MAX_TAB_ITEMS && cursor + 4 <= bytes.length; step++, cursor += 4) {
     const itemPointer = u16(bytes, cursor);
     if (itemPointer === 0) break;
     const item = parseItem(bytes, pbeToRaw(itemPointer), table);
     if (item) items.push(item);
+    else unparsed++;
   }
-  return items;
+  return { items, unparsed };
 }
 
 // Reads the real Setup tab layout - names and item membership - via
@@ -430,9 +440,9 @@ export function parsePhoenixRootTable(
     if (labelPointer === 0 && contentPointer === 0) break;
 
     const name = readTabLabel(bytes, table, labelPointer);
-    const items = readTabItems(bytes, table, contentPointer);
+    const { items, unparsed } = readTabItems(bytes, table, contentPointer);
     if (name === null && items.length === 0) continue;
-    sections.push({ offset: pbeToRaw(contentPointer), name, items });
+    sections.push({ offset: pbeToRaw(contentPointer), name, items, unparsedItems: unparsed });
   }
   return sections.length > 0 ? sections : null;
 }

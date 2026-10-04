@@ -506,3 +506,8 @@ they are **not** the same kind of thing:
 - `toPbeModuleBytes` strips the 4-byte `[u16 length][00 19]` header only
   after checking it. A buffer without it makes "Save changes" throw and
   download nothing, rather than export a module shifted by 4 bytes.
+- A root-table tab whose pointer list names a record the parser cannot read
+  (unknown type byte, short length, past the buffer) keeps the items it could
+  read and reports how many it could not (`unparsedItems`). The panel shows
+  "N item(s) could not be parsed" and a per-screen "· N unparsed" instead of
+  presenting the tab as complete under the "Real tab names (root table)" badge.
