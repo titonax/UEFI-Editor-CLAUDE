@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "AMI-HUB-001",
+  "description": "A single FormSet whose entry Form fans out into the tabs is the navigation hub; its direct Refs, in opcode order, are the tabs.",
+  "evidence": "multi-sample",
+  "minimumCases": 2,
+  "validatedCases": [
+    "ami-12770cbd",
+    "ami-9344b904",
+    "ami-e862e5b0"
+  ],
+  "implementation": [
+    "src/components/scripts/singleFormSetNavigation.ts"
+  ],
+  "tests": [
+    "src/components/scripts/singleFormSetNavigation.test.ts"
+  ],
+  "documentation": [
+    "docs/ami/single-formset-ifr-navigation.md"
+  ],
+  "notes": [
+    "AMITSE registration only corroborates a tab; it never promotes a page."
+  ]
+}

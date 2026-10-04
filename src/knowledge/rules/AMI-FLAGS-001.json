@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "AMI-FLAGS-001",
+  "description": "The SetupData flag byte at record offset +16 does not decide visibility: it is shown for information only and drives nothing.",
+  "evidence": "multi-sample",
+  "minimumCases": 2,
+  "validatedCases": [
+    "ami-12770cbd",
+    "ami-14c74b9b",
+    "ami-23c00cf1",
+    "ami-56430f2f",
+    "ami-6439feb5",
+    "ami-6fd5a017",
+    "ami-72633d60",
+    "ami-9f8a45c6",
+    "ami-baba9db1",
+    "ami-dc86ddfe",
+    "ami-e862e5b0"
+  ],
+  "implementation": [
+    "src/components/scripts/setupDataFlags.ts"
+  ],
+  "tests": [
+    "src/components/scripts/setupDataFlags.test.ts"
+  ],
+  "documentation": [
+    "docs/ami/setupdata-control-flags.md"
+  ],
+  "notes": [
+    "Documented over 38 images; only those recorded as cases are listed.",
+    "Cases are linked to the documented images by file name."
+  ]
+}

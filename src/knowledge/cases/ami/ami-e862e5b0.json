@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-e862e5b0",
+  "sha256": "e862e5b0fdce10e44764be6072dd5b8017544264353dbfa02c8074e0ccc15190",
+  "size": 16779264,
+  "names": [
+    "PRIME-Z370-P-ASUS-3004.CAP"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "unknown",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "formSets": 1,
+    "forms": 205,
+    "navigation": "single-formset-ifr-hub"
+  },
+  "blockers": [],
+  "source": "docs/ami/single-formset-ifr-navigation.md",
+  "notes": [
+    "Outer layout: vendor capsule header (0x800) plus a 16 MiB image."
+  ]
+}
