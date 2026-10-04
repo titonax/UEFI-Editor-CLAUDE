@@ -134,6 +134,11 @@ preflight already runs (`src/components/scripts/amiFirmwareImage.ts`); none
 of them are ever parsed further, so a guess stays a label, not a claim of
 support.
 
+A Phoenix-Award 6.00PG image additionally gets a read-only inventory of its
+LHA module chain and a per-page summary of its decoded `_ITEM.BIN` setup item
+table; nothing about it can be edited. See
+[`docs/award/README.md`](docs/award/README.md) for what is and is not known.
+
 Independently of that vendor guess, every image also gets a best-effort
 **manufacturer** (motherboard/system vendor) lead - ASUS/HP/Intel/MSI/
 ASRock/Supermicro/Gigabyte/Dell - from an exact SHA-256 match against this

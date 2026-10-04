@@ -342,3 +342,32 @@ export function buildMoveFixture(options: MoveFixtureOptions = {}): MoveFixture 
     },
   };
 }
+
+// Builds one stored (-lh0-) LHA level-1 entry: header, optional extended
+// header, payload. The compressed (-lh5-) path is exercised by the shared
+// Phoenix decoder's own tests; there is no LH5 encoder in this repo.
+export function awardLhaEntry(name: string, payload: Uint8Array, withExtendedHeader = false) {
+  const nameBytes = new TextEncoder().encode(name);
+  // method(5) skip(4) original(4) time(2) date(2) attr(1) level(1)
+  // nameLength(1) name crc(2) os(1) nextHeaderSize(2)
+  const headerLength = 25 + nameBytes.length;
+  // One extended header: type byte, two data bytes, next-size 0.
+  const extended = withExtendedHeader ? new Uint8Array([0, 0xaa, 0xbb, 0, 0]) : new Uint8Array();
+  const out = new Uint8Array(2 + headerLength + extended.length + payload.length);
+  const view = new DataView(out.buffer);
+  out[0] = headerLength;
+  out.set(new TextEncoder().encode("-lh0-"), 2);
+  view.setUint32(7, extended.length + payload.length, true);
+  view.setUint32(11, payload.length, true);
+  out[19] = 0x20;
+  out[20] = 1;
+  out[21] = nameBytes.length;
+  out.set(nameBytes, 22);
+  view.setUint16(2 + headerLength - 2, extended.length, true);
+  out.set(extended, 2 + headerLength);
+  out.set(payload, 2 + headerLength + extended.length);
+  let checksum = 0;
+  for (let index = 2; index < 2 + headerLength; index += 1) checksum += out[index];
+  out[1] = checksum & 0xff;
+  return out;
+}

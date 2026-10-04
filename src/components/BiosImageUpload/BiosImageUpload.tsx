@@ -39,11 +39,13 @@ import {
 } from "../scripts/firmwareProvenance";
 import type { FirmwareSectionCompression } from "../scripts/firmwareSections";
 import { buildPopulatedFilesFromArtifacts } from "../scripts/populatedFilesFromArtifacts";
+import { inspectAwardImage, type AwardImageInspection } from "../scripts/awardFirmware";
 import { inspectPhoenixSetupMenu } from "../scripts/phoenixSetupMenu";
 import type { PhoenixSetupInventory } from "../scripts/phoenixSetupMenu";
 import { savePhoenixSetupChanges } from "../scripts/phoenixSetupTable";
 import type { PhoenixSetupItem, PhoenixSetupMenu } from "../scripts/phoenixSetupTable";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
+import AwardInventoryPanel from "./AwardInventoryPanel";
 
 const MAX_FIRMWARE_BYTES = 512 * 1024 * 1024;
 
@@ -429,6 +431,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
   const [report, setReport] = React.useState<AmiFirmwareImageReport | null>(null);
   const [phoenixSetupInventory, setPhoenixSetupInventory] =
     React.useState<PhoenixSetupInventory | null>(null);
+  const [awardInspection, setAwardInspection] = React.useState<AwardImageInspection | null>(null);
   const [artifacts, setArtifacts] = React.useState<AptioIvArtifacts | null>(null);
   const [profile, setProfile] = React.useState<AmiSetupProfileReport | null>(null);
   const [selectedArtifactSetId, setSelectedArtifactSetId] = React.useState<string | null>(
@@ -443,6 +446,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
     setFile(selected);
     setReport(null);
     setPhoenixSetupInventory(null);
+    setAwardInspection(null);
     setArtifacts(null);
     setProfile(null);
     setSelectedArtifactSetId(null);
@@ -499,6 +503,15 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
               : current,
           );
         }
+      }
+
+      // Like the Phoenix lookup above, this keys on the structure itself (a
+      // chain of checksum-verified LHA entries), never on the vendor guess.
+      if (!imageReport.amiAptioCandidate) {
+        setStage("Looking for an Award module chain…");
+        const award = await inspectAwardImage(image);
+        if (currentOperation !== operation.current) return;
+        setAwardInspection(award);
       }
 
       if (imageReport.firmwareVolumes.length === 0) return;
@@ -934,6 +947,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
             </Text>
           </Alert>
         )}
+        {awardInspection && <AwardInventoryPanel inspection={awardInspection} />}
         {phoenixSetupInventory && (
           <PhoenixSetupMenuPanel
             menu={phoenixSetupInventory.menu}

@@ -7,6 +7,7 @@ import BiosImageUpload from "./BiosImageUpload";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 import type { AptioIvArtifacts } from "../scripts/aptioIvExtractor";
 import type { PhoenixSetupItem, PhoenixSetupMenu } from "../scripts/phoenixSetupTable";
+import { awardLhaEntry } from "../scripts/testFixtures";
 
 const extractFirmwareInWorker = vi.hoisted(() => vi.fn());
 const inspectPhoenixSetupMenu = vi.hoisted(() => vi.fn());
@@ -345,6 +346,38 @@ describe("BiosImageUpload", () => {
     expect(
       screen.queryByRole("button", { name: "Start HII analysis" }),
     ).not.toBeInTheDocument();
+    expect(extractFirmwareInWorker).not.toHaveBeenCalled();
+  });
+
+  it("shows a read-only Award inventory, and never attempts extraction, for a Phoenix-Award image", async () => {
+    const text = (value: string) => new TextEncoder().encode(value);
+    const item = new Uint8Array(0x10 + 25 + 8);
+    item.set(text("_ITEM.BIN"));
+    item[0x10 + 2] = 5;
+    item[0x10 + 5] = 0xf8;
+    item[0x10 + 8] = 0x3c;
+    item[0x10 + 0x11] = 0x03;
+    item[0x10 + 0x12] = 0x02;
+    const parts = [
+      text("Award Software International, Inc."),
+      awardLhaEntry("awardext.rom", text("EXT")),
+      awardLhaEntry("_ITEM.BIN", item),
+      awardLhaEntry("ACPITBL.BIN", text("ACPI")),
+    ];
+    const image = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0) + 0x40);
+    let cursor = 0x10;
+    for (const part of parts) {
+      image.set(part, cursor);
+      cursor += part.length;
+    }
+    const input = renderUpload(vi.fn<(files: PopulatedFiles) => Promise<void>>());
+
+    fireEvent.change(input, { target: { files: [imageFile(image, "R01A2.BIN")] } });
+
+    expect(await screen.findByText("Phoenix-Award BIOS inventory (read-only)")).toBeInTheDocument();
+    expect(screen.getByText("awardext.rom")).toBeInTheDocument();
+    expect(await screen.findByText("1 setup item record(s)")).toBeInTheDocument();
+    expect(screen.getByText("0 statically hidden")).toBeInTheDocument();
     expect(extractFirmwareInWorker).not.toHaveBeenCalled();
   });
 
