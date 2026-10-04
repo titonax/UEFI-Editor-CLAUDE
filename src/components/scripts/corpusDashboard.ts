@@ -293,6 +293,41 @@ function classifyFailureMessage(message: string): CorpusFailureCode {
   return "OTHER";
 }
 
+export interface CorpusReconstructionBlocker {
+  blocker: string;
+  cases: number;
+  fileNames: string[];
+}
+
+export interface CorpusReconstructionBlockers {
+  // Distinct images that were extracted, the only ones with a reconstruction
+  // to assess; the denominator for each blocker's share.
+  extractedCases: number;
+  blockers: CorpusReconstructionBlocker[];
+}
+
+// How many distinct extracted images share each reason full-image output is
+// still blocked, most common first. It shows which blocker the most images are
+// waiting on; an image is only unblocked once all of its blockers are gone.
+export function reconstructionBlockerBreakdown(entries: CorpusRunEntry[]): CorpusReconstructionBlockers {
+  const extracted = distinctEntries(entries).filter((entry) => extractedStatuses.includes(entry.status));
+  const byBlocker = new Map<string, CorpusReconstructionBlocker>();
+  for (const entry of extracted) {
+    for (const blocker of new Set(entry.reconstructionBlockers)) {
+      const existing = byBlocker.get(blocker) ?? { blocker, cases: 0, fileNames: [] };
+      existing.cases += 1;
+      existing.fileNames.push(entry.fileName);
+      byBlocker.set(blocker, existing);
+    }
+  }
+  return {
+    extractedCases: extracted.length,
+    blockers: [...byBlocker.values()].sort(
+      (left, right) => right.cases - left.cases || left.blocker.localeCompare(right.blocker),
+    ),
+  };
+}
+
 export interface CorpusDashboardFailureCode {
   stage: RecognitionBlocker;
   code: CorpusFailureCode;
@@ -338,6 +373,8 @@ export interface CorpusDashboardData {
   knowledge: KnowledgeBreakdown;
   // Which fields keep the new cases apart from the closest recorded case.
   novelty: NoveltyReasons;
+  // Why full-image output is blocked, over the extracted cases.
+  reconstruction: CorpusReconstructionBlockers;
 }
 
 // `selected` (how many files were chosen, before Cancel may have cut the
@@ -372,5 +409,6 @@ export function buildCorpusDashboard(
     ).length,
     knowledge: knowledgeBreakdown(unique, knownCases),
     novelty: noveltyReasons(unique, knownCases),
+    reconstruction: reconstructionBlockerBreakdown(entries),
   };
 }
