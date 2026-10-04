@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-9344b904",
+  "sha256": "9344b904cd319b3d385ffdf74d232a5e3999a2963cc74937af95a631a87f1454",
+  "size": 16781312,
+  "names": [
+    "SZ390E.CAP"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "unknown",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "formSets": 1,
+    "forms": 229,
+    "navigation": "single-formset-ifr-hub"
+  },
+  "blockers": [],
+  "source": "docs/ami/single-formset-ifr-navigation.md",
+  "notes": [
+    "Outer layout: vendor capsule header (0x1000) plus a 16 MiB image."
+  ]
+}
