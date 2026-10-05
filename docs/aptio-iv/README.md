@@ -65,3 +65,15 @@ Each tested platform will be recorded with one of these states:
 ## Development rule
 
 Aptio IV and Aptio V handling must remain isolated where their structures differ. Compatibility will not be inferred solely from file names, strings or a successful parse.
+
+## Recorded cases and rules
+
+The images in `docs/aptio-iv/samples` that carry a SHA-256 are also recorded as
+metadata-only cases under `src/knowledge/cases/ami/`. Their generation stays
+`unresolved`: the records call them Aptio IV, but that rests on Setup, AMITSE
+and `$SPF` structures the IV and V corpora share, so the claim is kept as a
+note, not as a verdict. Counts come from each record (the intake offsets table
+for the cross-vendor set), not from a corpus-runner run, and a field a record
+does not give is left out. `AMI-NEST-001` generalises the nested-volume
+finding (HP BOA, ASRock Z77, `image2.bin`). Phoenix records carry no image
+hashes, so no Phoenix case exists yet.

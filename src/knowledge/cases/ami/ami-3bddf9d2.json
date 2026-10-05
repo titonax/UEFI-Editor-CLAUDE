@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-3bddf9d2",
+  "sha256": "3bddf9d2f6d86e8102be4bb2cd54c49876349859c0d50a7cb7aaa7eec6870761",
+  "size": 8388608,
+  "names": [
+    "Z77EXT43.00"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "intel-flash",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 4,
+    "directSetupFiles": 0
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/cross-vendor-intake.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
+    "Setup and AMITSE are compressed and not visible to a raw scan; the record says they need recursive decompression.",
+    "Counts are from the intake offsets table, not a corpus-runner run."
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-49593660",
+  "sha256": "49593660b086ae48a3c968286e68c4b8e7e13e934483776b13802f3de4e3b330",
+  "size": 8388608,
+  "names": [
+    "E7752IMS.2B0"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "intel-flash",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 3,
+    "directSetupFiles": 1
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/cross-vendor-intake.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
+    "Counts are from the intake offsets table, not a corpus-runner run."
+  ]
+}

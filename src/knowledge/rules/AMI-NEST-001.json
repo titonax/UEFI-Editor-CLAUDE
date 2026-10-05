@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "AMI-NEST-001",
+  "description": "Setup and AMITSE can sit inside a compressed nested volume, invisible to a raw scan of the outer image; finding them takes recursive section extraction.",
+  "evidence": "multi-sample",
+  "minimumCases": 2,
+  "validatedCases": [
+    "ami-3bddf9d2",
+    "ami-56430f2f",
+    "ami-c0a18c73"
+  ],
+  "implementation": [
+    "src/components/scripts/aptioIvExtractor.ts"
+  ],
+  "tests": [
+    "src/components/scripts/aptioIvExtractor.test.ts"
+  ],
+  "documentation": [
+    "docs/ami/sample-corpus.md",
+    "docs/aptio-iv/samples/hp-boa-8005.md",
+    "docs/aptio-iv/samples/cross-vendor-intake.md"
+  ],
+  "notes": [
+    "Only cases the docs name are listed; sample-corpus.md also counts eight of ten images this way.",
+    "A raw scan finding no Setup is not a verdict: it says to extract recursively, not that the image is not AMI."
+  ]
+}

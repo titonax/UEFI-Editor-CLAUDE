@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-c13e4495",
+  "sha256": "c13e4495042f0bda3deadf4d110bf241cdeb6679153cde001b24e7e337b4e2c1",
+  "size": 16777216,
+  "names": [
+    "L01_0278.BIN"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "intel-flash",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 5,
+    "ffs2Volumes": 5,
+    "ffs3Volumes": 0,
+    "directSetupFiles": 1,
+    "formSets": 11,
+    "forms": 145
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/hp-server-l01-0278.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it."
+  ]
+}

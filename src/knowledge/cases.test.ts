@@ -4,6 +4,11 @@ import { knownCases, loadCases } from "./index";
 import { caseDirectory } from "./schema";
 import type { CorpusRunEntry } from "../components/scripts/corpusDashboard";
 import sampleCorpusDoc from "../../docs/ami/sample-corpus.md?raw";
+import crossVendorDoc from "../../docs/aptio-iv/samples/cross-vendor-intake.md?raw";
+import hpBoaDoc from "../../docs/aptio-iv/samples/hp-boa-8005.md?raw";
+import hpIpisbDoc from "../../docs/aptio-iv/samples/hp-ipisb-ch2-w25q32.md?raw";
+import hpServerDoc from "../../docs/aptio-iv/samples/hp-server-l01-0278.md?raw";
+import supermicroDoc from "../../docs/aptio-iv/samples/supermicro-x9dr3-if-34.md?raw";
 
 describe("bundled firmware cases", () => {
   it("loads, validates and has one case per image", () => {
@@ -38,6 +43,33 @@ describe("bundled firmware cases", () => {
     // The doc also lists the three extracted artifacts of image2.bin; the
     // image rows are the ones that name a case.
     expect(new Set(imageRows)).toEqual(new Set(fromDoc.map((entry) => entry.sha256)));
+  });
+
+  it("stays in step with the Aptio IV sample records in docs/aptio-iv/samples", () => {
+    const docs: Record<string, string> = {
+      "docs/aptio-iv/samples/cross-vendor-intake.md": crossVendorDoc,
+      "docs/aptio-iv/samples/hp-boa-8005.md": hpBoaDoc,
+      "docs/aptio-iv/samples/hp-ipisb-ch2-w25q32.md": hpIpisbDoc,
+      "docs/aptio-iv/samples/hp-server-l01-0278.md": hpServerDoc,
+      "docs/aptio-iv/samples/supermicro-x9dr3-if-34.md": supermicroDoc,
+    };
+    const fromDocs = knownCases.filter((entry) => entry.source.startsWith("docs/aptio-iv/samples/"));
+    expect(fromDocs).toHaveLength(10);
+    for (const entry of fromDocs) {
+      const doc = docs[entry.source] as string | undefined;
+      expect(doc, `${entry.id}: ${entry.source} is not a known sample record`).toBeDefined();
+      expect(doc?.includes(entry.sha256), `${entry.id}: SHA-256 is not in ${entry.source}`).toBe(true);
+    }
+  });
+
+  it("does not resolve the Aptio generation from a sample record alone", () => {
+    // The records call these images Aptio IV, but they rest on structures the
+    // IV and V corpora share; the generation stays unresolved (see
+    // docs/ami/sample-corpus.md) and the documented claim is kept as a note.
+    for (const entry of knownCases.filter((one) => one.source.startsWith("docs/aptio-iv/samples/"))) {
+      expect(entry.generation, entry.id).toBe("unresolved");
+      expect(entry.notes?.join(" "), entry.id).toMatch(/Aptio IV/);
+    }
   });
 
   it("keeps every case file at cases/<family>/<id>.json", () => {
