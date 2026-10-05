@@ -76,6 +76,11 @@ decompressors and IFRExtractor are built on CI and git-ignored
 7. Commit with a descriptive message on the working branch. Do not open a PR
    unless asked.
 
+When the user brings a new firmware image, its corpus-runner result or a
+downloaded case file, follow `.claude/skills/add-firmware-case/SKILL.md`: decide
+known, similar or new, record a metadata-only case, and add a rule only when
+several recorded cases back it.
+
 Files over ~800 lines (`ifrParser.ts`, `aptioIvExtractor.ts`,
 `amiFirmwareImage.ts`, `BiosImageUpload.tsx`) are refactor candidates, but
 only split them in a dedicated change with tests green before and after.

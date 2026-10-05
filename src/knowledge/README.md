@@ -30,6 +30,10 @@ vendor or generation.
 
 ## Adding a case
 
+An agent follows `.claude/skills/add-firmware-case/SKILL.md`, which is this section
+plus the rules for explaining a difference and for deciding whether a rule is
+justified; `src/knowledge/skill.test.ts` keeps it in step with the repository.
+
 1. Run the image through the corpus runner (`Local firmware corpus runner`).
    Its detail panel has an **Add case** button (hidden for an image that is
    already a recorded case). It downloads `<id>.json`: metadata only, no
