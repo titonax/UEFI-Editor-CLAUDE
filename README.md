@@ -167,7 +167,11 @@ reconstruction all require HII); a **first recognition blocker** table -
 which single stage first kept each distinct case from being recognized,
 with example filenames; a **failure taxonomy** classifying every failure
 message into a small closed set of codes (`NO_SETUP_FFS`,
-`SECTION_DECODE_FAILED`, `FRAMEWORK_HII`, ...); and a **distribution of
+`SECTION_DECODE_FAILED`, `FRAMEWORK_HII`, ...); a **why full-image output is
+blocked** table - how many of the extracted cases share each reconstruction
+blocker, most common first, with example filenames (an image is only unblocked
+once all of its blockers are gone, so a blocker every image shares blocks them
+all until it is implemented); and a **distribution of
 cases** tab set breaking the same extraction/navigation/HII-edit/full-image
 rates down by firmware family, IFR format, manufacturer, container and
 Aptio generation. See

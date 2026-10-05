@@ -238,6 +238,11 @@ describe("CorpusRunner", () => {
     // The dashboard tallies the same differences over the new cases.
     expect(screen.getByText("Why the new cases are new")).toBeInTheDocument();
     expect(screen.getByText("Differs in")).toBeInTheDocument();
+    // The extracted case shares the extractor's fixed reconstruction blockers,
+    // and the dashboard counts how many cases wait on each one.
+    expect(screen.getByText("Why full-image output is blocked")).toBeInTheDocument();
+    expect(screen.getByText("Cases / extracted")).toBeInTheDocument();
+    expect(screen.getAllByText(/^Bottom-up section replacement/).length).toBeGreaterThan(0);
     expect(screen.getByText("1 new case(s)")).toBeInTheDocument();
     expect(screen.getByText("0 known case(s)")).toBeInTheDocument();
     expect(screen.getByText("0 similar to a known case")).toBeInTheDocument();

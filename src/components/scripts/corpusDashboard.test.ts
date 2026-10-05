@@ -9,6 +9,7 @@ import {
   entryIfrFormatLabel,
   entryManufacturerLabel,
   failureCodeBreakdown,
+  reconstructionBlockerBreakdown,
   firstRecognitionBlocker,
   recognitionBreakdown,
   stageBreakdown,
@@ -314,6 +315,53 @@ describe("failureCodeBreakdown", () => {
   });
 });
 
+describe("reconstructionBlockerBreakdown", () => {
+  const lzma = "Deterministic LZMA recompression is not implemented yet.";
+  const tiano = "Deterministic EFI/Tiano recompression is not implemented yet.";
+  const bottomUp = "Bottom-up section replacement, FFS checksum repair and full re-extraction verification are not implemented yet.";
+
+  it("counts, over the extracted images, how many share each blocker, most common first", () => {
+    const breakdown = reconstructionBlockerBreakdown([
+      recognizedEntry({ fileName: "a.bin", sha256: "a1", reconstructionBlockers: [lzma, bottomUp] }),
+      recognizedEntry({ fileName: "b.bin", sha256: "b1", reconstructionBlockers: [lzma, tiano, bottomUp] }),
+      partialEntry({ fileName: "c.bin", sha256: "c1", reconstructionBlockers: [bottomUp] }),
+    ]);
+
+    expect(breakdown.extractedCases).toBe(3);
+    expect(breakdown.blockers.map((entry) => [entry.blocker, entry.cases])).toEqual([
+      [bottomUp, 3],
+      [lzma, 2],
+      [tiano, 1],
+    ]);
+    expect(breakdown.blockers[1].fileNames).toEqual(["a.bin", "b.bin"]);
+  });
+
+  it("counts a duplicate image once", () => {
+    const breakdown = reconstructionBlockerBreakdown([
+      recognizedEntry({ fileName: "a.bin", sha256: "same", reconstructionBlockers: [lzma] }),
+      recognizedEntry({ fileName: "copy.bin", sha256: "same", reconstructionBlockers: [lzma] }),
+    ]);
+
+    expect(breakdown.extractedCases).toBe(1);
+    expect(breakdown.blockers).toEqual([{ blocker: lzma, cases: 1, fileNames: ["a.bin"] }]);
+  });
+
+  it("ignores images that were never extracted, since they have no reconstruction to assess", () => {
+    const breakdown = reconstructionBlockerBreakdown([
+      unsupportedEntry({ reconstructionBlockers: [lzma] }),
+      failedEntry({ reconstructionBlockers: [lzma] }),
+    ]);
+
+    expect(breakdown).toEqual({ extractedCases: 0, blockers: [] });
+  });
+
+  it("reports an extracted image with no blocker as counted but blocked by nothing", () => {
+    const breakdown = reconstructionBlockerBreakdown([recognizedEntry({ reconstructionBlockers: [] })]);
+
+    expect(breakdown).toEqual({ extractedCases: 1, blockers: [] });
+  });
+});
+
 describe("buildCorpusDashboard", () => {
   it("aggregates distinct-case counts, stage/blocker/cohort breakdowns from a mixed run", () => {
     const entries = [recognizedEntry(), partialEntry(), unsupportedEntry(), failedEntry()];
@@ -361,6 +409,17 @@ describe("buildCorpusDashboard", () => {
     expect(dashboard.knowledge.exact + dashboard.knowledge.similar + dashboard.knowledge.novel).toBe(
       dashboard.uniqueCases,
     );
+  });
+
+  it("includes the reconstruction blockers of the extracted cases", () => {
+    const entries = [recognizedEntry({ reconstructionBlockers: ["X is not implemented yet."] })];
+
+    const dashboard = buildCorpusDashboard(entries);
+
+    expect(dashboard.reconstruction).toEqual({
+      extractedCases: 1,
+      blockers: [{ blocker: "X is not implemented yet.", cases: 1, fileNames: ["recognized.bin"] }],
+    });
   });
 
   it("explains why new cases are new", () => {

@@ -215,6 +215,39 @@ export default function CorpusDashboard({ dashboard }: { dashboard: CorpusDashbo
           </Table.Tbody>
         </Table>
       </ScrollArea>
+      {dashboard.reconstruction.blockers.length > 0 && (
+        <>
+          <Title order={5}>Why full-image output is blocked</Title>
+          <Text size="xs" c="dimmed">
+            Over the {String(dashboard.reconstruction.extractedCases)} extracted case(s). An image is
+            only unblocked once all of its blockers are gone, so a blocker shared by every image
+            blocks them all until it is implemented.
+          </Text>
+          <ScrollArea>
+            <Table striped withColumnBorders className={s.dashboardTable}>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Blocker</Table.Th>
+                  <Table.Th>Cases / extracted</Table.Th>
+                  <Table.Th>Example files</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {dashboard.reconstruction.blockers.map((entry) => (
+                  <Table.Tr key={entry.blocker}>
+                    <Table.Td>{entry.blocker}</Table.Td>
+                    <Table.Td>{fraction(entry.cases, dashboard.reconstruction.extractedCases)}</Table.Td>
+                    <Table.Td className={s.fileName}>
+                      {entry.fileNames.slice(0, 3).join(", ")}
+                      {entry.fileNames.length > 3 ? " …" : ""}
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </ScrollArea>
+        </>
+      )}
       {dashboard.failureCodes.length > 0 && (
         <>
           <Title order={5}>Failure taxonomy</Title>
