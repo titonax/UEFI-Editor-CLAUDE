@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-3b4f01b4",
+  "sha256": "3b4f01b4fb3361bf0ed8fe290225303172a72bb3ce479e83ca28c0bcff5d5b9c",
+  "size": 16777216,
+  "names": [
+    "X9DRi0.630"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "intel-flash",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 3,
+    "directSetupFiles": 1
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/supermicro-x9dr3-if-34.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
+    "IFR and SetupData statistics were still pending in the record, so no HII counts are recorded."
+  ]
+}

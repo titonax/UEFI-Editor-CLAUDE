@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-cb71e90c",
+  "sha256": "cb71e90c3863a3d0c097d5774bf5dd536bf4f528f679e17d27c2d1add69c6462",
+  "size": 8390656,
+  "names": [
+    "ASUS Sabertooth Z97 Mark 1 2702 CAP"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "unknown",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 6,
+    "directSetupFiles": 1
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/cross-vendor-intake.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
+    "Name is the label used in the record, not a file name. 0x800-byte ASUS capsule header.",
+    "Counts are from the intake offsets table, not a corpus-runner run."
+  ]
+}

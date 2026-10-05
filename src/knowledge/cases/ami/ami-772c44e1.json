@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-772c44e1",
+  "sha256": "772c44e15c76315de3dc2f772360b643ddffe726ff6d1700d1a021cc0560aef5",
+  "size": 8390656,
+  "names": [
+    "ASUS Rampage IV Extreme 4901 CAP"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "unknown",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 7,
+    "directSetupFiles": 1
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/cross-vendor-intake.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
+    "Name is the label used in the record, not a file name. 0x800-byte ASUS capsule header.",
+    "Counts are from the intake offsets table, not a corpus-runner run."
+  ]
+}

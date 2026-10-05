@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-6d18c962",
+  "sha256": "6d18c962f3ffa6b941ada4e6fa71be4cdf1e7ff8297f5f4a4b73e29969f350a9",
+  "size": 4194304,
+  "names": [
+    "IPISB-CH2-W25Q32_20170616_155538.BIN"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "intel-flash",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 4,
+    "directSetupFiles": 1,
+    "formSets": 11,
+    "forms": 78
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/hp-ipisb-ch2-w25q32.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
+    "Volumes use the 7A9354D9 file system GUID, so no FFS2/FFS3 count is recorded."
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-c0a18c73",
+  "sha256": "c0a18c739897fcc0ee428802272c566ec49014b6074aadf0c55fdb5513e816ff",
+  "size": 8388608,
+  "names": [
+    "BOA_8005.BIN"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "unknown",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 5,
+    "ffs2Volumes": 5,
+    "ffs3Volumes": 0,
+    "directSetupFiles": 0,
+    "formSets": 11,
+    "forms": 103
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/hp-boa-8005.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
+    "No flash descriptor. Setup and AMITSE appear only after decompressing the nested main volume (0x7E0000 bytes)."
+  ]
+}

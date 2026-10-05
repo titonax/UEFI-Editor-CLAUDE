@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-ab56462a",
+  "sha256": "ab56462aef141f05beea299aa14fc6fb6234412cf83f59903aef15807f2be1e9",
+  "size": 6293504,
+  "names": [
+    "K56CBAS.205"
+  ],
+  "vendorFamily": "ami-aptio",
+  "container": "vendor-image",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 3,
+    "directSetupFiles": 1
+  },
+  "blockers": [],
+  "source": "docs/aptio-iv/samples/cross-vendor-intake.md",
+  "notes": [
+    "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
+    "Counts are from the intake offsets table, not a corpus-runner run."
+  ]
+}
