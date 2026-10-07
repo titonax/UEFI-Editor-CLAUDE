@@ -1,16 +1,90 @@
 # Knowledge interchange: cases, rules and similarity
 
-This page fixes the part of `src/knowledge` that two implementations of the
-editor (this one and the GPT fork) must share, so a case recorded in one is
-valid in the other. It is the contract; the code is the reference, and
-`src/knowledge/interchange.test.ts` fails when this page and the code differ.
+This project exists as two forks with the same functionality and their own
+implementation: this one and the GPT fork (`titonax/UEFI-Editor-GPT`). Each
+keeps its own knowledge format. This page documents **this fork's** format,
+how it maps onto the GPT fork's, and what the two really share. It is not a
+contract that both forks have signed: the GPT fork has not adopted this page.
+`src/knowledge/interchange.test.ts` fails when the page and this fork's code
+differ.
 
-Everything else (UI, extraction, where a case is stored, how the corpus runner
-shows it) is each implementation's own business. A case is **metadata only**:
-no firmware bytes, ever. A field that was not observed is **absent**, never
-guessed; absence means unknown.
+The comparison was made against the GPT fork's `main` at `0895143` (its
+knowledge layer is unchanged at `d30cb3c`). It rests on reading its code and
+documents, not on running its tests.
 
-## Case (`FirmwareCase`)
+## What the two forks share
+
+- **Identity.** The SHA-256 of the whole analysed image, in lower-case hex, plus
+  its size. Of the 22 images recorded here, 14 are also recorded there with the
+  **same SHA-256**; 8 are only recorded here and 3 only there.
+- **No contradicted measurement.** For those 14, every count and container that
+  both forks recorded agrees. Where the values differ, one side leaves the
+  field out (see "Where they differ").
+- **Principles.** Metadata only, never firmware bytes. An unobserved field is
+  absent, and absence means unknown. A case or a similar image never selects a
+  parser, enables an edit or unlocks writing. Shared structures (Setup,
+  AMITSE, `$SPF`, FFS3) are not a generation verdict.
+
+Nothing else is shared. In particular the file format, the ids, the vocabulary
+and the similarity rule differ, so a case file from one fork is not valid in the
+other without translation.
+
+## Field correspondence
+
+How this fork's fingerprint fields map onto the GPT fork's `structure` fields.
+An em dash means the other fork has no counterpart.
+
+| This fork | GPT fork | Note |
+| --- | --- | --- |
+| `container` | `container` | Same name. The GPT fork also has `ami-legacy-rom` and `award-rom`. |
+| `vendorFamily` | `family` | `uefi-generic` is `uefi-unidentified` and `unknown` is `unidentified` there. |
+| `generation` | `generation.generation` | There it is an object with `confidence` and `conflict`; here `generationEvidence`, and a conflict is the blocker `generation-conflict`. |
+| `firmwareVolumes` | `firmwareVolumeCount` | Same meaning. |
+| `ffs2Volumes` | `ffs2VolumeCount` | Same meaning. |
+| `ffs3Volumes` | `ffs3VolumeCount` | Same meaning. |
+| `directSetupFiles` | `outerSetupCount` | Setup FFS files an outer scan sees, by their descriptions. |
+| `contextCount` | — | Not recorded there. |
+| `formSets` | `formSetCount` | Same meaning. |
+| `forms` | `formCount` | Same meaning. |
+| `refs` | — | Not recorded there. |
+| `navigation` | `navigation` | There a closed set of four values; here a short free code. |
+
+Recorded there and not here: `intelDescriptor`, `outerAmitseCount`,
+`guidedLzmaSectionCount`, `layout` and `legacyModuleCount`. Their cases also
+carry `label`, `brand`, `regressionTests` and `limitations`; ours carry `stages`,
+`blockers` and `notes`. `fileNames` there is `names` here. Ids there are slugs
+such as `hp-boa-8005`; here `<family>-<8 hex>`. Cases there live in TypeScript
+(`cases/ami.ts`, `cases/legacy.ts`) plus `cases/reviewed/*.json`; here one JSON
+file per image.
+
+A field with no counterpart is dropped when translating a case, never guessed.
+
+## Where they differ
+
+- **Generation.** The GPT fork records `aptio-iv` with `confirmed` for 9 of the
+  shared images and `aptio-v` with `probable` for the Intel NUC. This fork keeps
+  all of them `unresolved` because the records rest on structures the IV and V
+  corpora share (`docs/ami/sample-corpus.md`). That is a policy difference, not
+  a measurement difference, and it is not settled.
+- **Container.** For the ASUS capsules the GPT fork records `vendor-image`, and
+  `firmware-volume-image` for HP BOA; this fork recorded `unknown` for these
+  five because its records do not state a container. The project's classifier
+  returns `firmware-volume-image` when a volume starts at offset 0 and
+  `vendor-image` when volumes exist elsewhere, both without an Intel
+  descriptor. This fork has not rechecked those five images against it.
+- **Similarity.** This fork reports a case as similar when at least 80% of at
+  least 3 comparable fields agree. The GPT fork requires 4 matching fields,
+  one of them distinctive, and no contradicting field, and it reports no
+  percentage. It also has the statuses `insufficient-evidence` and `conflict`.
+  The same image can be similar in one fork and novel in the other.
+- **Rules.** Both keep a register that no parser consults. Here a rule is JSON
+  (`AREA-TOPIC-NNN`, `minimumCases`, evidence `single-sample`, `multi-sample` or
+  `externally-confirmed`); there it is TypeScript with `implementation`
+  `{path, symbol}`, `prerequisites`, `scope`, `limitations` and evidence
+  `reviewed-samples`, `single-sample` or `synthetic-only`. Only the hub rule
+  exists in both.
+
+## Case (`FirmwareCase`), this fork
 
 One JSON object per analysed image, at `cases/<family>/<id>.json`, written with
 2-space indentation and a trailing newline. Unknown keys are rejected.
@@ -52,7 +126,7 @@ Shared structures (Setup, AMITSE, `$SPF`, FFS3) are family evidence, not a
 generation verdict: a case keeps `generation: "unresolved"` unless something
 that separates Aptio IV from V resolves it.
 
-## Fingerprint and similarity
+## Fingerprint and similarity, this fork
 
 A fingerprint is what can be compared between a case and a newly analysed
 image. A field missing on either side is skipped: it counts neither for nor
@@ -74,7 +148,7 @@ Similarity is how alike two images look as observed. It is not a probability
 that the image is a given vendor or generation, and it never changes how the
 image is analysed.
 
-## Rule (`FirmwareRule`)
+## Rule (`FirmwareRule`), this fork
 
 A rule is a generalisation, backed by recorded cases, at `rules/<id>.json`. It
 is a register, not an engine: no parser consults it.
@@ -96,10 +170,16 @@ is a register, not an engine: no parser consults it.
 `externally-confirmed` needs documentation naming the outside source. A rule
 is only added when the behaviour is implemented, tested and documented.
 
-## Aligning
+## Moving a case between the forks
 
-Both forks agree on: the case schema and vocabularies above, the id and path
-rule, the fingerprint fields, and the 80% / 3-field thresholds. If either side
-changes one of those, change this page and bump `schemaVersion` in the same
-change. Cases already recorded stay valid across forks as long as they pass
-the validator of the fork that reads them.
+There is no importer. To bring a case across, translate it by hand with the
+correspondence table, keep the SHA-256 and size, drop the fields with no
+counterpart, and check the SHA-256 against the source record before accepting
+it. Do not copy a generation verdict across: re-derive it under the receiving
+fork's own policy.
+
+## Open points
+
+These need a decision from both sides before anything is aligned further: the
+generation policy, the similarity rule, the container values for capsules, and
+whether to converge on one file format or keep translating.
