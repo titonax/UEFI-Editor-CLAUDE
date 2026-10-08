@@ -699,9 +699,11 @@ export default function CorpusRunner() {
       const reconstruction = assessFirmwareReconstruction(extracted.provenance);
       stages.push({
         id: "reconstruction",
-        status: reconstruction.writeEnabled ? "passed" : "blocked",
+        // Nothing was rebuilt in this run, so a complete trace is recorded as
+        // not run (evidence that an attempt is possible, not that one passed).
+        status: reconstruction.writeEnabled ? "not-run" : "blocked",
         detail: reconstruction.writeEnabled
-          ? `Output can be attempted: every artifact traces back to the image${reconstruction.compressions.length > 0 ? ` through ${reconstruction.compressions.join(" + ")} section(s)` : ""}.`
+          ? `Not run: every artifact traces back to the image${reconstruction.compressions.length > 0 ? ` through ${reconstruction.compressions.join(" + ")} section(s)` : ""}, so an output can be attempted.`
           : (reconstruction.blockers[0] ?? "No artifact traces back to the source image."),
       });
 

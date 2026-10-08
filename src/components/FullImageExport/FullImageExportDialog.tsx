@@ -24,7 +24,7 @@ const stageTitle: Record<FullImageStage, string> = {
 type CheckState =
   | { phase: "idle" }
   | { phase: "running" }
-  | { phase: "refused"; message: string }
+  | { phase: "refused"; fingerprint: string | null; message: string }
   | { phase: "done"; fingerprint: string | null; result: FullImageResult };
 
 interface FullImageExportDialogProps {
@@ -70,27 +70,40 @@ export default function FullImageExportDialog({
   if (!source) return null;
   const assessment = assessFirmwareReconstruction(source.artifacts.provenance);
   const done = state.phase === "done" ? state : null;
-  const success = done?.result.ok ? done.result : null;
-  const failure = done && !done.result.ok ? done.result : null;
-  const fresh = done?.fingerprint === planFingerprint;
+  const refused = state.phase === "refused" ? state : null;
+  // Whatever the last run concluded is about the plan it was run for.
+  const concludedFor = done?.fingerprint ?? refused?.fingerprint;
+  const fresh = (done ?? refused) !== null && concludedFor === planFingerprint;
+  const stale = (done ?? refused) !== null && !fresh;
+  const success = fresh && done?.result.ok ? done.result : null;
+  const failure = fresh && done && !done.result.ok ? done.result : null;
 
   const run = () => {
+    const fingerprint = planFingerprint;
     let request: FullImageRequest;
     try {
       const changes = changesFromPlan(appliedData, files);
+      const context = source.artifacts.artifactSets.find((one) => one.id === source.artifacts.selectedArtifactSetId);
+      if (!context) throw new Error("The selected firmware context is not among the contexts this image holds.");
       request = {
+        context,
         graph: source.artifacts.provenance,
         artifactSetId: source.artifacts.selectedArtifactSetId,
         sourceName: source.fileName,
         changes,
       };
     } catch (error) {
-      setState({ phase: "refused", message: error instanceof Error ? error.message : String(error) });
+      setState({ phase: "refused", fingerprint, message: error instanceof Error ? error.message : String(error) });
       return;
     }
-    const fingerprint = planFingerprint;
     setState({ phase: "running" });
-    const started = startCheck(request);
+    let started: FullImageCheckHandle;
+    try {
+      started = startCheck(request);
+    } catch (error) {
+      setState({ phase: "refused", fingerprint, message: error instanceof Error ? error.message : String(error) });
+      return;
+    }
     handle.current = started;
     started.result.then(
       (result) => {
@@ -101,7 +114,7 @@ export default function FullImageExportDialog({
       (error: unknown) => {
         if (handle.current !== started) return;
         handle.current = null;
-        setState({ phase: "refused", message: error instanceof Error ? error.message : String(error) });
+        setState({ phase: "refused", fingerprint, message: error instanceof Error ? error.message : String(error) });
       },
     );
   };
@@ -114,14 +127,27 @@ export default function FullImageExportDialog({
   };
 
   const download = (result: Extract<FullImageResult, { ok: true }>, withImage: boolean) => {
+    // The changelog first: if the browser lets only one download through, a
+    // changelog without an image is harmless and an image without its
+    // changelog is not.
+    saveAs(new Blob([result.changelog], { type: "text/plain" }), "changelog.txt");
     if (withImage) {
       saveAs(new Blob([result.image], { type: "application/octet-stream" }), modifiedImageName(source.fileName));
     }
-    saveAs(new Blob([result.changelog], { type: "text/plain" }), "changelog.txt");
   };
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Complete firmware image" size="xl" centered>
+    <Modal
+      opened={opened}
+      onClose={() => {
+        // A check nobody is looking at would only keep the CPU busy.
+        if (state.phase === "running") cancel();
+        onClose();
+      }}
+      title="Complete firmware image"
+      size="xl"
+      centered
+    >
       <Stack gap="md">
         <Text size="sm">
           Puts the applied change queue back into <Code>{source.fileName}</Code> and checks the result before
@@ -161,22 +187,22 @@ export default function FullImageExportDialog({
           )}
           {state.phase === "running" && (
             <Text size="sm" c="dimmed">
-              Rebuilding and reading the image back. This can take minutes on a large image.
+              Rebuilding and reading the image back. This can take minutes on a large image; closing this window cancels it.
             </Text>
           )}
         </Group>
 
-        {state.phase === "refused" && (
+        {refused && fresh && (
           <Alert color="red" icon={<IconAlertTriangle size={16} />} title="The check could not run">
-            {state.message}
+            {refused.message}
           </Alert>
         )}
 
         {failure && (
           <Alert color="red" icon={<IconAlertTriangle size={16} />} title={stageTitle[failure.stage]}>
             <List size="sm" spacing={4}>
-              {failure.messages.map((message) => (
-                <List.Item key={message}>{message}</List.Item>
+              {failure.messages.map((message, index) => (
+                <List.Item key={`${String(index)}:${message}`}>{message}</List.Item>
               ))}
             </List>
             <Text size="sm" mt="xs">
@@ -185,13 +211,13 @@ export default function FullImageExportDialog({
           </Alert>
         )}
 
-        {success && !fresh && (
+        {stale && (
           <Alert color="orange" icon={<IconAlertTriangle size={16} />} title="This result is for an older plan">
-            The applied change queue has changed since the check. Run it again.
+            The applied change queue has changed since the last check. Run it again.
           </Alert>
         )}
 
-        {success && fresh && (
+        {success && (
           <Stack gap="xs">
             <Group gap="xs">
               <Badge color="green" leftSection={<IconCheck size={11} />}>
@@ -230,6 +256,9 @@ export default function FullImageExportDialog({
                 changelog.txt only
               </Button>
             </Group>
+            <Text size="xs" c="dimmed">
+              Two files are downloaded; if your browser asks to allow multiple downloads, allow them. The changelog belongs with the image.
+            </Text>
           </Stack>
         )}
       </Stack>

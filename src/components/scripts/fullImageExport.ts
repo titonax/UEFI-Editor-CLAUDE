@@ -8,7 +8,7 @@ import {
   type RebuildCodecs,
   type RebuiltFirmware,
 } from "./firmwareRebuild";
-import type { FirmwareArtifactKind, FirmwareProvenanceGraph } from "./firmwareProvenance";
+import type { FirmwareArtifactKind, FirmwareArtifactSetSummary, FirmwareProvenanceGraph } from "./firmwareProvenance";
 import { sha256Hex } from "./hashing";
 import type { Data } from "./types";
 
@@ -31,6 +31,9 @@ export interface ArtifactChange {
 export interface FullImageRequest {
   graph: FirmwareProvenanceGraph;
   artifactSetId: string;
+  // The context (slot) the user chose; an image can hold several, and the
+  // record has to say which one was patched.
+  context: FirmwareArtifactSetSummary;
   // The uploaded file's name, for the changelog and the downloaded name.
   sourceName: string;
   changes: ArtifactChange[];
@@ -69,7 +72,7 @@ export interface FullImageDeps {
   decompress: FirmwareDecompressor;
 }
 
-// Gaps this small between two differing runs are bridged into one edit: the
+// Gaps of up to this many bytes between two differing runs are bridged into one edit: the
 // bytes between are the original's own, so the result is the same and the plan
 // stays short when a move rewrites many nearby bytes.
 const bridgedGap = 16;
@@ -166,6 +169,8 @@ function buildChangelog(request: FullImageRequest, rebuilt: RebuiltFirmware, sum
   lines.push(`Source SHA-256: ${summary.sourceSha256}`);
   lines.push(`Output SHA-256: ${summary.outputSha256}`);
   lines.push(`Image size: ${String(summary.imageBytes)} bytes (unchanged)`);
+  lines.push(`Firmware context patched: ${request.context.label} (${request.context.id}), ${request.context.coherence}`);
+  for (const warning of request.context.warnings) lines.push(`  Warning: ${warning}`);
   lines.push("");
   lines.push("Checks passed before this image was offered:");
   lines.push("  - every edit applied to its decoded buffer and carried up through each section to the image;");
@@ -197,12 +202,31 @@ function buildChangelog(request: FullImageRequest, rebuilt: RebuiltFirmware, sum
 
 // Rebuilds the image with the plan, then checks the result twice, the second
 // time independently of how it was built. Produces nothing unless both pass.
-export async function checkFullImageOutput(request: FullImageRequest, deps: FullImageDeps): Promise<FullImageResult> {
+export async function checkFullImageOutput(given: FullImageRequest, deps: FullImageDeps): Promise<FullImageResult> {
+  // The bytes decide, not the flags: a file the plan "changed" to what it
+  // already was would otherwise be listed in the changelog with no effect. A
+  // change of length stays, for the planner to refuse.
+  const request: FullImageRequest = {
+    ...given,
+    changes: given.changes.filter(
+      (change) =>
+        change.original.length !== change.modified.length ||
+        change.original.some((byte, index) => byte !== change.modified[index]),
+    ),
+  };
   if (request.changes.length === 0) {
     return { ok: false, stage: "plan", messages: ["The applied plan changes nothing in Setup, AMITSE or SetupData, so there is nothing to put into the image."] };
   }
+  if (typeof crypto === "undefined" || !("subtle" in crypto)) {
+    // The record of the output needs SHA-256, which the browser only offers on
+    // https or localhost; better to say so before the long work than after.
+    return { ok: false, stage: "plan", messages: ["This page cannot compute SHA-256 (Web Crypto needs https or localhost), and the changelog must carry the image's hashes."] };
+  }
   const plan = planArtifactEdits(request.graph, request.changes);
   if (!plan.ok) return { ok: false, stage: "plan", messages: [plan.message] };
+  if (plan.edits.length === 0) {
+    return { ok: false, stage: "plan", messages: ["The applied plan leaves every byte of Setup, AMITSE and SetupData as it was, so there is nothing to put into the image."] };
+  }
 
   const rebuilt = rebuildFirmware(request.graph, plan.edits, { codecs: deps.codecs });
   if (!rebuilt.ok) {

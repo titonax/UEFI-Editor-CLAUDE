@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { extractAptioIvBytes, type AptioIvArtifacts, type FirmwareDecompressor } from "./aptioIvExtractor";
+import { downloadModifiedFiles, computeModifiedFiles } from "./binaryPatcher";
 import { changesFromPlan, checkFullImageOutput, planArtifactEdits, type ArtifactChange, type FullImageRequest } from "./fullImageExport";
 import {
   compressionSection,
@@ -15,6 +16,13 @@ import { buildPopulatedFilesFromArtifacts } from "./populatedFilesFromArtifacts"
 import { sha256Hex } from "./hashing";
 import { buildFixtureFiles } from "./testFixtures";
 import { decodeTiano, encodeTiano } from "./tianoCodec";
+
+const saveAsMock = vi.hoisted(() => vi.fn());
+vi.mock("file-saver", () => ({
+  saveAs: (blob: Blob, name: string) => {
+    saveAsMock(blob, name);
+  },
+}));
 
 const noIfr = () => Promise.resolve("");
 const checksummed = 0x40;
@@ -58,7 +66,7 @@ async function requestFor(image: Uint8Array, edit: (kind: "hii" | "setupData") =
     changes.push({ kind: "setupdata", fileName: "setupdata-ami-aptio.bin", original: artifacts.setupData, modified: setupData, changeLog: "Access Level 05 -> 00\n" });
   }
   return {
-    request: { graph: artifacts.provenance, artifactSetId: artifacts.selectedArtifactSetId, sourceName: "board.rom", changes },
+    request: { graph: artifacts.provenance, artifactSetId: artifacts.selectedArtifactSetId, context: artifacts.artifactSets[0], sourceName: "board.rom", changes },
     artifacts,
   };
 }
@@ -237,7 +245,7 @@ describe("changesFromPlan", () => {
     expect(changes.map((change) => change.kind)).toEqual(["setup-hii"]);
     expect(changes[0].changeLog).toMatch(/Unsuppressed/);
     const result = await checkFullImageOutput(
-      { graph: artifacts.provenance, artifactSetId: artifacts.selectedArtifactSetId, sourceName: "board.rom", changes },
+      { graph: artifacts.provenance, artifactSetId: artifacts.selectedArtifactSetId, context: artifacts.artifactSets[0], sourceName: "board.rom", changes },
       deps,
     );
     expect(result.ok).toBe(true);
@@ -261,5 +269,160 @@ describe("changesFromPlan", () => {
     ];
 
     expect(() => changesFromPlan(data, files)).toThrow(/verified full-image reconstruction path/);
+  });
+});
+
+describe("checkFullImageOutput: what it refuses and what it records", () => {
+  it("refuses a change that leaves every byte as it was, however it is flagged", async () => {
+    const image = wrapped("none");
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => (which === "hii" ? artifacts.hii.slice() : null));
+
+    const result = await checkFullImageOutput(request, deps);
+
+    expect(result).toMatchObject({ ok: false, stage: "plan" });
+    if (!result.ok) expect(result.messages[0]).toMatch(/changes nothing/);
+  });
+
+  it("does not list in the changelog a file the plan flagged but left as it was", async () => {
+    const image = wrapped("none");
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => (which === "hii" ? flip(artifacts.hii, 100) : artifacts.setupData?.slice() ?? null));
+
+    const result = await checkFullImageOutput(request, deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.changelog).toContain("========== setup-ami-aptio.bin ==========");
+    expect(result.changelog).not.toContain("setupdata-ami-aptio.bin");
+  });
+
+  it("refuses when the page cannot hash, before the long work", async () => {
+    const image = wrapped("none");
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => (which === "hii" ? flip(artifacts.hii, 100) : null));
+    vi.stubGlobal("crypto", {});
+    try {
+      const result = await checkFullImageOutput(request, deps);
+
+      expect(result).toMatchObject({ ok: false, stage: "plan" });
+      if (!result.ok) expect(result.messages[0]).toMatch(/SHA-256/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("changes exactly the bytes of the edits and the repaired checksum, in every artifact at once", async () => {
+    const image = wrapped("none");
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const graph = artifacts.provenance;
+    const where = (kind: string) => graph.artifacts.find((one) => one.kind === kind)?.payloadStart ?? -1;
+    const { request } = await requestFor(image, (which) => (which === "hii" ? flip(artifacts.hii, 100, 4) : flip(artifacts.setupData ?? new Uint8Array(), 4, 2)));
+    const amitse = artifacts.amitse ?? new Uint8Array();
+    request.changes.push({ kind: "amitse", fileName: "amitse.bin", original: amitse, modified: flip(amitse, 8, 2), changeLog: "Menu entry 0x10 -> 0x20\n" });
+
+    const result = await checkFullImageOutput(request, deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const differing = Array.from(result.image, (byte, index) => (byte === image[index] ? -1 : index)).filter((index) => index >= 0);
+    const edited = new Set([100, 101, 102, 103].map((offset) => where("setup-hii") + offset));
+    for (const offset of [4, 5]) edited.add(where("setupdata") + offset);
+    for (const offset of [8, 9]) edited.add(where("amitse") + offset);
+    const outside = differing.filter((index) => !edited.has(index));
+    // The only other changes are the data checksum bytes of the files edited.
+    expect(outside.length).toBeLessThanOrEqual(2);
+    for (const index of edited) expect(differing).toContain(index);
+    expect(result.changelog).toContain("Menu entry 0x10 -> 0x20");
+    expect(result.changelog).toContain("========== amitse.bin ==========");
+    expect(result.changelog).toContain("========== setupdata-ami-aptio.bin ==========");
+  });
+
+  it("names the firmware context it patched, with its warnings", async () => {
+    const image = wrapped("none");
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => (which === "hii" ? flip(artifacts.hii, 100) : null));
+    request.context = { ...request.context, warnings: ["Only a branch-level match."] };
+
+    const result = await checkFullImageOutput(request, deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.changelog).toContain(`Firmware context patched: ${request.context.label} (${request.context.id})`);
+    expect(result.changelog).toContain("Warning: Only a branch-level match.");
+  });
+
+  it("writes every changelog line of every changed file and counts the ranges it does not list", async () => {
+    const image = wrapped("none");
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => {
+      if (which !== "hii") return null;
+      const many = artifacts.hii.slice();
+      for (let offset = 10; offset < 10 + 70 * 17; offset += 17) many[offset] ^= 1;
+      return many;
+    });
+    request.changes[0].changeLog = "First line\nSecond line\n";
+
+    const result = await checkFullImageOutput(request, deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.changelog).toContain("First line\nSecond line");
+    expect(result.changelog).toMatch(/… \d+ more range\(s\)/);
+    expect(result.summary.changedRanges).toBeGreaterThan(64);
+  });
+});
+
+describe("planArtifactEdits: placement", () => {
+  it("bridges a gap of exactly 16 unchanged bytes and not one of 17", async () => {
+    const artifacts = await extractAptioIvBytes(wrapped("none"), noIfr, decompress);
+    const change = (gap: number) => {
+      const modified = artifacts.hii.slice();
+      modified[100] ^= 1;
+      modified[100 + gap + 1] ^= 1;
+      return { kind: "setup-hii" as const, fileName: "x", original: artifacts.hii, modified, changeLog: "" };
+    };
+
+    const joined = planArtifactEdits(artifacts.provenance, [change(16)]);
+    const apart = planArtifactEdits(artifacts.provenance, [change(17)]);
+
+    expect(joined.ok && joined.edits).toHaveLength(1);
+    expect(apart.ok && apart.edits).toHaveLength(2);
+  });
+
+  it("refuses a file whose kind the image does not hold", async () => {
+    const image = firmwareVolume(setupFiles({ hii: new Uint8Array(1200).fill(0x41) }, checksummed));
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+
+    const plan = planArtifactEdits(artifacts.provenance, [
+      { kind: "amitse", fileName: "amitse.bin", original: new Uint8Array(4), modified: new Uint8Array(4).fill(1), changeLog: "" },
+    ]);
+
+    expect(plan).toMatchObject({ ok: false });
+    if (!plan.ok) expect(plan.message).toMatch(/no amitse artifact/);
+  });
+});
+
+describe("parity with the per-file export", () => {
+  it("downloads exactly the bytes changesFromPlan starts from", async () => {
+    const fixture = await buildFixtureFiles({ setupdataBin: "00000000", amitseSct: "" });
+    const hii = Uint8Array.from(fixture.setupSctContainer.textContent.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+    hii.set([0x29, 0x02], 0x1e);
+    fixture.setupSctContainer.textContent = Array.from(hii, (byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
+    const image = firmwareVolume(setupFiles({ hii, setupData: new Uint8Array(4) }, checksummed));
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const files = { ...fixture, firmwareSource: { fileName: "board.rom", artifacts, generation: "unresolved" as const } };
+    const data = await parseData(files);
+    data.suppressions[0].active = false;
+
+    const changes = changesFromPlan(data, files);
+
+    expect(changes).toHaveLength(1);
+    expect(changes[0].modified).toEqual(computeModifiedFiles(data, files).setupSct);
+    saveAsMock.mockClear();
+    downloadModifiedFiles(data, files);
+    const [blob, name] = saveAsMock.mock.calls[0] as [Blob, string];
+    expect(name).toBe(files.setupSctContainer.file.name);
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(changes[0].modified);
   });
 });

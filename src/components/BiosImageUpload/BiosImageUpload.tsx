@@ -855,7 +855,7 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
                 ))}
                 <Text size="xs" c="dimmed">
                   {reconstruction.writeEnabled
-                    ? "A complete image can be produced once edits are applied (Check firmware output). "
+                    ? "A complete image can be attempted once edits are applied (Firmware image → Check firmware output); the check may still refuse a given plan. "
                     : "A complete image cannot be produced from this image: "}
                   {[...reconstruction.blockers, ...reconstruction.caveats].join(" ")}
                 </Text>

@@ -98,12 +98,12 @@ describe("FullImageExportDialog", () => {
     });
     expect(screen.getByText("not flashed")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Download image and changelog.txt/ }));
-    expect(saveAsMock.mock.calls.map((call) => call[1] as string)).toEqual(["board-modified.rom", "changelog.txt"]);
-    const [blob] = saveAsMock.mock.calls[0] as [Blob];
+    expect(saveAsMock.mock.calls.map((call) => call[1] as string)).toEqual(["changelog.txt", "board-modified.rom"]);
+    const [blob] = saveAsMock.mock.calls[1] as [Blob];
     const written = new Uint8Array(await blob.arrayBuffer());
     expect(written.length).toBe(image.length);
     expect(written).not.toEqual(image);
-    const changelog = await (saveAsMock.mock.calls[1][0] as Blob).text();
+    const changelog = await (saveAsMock.mock.calls[0][0] as Blob).text();
     expect(changelog).toContain("Source SHA-256:");
     expect(changelog).toContain("Unsuppressed");
   });
@@ -162,6 +162,51 @@ describe("FullImageExportDialog", () => {
 
     expect(cancel).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: /Check firmware output/ })).toBeInTheDocument();
+  });
+
+  it("says why when the worker cannot even be started, instead of staying on running", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    const throwing = () => {
+      throw new Error("Workers are blocked.");
+    };
+    renderDialog({ files, appliedData: data, startCheck: throwing });
+
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+
+    expect(await screen.findByText("Workers are blocked.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Cancel check/ })).not.toBeInTheDocument();
+  });
+
+  it("does not show a refusal as the verdict on a plan it was not run for", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    const refusing = (): ReturnType<typeof realCheck> => ({
+      result: Promise.resolve<FullImageResult>({ ok: false, stage: "rebuild", messages: ["Plan A has no room."] }),
+      cancel: vi.fn(),
+    });
+    const view = renderDialog({ files, appliedData: data, startCheck: refusing });
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    expect(await screen.findByText("Plan A has no room.")).toBeInTheDocument();
+
+    view.again({ planFingerprint: "plan-2" });
+
+    expect(screen.queryByText("Plan A has no room.")).not.toBeInTheDocument();
+    expect(screen.getByText("This result is for an older plan")).toBeInTheDocument();
+  });
+
+  it("cancels a running check when the window is closed", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    const cancel = vi.fn();
+    const onClose = vi.fn();
+    renderDialog({ files, appliedData: data, onClose, startCheck: () => ({ result: new Promise<FullImageResult>(() => undefined), cancel }) });
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    await screen.findByRole("button", { name: /Cancel check/ });
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(cancel).toHaveBeenCalledOnce();
+    });
+    expect(onClose).toHaveBeenCalled();
   });
 
   it("says when the check itself could not run", async () => {

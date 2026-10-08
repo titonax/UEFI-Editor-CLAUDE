@@ -270,21 +270,28 @@ What it does, in order (`fullImageExport.ts`, run in a worker by
    plans for the same reasons) and keeps the files the plan actually changed.
    `planArtifactEdits` checks each against the bytes the provenance graph holds
    at that artifact, refuses a change of length, and turns the differences into
-   same-size `ArtifactEdit`s (runs closer than 16 bytes are bridged).
+   same-size `ArtifactEdit`s (runs separated by at most 16 unchanged bytes are bridged).
 2. **Rebuild** with `rebuildFirmware` (LZMA-JS codec, built-in Tiano codec),
    which verifies its own result structurally and refuses if it finds anything.
 3. **Read-back.** `verifyByReextraction` extracts the rebuilt image again with
    the project's WebAssembly decoders, which share no code with the encoders, and
    requires every artifact to be the source's with exactly the edits.
 4. **Record.** SHA-256 of the source and of the output, and a `changelog.txt`
-   with the per-file change logs (the same text the per-file export writes), the
-   changed byte ranges, each repaired FFS checksum, each re-encoded section
+   with the firmware context (slot) that was patched and its warnings, the
+   per-file change logs (the same text the per-file export writes), the
+   changed byte ranges (the first 64 are listed, the rest counted), each repaired FFS checksum, each re-encoded section
    (packed and padding sizes before and after), and the sentence that the image
    has not been flashed.
 
 Nothing is downloaded unless all four pass. The dialog shows why when one does
 not, and a result is only offered for the plan it was computed for: changing the
-applied queue invalidates it. The image keeps its size and is named
+applied queue invalidates it, and so does a refusal: nothing said about one
+plan is shown as the verdict on another. Closing the dialog cancels a running
+check (a worker that cannot start, times out after 10 minutes or fails to
+answer is reported as such). A file the plan flagged but left byte-identical is
+not listed, and a plan that changes no byte is refused. The changelog downloads
+first, then the image, so a browser that allows only one download never leaves
+you with an image and no record. The image keeps its size and is named
 `<name>-modified.<ext>`; `changelog.txt` is always downloaded with it.
 
 The output is the uploaded file with the same container: an ASUS capsule header,
@@ -294,7 +301,8 @@ changes.
 
 `assessFirmwareReconstruction` changed meaning with this stage:
 `writeEnabled` is now "every artifact traces back to the image" (an output can
-be attempted), `blockers` lists only a broken trace, and `caveats` lists what is
+be attempted; the corpus runner records the stage as not run, since no plan was
+checked), `blockers` lists only a broken trace, and `caveats` lists what is
 true of every output (re-encoded sections are not the vendor's streams; nothing
 has been flashed; signatures, ME and Boot Guard are not checked). The preflight
 panel and the dialog show them.
