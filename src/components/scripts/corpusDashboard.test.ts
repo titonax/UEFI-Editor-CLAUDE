@@ -318,7 +318,7 @@ describe("failureCodeBreakdown", () => {
 describe("reconstructionBlockerBreakdown", () => {
   const lzma = "Deterministic LZMA recompression is not implemented yet.";
   const tiano = "Deterministic EFI/Tiano recompression is not implemented yet.";
-  const bottomUp = "Bottom-up section replacement, FFS checksum repair and full re-extraction verification are not implemented yet.";
+  const bottomUp = "Bottom-up section replacement, FFS checksum repair and full re-extraction verification exist only for same-size edits on uncompressed paths (firmwareRebuild.ts) and are not connected to the export yet.";
 
   it("counts, over the extracted images, how many share each blocker, most common first", () => {
     const breakdown = reconstructionBlockerBreakdown([
