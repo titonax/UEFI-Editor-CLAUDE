@@ -235,6 +235,9 @@ describe("CorpusRunner", () => {
     ).toBeInTheDocument();
     expect(within(itemA).getByText(/^Agree: /)).toBeInTheDocument();
     expect(within(itemA).getByText(/^Differ: .+ here, .+ in the case\)/)).toBeInTheDocument();
+    // It differs from that case only in a content count (Forms), which does not
+    // rule out a resemblance, so no structural difference is claimed.
+    expect(within(itemA).queryByText(/^Not called similar because it is built differently in: /)).not.toBeInTheDocument();
     // The dashboard tallies the same differences over the new cases.
     expect(screen.getByText("Why the new cases are new")).toBeInTheDocument();
     expect(screen.getByText("Differs in")).toBeInTheDocument();

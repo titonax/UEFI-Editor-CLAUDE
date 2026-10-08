@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareFingerprints, matchCases, minimumComparedFields } from "./caseMatcher";
+import { compareFingerprints, contentFields, matchCases, minimumComparedFields } from "./caseMatcher";
 import { fingerprintFromCase, fingerprintFromEntry } from "./fingerprint";
 import type { FirmwareCase } from "./schema";
 import type { CorpusRunEntry } from "../components/scripts/corpusDashboard";
@@ -41,6 +41,22 @@ describe("compareFingerprints", () => {
     expect(result.differing).toEqual(["container"]);
     expect(result.agreeing).toEqual(["firmwareVolumes", "ffs3Volumes"]);
     expect(result.similarity).toBeCloseTo(2 / 3);
+  });
+
+  it("separates differences in structure from differences in content counts", () => {
+    const result = compareFingerprints(
+      { container: "intel-flash", firmwareVolumes: 12, directSetupFiles: 0, formSets: 1, forms: 229, refs: 300 },
+      { container: "intel-flash", firmwareVolumes: 4, directSetupFiles: 0, formSets: 2, forms: 205, refs: 280 },
+    );
+
+    expect(result.differing).toEqual(["firmwareVolumes", "formSets", "forms", "refs"]);
+    expect(result.blocking).toEqual(["firmwareVolumes"]);
+    expect(contentFields).toEqual(["formSets", "forms", "refs"]);
+  });
+
+  it("has no blocking difference when only content counts differ", () => {
+    const result = compareFingerprints({ container: "intel-flash", forms: 1 }, { container: "intel-flash", forms: 2 });
+    expect(result.blocking).toEqual([]);
   });
 
   it("scores 0 when nothing is comparable", () => {

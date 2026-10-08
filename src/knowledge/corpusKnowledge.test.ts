@@ -115,18 +115,81 @@ describe("why an image is similar or new", () => {
       ...overrides,
     });
 
+  const withHii = (forms: number): Partial<CorpusRunEntry> => ({
+    report: {
+      label: "board.bin",
+      firmwareFamily: "ami-aptio",
+      counts: { formSets: 1, forms, refs: 10, conditions: 0 },
+      navigation: {
+        status: "detected",
+        mechanism: "single-formset-hub",
+        directTabs: 1,
+        suppressedTabs: 0,
+        descendants: 0,
+        registeredOnly: 0,
+      },
+      tabOperations: [],
+    },
+  });
+  const recorded: FirmwareCase = {
+    ...known,
+    features: { ...known.features, formSets: 1, forms: 205, refs: 10, navigation: "single-formset-hub" },
+  };
+
   it("lists what a similar image shares with its case and where it differs, with both values", () => {
-    const verdict = classifyEntry(
-      entry({ volumes: { firmwareVolumes: 12, ffs2Volumes: 12, ffs3Volumes: 1, directSetupFiles: 0 } }),
-      [known],
-    );
+    const verdict = classifyEntry(entry(withHii(229)), [recorded]);
 
     expect(verdict.kind).toBe("similar");
     if (verdict.kind !== "similar") return;
-    expect(verdict.differing).toEqual([{ field: "ffs3Volumes", image: 1, recorded: 0 }]);
+    expect(verdict.differing).toEqual([{ field: "forms", image: 229, recorded: 205 }]);
+    expect(verdict.blocking).toEqual([]);
     expect(verdict.agreeing).toEqual(
       expect.arrayContaining(["container", "vendorFamily", "generation", "firmwareVolumes", "ffs2Volumes", "directSetupFiles"]),
     );
+  });
+
+  it("lets the content counts differ between revisions of the same kind of image", () => {
+    const verdict = classifyEntry(entry({ ...withHii(300), contextCount: 1 }), [
+      { ...recorded, features: { ...recorded.features, refs: 99 } },
+    ]);
+
+    // 9 of 11 comparable fields agree (82%): the threshold still applies.
+    expect(verdict.kind).toBe("similar");
+    if (verdict.kind === "similar") expect(verdict.differing.map((one) => one.field).sort()).toEqual(["forms", "refs"]);
+  });
+
+  it("does not call an image similar when a structural field differs, however high the score", () => {
+    // 7 of 8 comparable fields agree (0.88), but the Setup is visible in the
+    // outer scan here and hidden in the recorded image's compressed volume.
+    const verdict = classifyEntry(
+      entry({ ...withHii(205), volumes: { firmwareVolumes: 12, ffs2Volumes: 12, ffs3Volumes: 0, directSetupFiles: 1 } }),
+      [recorded],
+    );
+
+    expect(verdict.kind).toBe("novel");
+    if (verdict.kind !== "novel") return;
+    expect(verdict.nearest?.similarity).toBeGreaterThanOrEqual(similarThreshold);
+    expect(verdict.nearest?.blocking).toEqual(["directSetupFiles"]);
+    expect(verdict.nearest?.differing).toEqual([{ field: "directSetupFiles", image: 1, recorded: 0 }]);
+  });
+
+  it("prefers a case it can be similar to over a closer-scoring case it differs from structurally", () => {
+    const structurallyOff: FirmwareCase = {
+      ...recorded,
+      id: "ami-cccccccc",
+      sha256: "c".repeat(64),
+      features: { ...recorded.features, directSetupFiles: 1 },
+    };
+    const sameKind: FirmwareCase = {
+      ...recorded,
+      id: "ami-dddddddd",
+      sha256: "d".repeat(64),
+      features: { ...recorded.features, forms: 100 },
+    };
+    const verdict = classifyEntry(entry(withHii(205)), [structurallyOff, sameKind]);
+
+    expect(verdict.kind).toBe("similar");
+    if (verdict.kind === "similar") expect(verdict.case.id).toBe("ami-dddddddd");
   });
 
   it("names the closest case, and what differs from it, for a new image", () => {
@@ -136,6 +199,7 @@ describe("why an image is similar or new", () => {
     if (verdict.kind !== "novel") return;
     expect(verdict.nearest?.case.id).toBe("ami-aaaaaaaa");
     expect(verdict.nearest?.similarity).toBeLessThan(similarThreshold);
+    expect(verdict.nearest?.blocking).toEqual(expect.arrayContaining(["container", "firmwareVolumes"]));
     expect(verdict.nearest?.differing).toEqual(
       expect.arrayContaining([
         { field: "container", image: "vendor-image", recorded: "intel-flash" },

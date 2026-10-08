@@ -44,13 +44,18 @@ is by reading it; a case or a vendor family never selects a code path. Read
      file has a new name, add it to that case's `names` instead of creating a
      second case.
    - **Similar** (`≈ N% like <id>`): no recorded case has this SHA-256, but one
-     agrees on at least 80% of at least 3 comparable fields.
+     agrees on at least 80% of at least 3 comparable fields and differs from it
+     in no structural field. Only the counts of what the Setup holds (FormSets,
+     Forms, Refs) may differ.
    - **New case**: nothing resembles it closely enough, or there was too little
      observed to compare. See `src/knowledge/corpusKnowledge.ts`.
 2. **Explain the difference, not a verdict.** For a similar or new image, use
    the closest case, the fields that agree and the fields that differ with both
    values. Say where to look ("same volumes and container, different
-   navigation mechanism"). Similarity is the share of comparable fields that
+   navigation mechanism"). When a high score was refused because of a structural
+   field ("Not called similar because it is built differently in: ..."), say
+   which field and what it means (for example, the Setup is visible in the outer
+   scan here and inside a compressed volume there). Similarity is the share of comparable fields that
    agree, not a probability that the image is a given vendor or generation.
 3. **Check the failure, if there was one.** A "Setup FFS was not found" that
    also says sections `could not be decoded` or buffers `were not searched` is

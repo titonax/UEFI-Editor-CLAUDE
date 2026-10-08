@@ -73,10 +73,15 @@ A field with no counterpart is dropped when translating a case, never guessed.
   `vendor-image` when volumes exist elsewhere, both without an Intel
   descriptor. This fork has not rechecked those five images against it.
 - **Similarity.** This fork reports a case as similar when at least 80% of at
-  least 3 comparable fields agree. The GPT fork requires 4 matching fields,
-  one of them distinctive, and no contradicting field, and it reports no
-  percentage. It also has the statuses `insufficient-evidence` and `conflict`.
-  The same image can be similar in one fork and novel in the other.
+  least 3 comparable fields agree and no structural field differs; only the
+  content counts (`formSets`, `forms`, `refs`) may. The GPT fork requires 4
+  matching fields, one of them distinctive, and no contradicting field at all,
+  and it reports no percentage. It also has the statuses `insufficient-evidence`
+  and `conflict`. Treating each of the 22 cases recorded here as a new image,
+  the two rules give the same answer for 18. Of the other 4, two are the GPT
+  fork's `insufficient-evidence` (this fork has no such status; it says "new"),
+  and two are the ASUS pair that differs only in its Form count, which this
+  fork calls similar and the GPT fork new.
 - **Rules.** Both keep a register that no parser consults. Here a rule is JSON
   (`AREA-TOPIC-NNN`, `minimumCases`, evidence `single-sample`, `multi-sample` or
   `externally-confirmed`); there it is TypeScript with `implementation`
@@ -142,7 +147,11 @@ values agree only when they are strictly equal.
    case is reported only with at least 3 comparable fields (a single shared
    container must not read as 100%). Order: similarity, then compared count
    (more first), then id.
-3. **Similar**: similarity ≥ 0.8 for the best case. **New case**: anything else.
+3. **Similar**: some case with similarity ≥ 0.8 that also differs from the
+   image in no structural field. **New case**: anything else. The content
+   counts may differ; every other field is structural.
+
+- `content fields`: `formSets`, `forms`, `refs`
 
 Similarity is how alike two images look as observed. It is not a probability
 that the image is a given vendor or generation, and it never changes how the
