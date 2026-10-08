@@ -1,6 +1,6 @@
 import { Button, FileButton, Group, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconDownload, IconListCheck, IconUpload } from "@tabler/icons-react";
+import { IconDownload, IconListCheck, IconShieldCheck, IconUpload } from "@tabler/icons-react";
 import { saveAs } from "file-saver";
 import React from "react";
 import type { Updater } from "use-immer";
@@ -13,6 +13,7 @@ import { calculateJsonChecksum } from "../scripts/hashing";
 import { version } from "../scripts/ifrParser";
 import type { Data, Suppression } from "../scripts/types";
 import DataChangeQueueDialog from "../ChangeQueue/DataChangeQueueDialog";
+import FullImageExportDialog from "../FullImageExport/FullImageExportDialog";
 import type { DataChangeQueueController } from "../ChangeQueue/useDataChangeQueue";
 import s from "./Footer.module.css";
 
@@ -36,6 +37,7 @@ export default function Footer({
   const resetRef = React.useRef<() => void>(null);
   const [input, setInput] = React.useState("05");
   const [queueOpened, setQueueOpened] = React.useState(false);
+  const [imageOpened, setImageOpened] = React.useState(false);
   const queueApplied =
     changeQueue.analysis.canApply &&
     changeQueue.appliedFingerprint === changeQueue.analysis.fingerprint;
@@ -140,12 +142,12 @@ export default function Footer({
             variant="default"
             leftSection={<IconDownload />}
             // Extracted-file patches are what the user reinserts with
-            // UEFITool themselves, whatever the generation; only a complete
-            // image lacks that path, since the modified Setup module cannot
-            // be put back into the image it came from yet. Staged, unreviewed
-            // change queue entries must be applied first, same as GPT's own
-            // fork: this button always exports the applied plan, never the
-            // live preview.
+            // UEFITool themselves; a session opened from a complete image
+            // gets "Firmware image" below instead, which puts the plan back
+            // into that image and checks it. Staged, unreviewed change queue
+            // entries must be applied first, same as GPT's own fork: this
+            // button always exports the applied plan, never the live
+            // preview.
             disabled={
               files.firmwareSource !== undefined ||
               (appliedData.rootVisibilityEdits?.length ?? 0) > 0 ||
@@ -157,7 +159,7 @@ export default function Footer({
                 : (appliedData.rootVisibilityEdits?.length ?? 0) > 0
                   ? "Root visibility changes require the verified full-image reconstruction path"
                   : files.firmwareSource !== undefined
-                    ? "Exporting extracted files from a complete image is disabled until safe reinsertion is implemented; keep your edits with data.json"
+                    ? "This session came from a complete image: use Firmware image, which puts the changes back into it and checks the result"
                     : undefined
             }
             onClick={() => {
@@ -182,6 +184,41 @@ export default function Footer({
           >
             UEFI files
           </Button>
+
+          {files.firmwareSource !== undefined && (
+            <>
+              <Button
+                size="xs"
+                variant="default"
+                leftSection={<IconShieldCheck />}
+                // Always the applied plan, like the button above. A pending
+                // root visibility plan lives in the Setup PE32 section, which
+                // the rebuild does not handle.
+                disabled={(appliedData.rootVisibilityEdits?.length ?? 0) > 0 || !queueApplied}
+                title={
+                  !queueApplied
+                    ? "Apply the change queue before checking the firmware output"
+                    : (appliedData.rootVisibilityEdits?.length ?? 0) > 0
+                      ? "Root visibility changes cannot be put back into the image yet"
+                      : undefined
+                }
+                onClick={() => {
+                  setImageOpened(true);
+                }}
+              >
+                Firmware image
+              </Button>
+              <FullImageExportDialog
+                opened={imageOpened}
+                onClose={() => {
+                  setImageOpened(false);
+                }}
+                files={files}
+                appliedData={appliedData}
+                planFingerprint={changeQueue.appliedFingerprint}
+              />
+            </>
+          )}
 
           <Button
             size="xs"

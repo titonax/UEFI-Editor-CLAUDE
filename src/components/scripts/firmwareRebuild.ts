@@ -32,11 +32,12 @@ import { builtInTianoCodec, reencodeTiano, tianoStreamProblems, type TianoCodec 
 //     bytes, under the same rules about size and padding.
 // Every other length stays put, so no file or volume header moves.
 //
-// This module only builds and checks an image. Nothing calls it from the
-// export yet, and a rebuilt image proves the structure survived, not that the
-// firmware will boot: whether the platform's own LZMA decoder accepts the
-// re-encoded stream, and the other integrity layers (vendor signatures, ME,
-// Boot Guard), are not known to this code. A physical flash is the only test.
+// This module only builds and checks an image (fullImageExport.ts drives it
+// for the UI). A rebuilt image proves the structure survived, not that the
+// firmware will boot: whether the platform's own LZMA or EFI/Tiano decoder
+// accepts a re-encoded stream, and the other integrity layers (vendor
+// signatures, ME, Boot Guard), are not known to this code. A physical flash is
+// the only test.
 
 export interface ArtifactEdit {
   // Index into `graph.artifacts`.

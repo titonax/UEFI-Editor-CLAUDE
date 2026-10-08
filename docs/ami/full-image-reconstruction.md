@@ -8,10 +8,10 @@ stages and what each one guarantees.
 
 | Stage | Scope | Status |
 | --- | --- | --- |
-| 1 | Same-size edits on a path where every encapsulation is uncompressed | Built, tested on synthetic images, **not connected to the export** |
-| 2 | LZMA recompression that fits inside the original file | Built with LZMA-JS, tested on synthetic images, **not connected to the export** |
-| 3 | EFI/Tiano recompression that fits inside the original file | Built (`tianoCodec.ts`, written here), tested on synthetic images and against the project's own C decoder, **not connected to the export** |
-| 4 | Export in the UI: "Check firmware output", download, `changelog.txt` | Not started |
+| 1 | Same-size edits on a path where every encapsulation is uncompressed | Built, tested on synthetic images, used by stage 4 |
+| 2 | LZMA recompression that fits inside the original file | Built with LZMA-JS, tested on synthetic images, used by stage 4 |
+| 3 | EFI/Tiano recompression that fits inside the original file | Built (`tianoCodec.ts`, written here), tested on synthetic images and against the project's own C decoder, used by stage 4 |
+| 4 | Export in the UI: "Check firmware output", download, `changelog.txt` | Built: the **Firmware image** dialog in the footer. Never flashed |
 
 ## Stage 1: `firmwareRebuild.ts`
 
@@ -253,3 +253,59 @@ either.
   last symbol) are dropped by the canonical re-encode, not reported.
 - Anything in the section or file headers the firmware computes from the
   compressed bytes beyond the sizes and the FFS data checksum.
+
+## Stage 4: the Firmware image dialog
+
+When a session was opened from a complete image, the footer offers
+**Firmware image** (disabled until the change queue is applied, and while a root
+visibility plan is pending, which lives in the Setup PE32 section and is not
+something the rebuild handles). The old "UEFI files" button stays for the other
+case and points here.
+
+What it does, in order (`fullImageExport.ts`, run in a worker by
+`fullImageCheckWorker.ts`):
+
+1. **Plan.** `changesFromPlan` runs the same pure computation as the per-file
+   export (`computeModifiedFiles` in `binaryPatcher.ts`, so both refuse the same
+   plans for the same reasons) and keeps the files the plan actually changed.
+   `planArtifactEdits` checks each against the bytes the provenance graph holds
+   at that artifact, refuses a change of length, and turns the differences into
+   same-size `ArtifactEdit`s (runs closer than 16 bytes are bridged).
+2. **Rebuild** with `rebuildFirmware` (LZMA-JS codec, built-in Tiano codec),
+   which verifies its own result structurally and refuses if it finds anything.
+3. **Read-back.** `verifyByReextraction` extracts the rebuilt image again with
+   the project's WebAssembly decoders, which share no code with the encoders, and
+   requires every artifact to be the source's with exactly the edits.
+4. **Record.** SHA-256 of the source and of the output, and a `changelog.txt`
+   with the per-file change logs (the same text the per-file export writes), the
+   changed byte ranges, each repaired FFS checksum, each re-encoded section
+   (packed and padding sizes before and after), and the sentence that the image
+   has not been flashed.
+
+Nothing is downloaded unless all four pass. The dialog shows why when one does
+not, and a result is only offered for the plan it was computed for: changing the
+applied queue invalidates it. The image keeps its size and is named
+`<name>-modified.<ext>`; `changelog.txt` is always downloaded with it.
+
+The output is the uploaded file with the same container: an ASUS capsule header,
+an Intel descriptor and anything else outside the rebuilt volumes are the
+source's own bytes, and for a complete SPI image nothing outside the BIOS region
+changes.
+
+`assessFirmwareReconstruction` changed meaning with this stage:
+`writeEnabled` is now "every artifact traces back to the image" (an output can
+be attempted), `blockers` lists only a broken trace, and `caveats` lists what is
+true of every output (re-encoded sections are not the vendor's streams; nothing
+has been flashed; signatures, ME and Boot Guard are not checked). The preflight
+panel and the dialog show them.
+
+### What this stage does not prove
+
+- That any rebuilt image boots. Every check is structural or a read-back with
+  the project's decoders; nothing here has run on a board. Flash it only after
+  reading the chip with a hardware programmer.
+- Anything signed or measured over the image: vendor capsule signatures, Intel
+  ME / Boot Guard manifests and similar are outside what is checked, and an
+  image that changes the bytes they cover may be rejected by the platform.
+- Root visibility edits, which change the Setup PE32 section.
+- Plans that change a file's length.

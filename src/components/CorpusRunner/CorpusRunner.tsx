@@ -692,15 +692,17 @@ export default function CorpusRunner() {
         detail: `Hide available on ${String(hideAvailable)}, Show available on ${String(showAvailable)} page(s).`,
       });
 
-      // writeEnabled is always false right now (see assessFirmwareReconstruction),
-      // so this stage is always "blocked" regardless of trace completeness -
-      // the detail line still distinguishes a complete trace waiting on
-      // recompression/rebuild support from one that's missing a link.
+      // A complete trace means an output can be attempted for a plan on this
+      // image; whether one plan can be put back is decided by the check on it
+      // (fullImageExport.ts), which a corpus run has no plan to run. A broken
+      // trace blocks every output.
       const reconstruction = assessFirmwareReconstruction(extracted.provenance);
       stages.push({
         id: "reconstruction",
-        status: "blocked",
-        detail: reconstruction.blockers[0] ?? "Full-image writing is not implemented.",
+        status: reconstruction.writeEnabled ? "passed" : "blocked",
+        detail: reconstruction.writeEnabled
+          ? `Output can be attempted: every artifact traces back to the image${reconstruction.compressions.length > 0 ? ` through ${reconstruction.compressions.join(" + ")} section(s)` : ""}.`
+          : (reconstruction.blockers[0] ?? "No artifact traces back to the source image."),
       });
 
       const status: CorpusFileStatus = navigationDetected ? "recognized" : "partial";

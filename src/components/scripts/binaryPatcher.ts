@@ -424,7 +424,22 @@ function applyContainerLengthPatches(
   }
 }
 
-export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
+// The three extracted files with the plan applied, and what changed in each.
+// Pure: nothing is downloaded here, so the same bytes can be offered as
+// separate files or carried back into a complete firmware image.
+export interface ModifiedFiles {
+  setupSct: Uint8Array;
+  amitseSct: Uint8Array;
+  setupdataBin: Uint8Array;
+  wasSetupSctModified: boolean;
+  wasAmitseSctModified: boolean;
+  wasSetupdataBinModified: boolean;
+  setupSctChangeLog: string;
+  amitseSctChangeLog: string;
+  setupdataBinChangeLog: string;
+}
+
+export function computeModifiedFiles(data: Data, files: PopulatedFiles): ModifiedFiles {
   // A root byte lives in the Setup PE32 inside the image, not in any of
   // the four extracted files, so a pending plan can't be honored here and
   // silently dropping it would export something other than what the user
@@ -439,7 +454,6 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
   let wasAmitseSctModified = false;
   let wasSetupdataBinModified = false;
 
-  let changeLog = "";
 
   const modifiedSetupSct = hexToBytes(files.setupSctContainer.textContent);
   let setupSctChangeLog = "";
@@ -661,6 +675,33 @@ export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
       }
     }
   }
+
+  return {
+    setupSct: modifiedSetupSct,
+    amitseSct: modifiedAmitseSct,
+    setupdataBin: modifiedSetupdataBin,
+    wasSetupSctModified,
+    wasAmitseSctModified,
+    wasSetupdataBinModified,
+    setupSctChangeLog,
+    amitseSctChangeLog,
+    setupdataBinChangeLog,
+  };
+}
+
+export function downloadModifiedFiles(data: Data, files: PopulatedFiles) {
+  const {
+    setupSct: modifiedSetupSct,
+    amitseSct: modifiedAmitseSct,
+    setupdataBin: modifiedSetupdataBin,
+    wasSetupSctModified,
+    wasAmitseSctModified,
+    wasSetupdataBinModified,
+    setupSctChangeLog,
+    amitseSctChangeLog,
+    setupdataBinChangeLog,
+  } = computeModifiedFiles(data, files);
+  let changeLog = "";
 
   if (wasSetupSctModified) {
     changeLog += `========== ${files.setupSctContainer.file.name} ==========\n\n${setupSctChangeLog}\n\n\n`;
