@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as lzma from "lzma";
 import { extractAptioIvBytes, type FirmwareDecompressor } from "./aptioIvExtractor";
 import {
   LZMA_CUSTOM_DECOMPRESS_GUID,
@@ -8,12 +9,15 @@ import {
   firmwareVolume,
   guidDefinedSection,
   patternBytes,
+  pe32Section,
   sectionStream,
   setupFiles,
   sum8,
 } from "./firmwareImageFixtures";
 import type { FirmwareProvenanceGraph } from "./firmwareProvenance";
 import {
+  paddingAfterSection,
+  paddingChangeAllowed,
   rebuildFirmware,
   verifyByReextraction,
   verifyRebuiltFirmware,
@@ -21,8 +25,9 @@ import {
   type RebuiltFirmware,
 } from "./firmwareRebuild";
 import { lzmaJsCodec } from "./lzmaJs";
-import { referenceLzmaDecode } from "./referenceLzma";
+import { referenceLzmaAvailable, referenceLzmaDecode } from "./referenceLzma";
 
+const hasXz = await referenceLzmaAvailable();
 const codecs = { lzma: lzmaJsCodec };
 const noIfr = () => Promise.resolve("");
 const lzmaDecompress: FirmwareDecompressor = (input, mode) =>
@@ -133,12 +138,23 @@ describe("rebuildFirmware through an LZMA section", () => {
       expect(rebuilt.image.slice(newEnd, owner.end).every((byte) => byte === 0xff)).toBe(true);
       expect(change.paddingBefore + change.packedBefore).toBe(change.paddingAfter + change.packedAfter);
       expect(sum8(rebuilt.image, owner.bodyStart, owner.end) + rebuilt.image[owner.fileStart + 17]).toBe(256);
+      // Every changed byte is in the section's payload or padding, or is the
+      // file's data checksum; nothing in the section's own header but its size.
+      const sizeStart = edge.sectionHeaderSize === 4 ? edge.sectionStart : edge.sectionStart + 4;
+      const sizeEnd = edge.sectionHeaderSize === 4 ? edge.sectionStart + 3 : edge.sectionStart + 8;
+      for (const range of rebuilt.changedRanges) {
+        for (let offset = range.start; offset < range.end; offset++) {
+          const inPayload = offset >= edge.payloadStart && offset < owner.end;
+          const inSize = offset >= sizeStart && offset < sizeEnd;
+          expect(inPayload || inSize || offset === owner.fileStart + 17, `byte ${String(offset)}`).toBe(true);
+        }
+      }
       expect(verifyRebuiltFirmware(graph, [edit], rebuilt, { codecs })).toEqual([]);
       expect(await verifyByReextraction(graph, [edit], rebuilt.image, { decompress: lzmaDecompress })).toEqual([]);
     });
   }
 
-  it("writes a stream a reference decoder reads back to the rebuilt inner volume", async () => {
+  it.skipIf(!hasXz)("writes a stream a reference decoder reads back to the rebuilt inner volume", async () => {
     const image = wrapInLzma(innerVolume());
     const graph = await graphOf(image);
     const edge = graph.buffers[1].parent;
@@ -146,10 +162,7 @@ describe("rebuildFirmware through an LZMA section", () => {
     const rebuilt = unwrap(rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100, 8)], { codecs }));
     const stream = rebuilt.image.slice(edge.payloadStart, edge.payloadStart + rebuilt.layoutChanges[0].packedAfter);
 
-    const reference = await referenceLzmaDecode(stream);
-    if (reference === null) return; // xz is not installed here; CI has it
-
-    expect(reference).toEqual(rebuilt.buffers.get(1));
+    expect(await referenceLzmaDecode(stream)).toEqual(rebuilt.buffers.get(1));
   });
 
   it("lets the section shrink into the padding", async () => {
@@ -279,6 +292,96 @@ describe("rebuildFirmware through two LZMA levels", () => {
   });
 });
 
+describe("an edit that changes nothing", () => {
+  it("leaves the image byte for byte as it was, vendor stream and all", async () => {
+    // A stream the vendor tool wrote (here: with an end marker) is not what
+    // this encoder writes; rewriting it for an edit that changed nothing would
+    // alter bytes nobody asked to alter.
+    const inner = innerVolume();
+    const vendorStream = Uint8Array.from(lzma.compress(inner, 8), (value) => value & 0xff);
+    const image = firmwareVolume([
+      { guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: concat(sectionStream(compressionSection(2, inner.length, vendorStream)), erasedTail(64)) },
+    ]);
+    const graph = await graphOf(image);
+    const same = replaceEdit(graph, "setup-hii", 100, graph.buffers[1].bytes.slice(graph.artifacts[0].payloadStart + 100, graph.artifacts[0].payloadStart + 108));
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [same], { codecs }));
+
+    expect(rebuilt.image).toEqual(image);
+    expect(rebuilt.changedBytes).toBe(0);
+    expect(rebuilt.layoutChanges).toEqual([]);
+    expect(verifyRebuiltFirmware(graph, [same], rebuilt, { codecs })).toEqual([]);
+  });
+
+  it("re-encodes a vendor stream that has both a size and an end marker, without the marker", async () => {
+    const inner = innerVolume();
+    const vendorStream = Uint8Array.from(lzma.compress(inner, 8), (value) => value & 0xff);
+    const image = firmwareVolume([
+      { guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: concat(sectionStream(compressionSection(2, inner.length, vendorStream)), erasedTail(64)) },
+    ]);
+    const graph = await graphOf(image);
+    const edit = flipEdit(graph, "setup-hii", 100, 8);
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+
+    expect(await verifyByReextraction(graph, [edit], rebuilt.image, { decompress: lzmaDecompress })).toEqual([]);
+  });
+});
+
+describe("padding rules", () => {
+  it("accepts any padding where the source showed room for a section header, and keeps it small where it did not", () => {
+    expect(paddingChangeAllowed(0, 3)).toBe(true);
+    expect(paddingChangeAllowed(3, 3)).toBe(true);
+    expect(paddingChangeAllowed(3, 4)).toBe(false);
+    expect(paddingChangeAllowed(0, 4)).toBe(false);
+    expect(paddingChangeAllowed(4, 0)).toBe(true);
+    expect(paddingChangeAllowed(4, 5000)).toBe(true);
+  });
+
+  it("measures padding from where the next section would start: the next 4-byte boundary", () => {
+    expect(paddingAfterSection(100, 104)).toBe(4);
+    expect(paddingAfterSection(101, 105)).toBe(1); // next section at 104
+    expect(paddingAfterSection(101, 103)).toBe(0); // nothing fits past 104
+    expect(paddingAfterSection(100, 100)).toBe(0);
+  });
+});
+
+describe("rebuildFirmware refuses more LZMA layouts", () => {
+  it("refuses a section that is not the last one in its file", async () => {
+    const inner = innerVolume();
+    const body = concat(sectionStream(lzmaSection(inner), pe32Section(patternBytes(8, 1))), erasedTail(16));
+    const image = firmwareVolume([{ guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body }]);
+    const graph = await graphOf(image);
+
+    expect(codesOf(rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100)], { codecs }))).toEqual(["section-not-terminal"]);
+  });
+
+  it("refuses a section with no FFS file around it to absorb a change of size", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume()));
+    const child = graph.buffers[1];
+    const broken: FirmwareProvenanceGraph = {
+      ...graph,
+      buffers: [graph.buffers[0], { ...child, parent: child.parent && { ...child.parent, ownerFile: undefined } }],
+    };
+
+    expect(codesOf(rebuildFirmware(broken, [flipEdit(broken, "setup-hii", 100)], { codecs }))).toContain("incomplete-path");
+  });
+
+  it("refuses an LZMA wrapper file that carries a tail", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume(), { attributes: checksummed | 0x01 }));
+
+    expect(codesOf(rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100)], { codecs }))).toEqual(["unsupported-file-attributes"]);
+  });
+
+  for (const wrapper of ["guided", "extended"] as const) {
+    it(`refuses a ${wrapper} LZMA section without a codec`, async () => {
+      const graph = await graphOf(wrapInLzma(innerVolume(), { wrapper }));
+
+      expect(codesOf(rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100)]))).toEqual(["compressed-section"]);
+    });
+  }
+});
+
 describe("verifyRebuiltFirmware on an LZMA rebuild", () => {
   async function rebuilt() {
     const graph = await graphOf(wrapInLzma(innerVolume()));
@@ -316,11 +419,77 @@ describe("verifyRebuiltFirmware on an LZMA rebuild", () => {
     expect(verifyRebuiltFirmware(graph, [edit], tampered, { codecs }).length).toBeGreaterThan(0);
   });
 
+  // Re-fixes the file's data checksum after a tamper, so only the structure
+  // being tested is wrong.
+  function refixChecksum(image: Uint8Array, file: { bodyStart: number; end: number; fileStart: number }) {
+    image[file.fileStart + 17] = (0x100 - sum8(image, file.bodyStart, file.end)) & 0xff;
+  }
+
+  it("flags a changed byte in the section's own header, even with the file checksum fixed", async () => {
+    const { graph, edit, value } = await rebuilt();
+    const edge = graph.buffers[1].parent;
+    if (!edge?.ownerFile) throw new Error("no edge");
+    // type byte, uncompressed-length field and compression-type byte
+    for (const offset of [edge.sectionStart + 3, edge.payloadStart - 5, edge.payloadStart - 1]) {
+      const tampered = { ...value, image: value.image.slice() };
+      tampered.image[offset] ^= 0x01;
+      refixChecksum(tampered.image, edge.ownerFile);
+
+      expect(verifyRebuiltFirmware(graph, [edit], tampered, { codecs }).join(" "), `byte ${String(offset)}`).toMatch(/outside the edits/);
+    }
+  });
+
+  it("flags garbage appended after the stream inside the section", async () => {
+    const { graph, edit, value } = await rebuilt();
+    const edge = graph.buffers[1].parent;
+    if (!edge?.ownerFile) throw new Error("no edge");
+    const change = value.layoutChanges[0];
+    const streamEnd = edge.payloadStart + change.packedAfter;
+    const tampered = { ...value, image: value.image.slice() };
+    tampered.image.fill(0xde, streamEnd, streamEnd + 20);
+    const size = streamEnd + 20 - edge.sectionStart;
+    tampered.image[edge.sectionStart] = size & 0xff;
+    tampered.image[edge.sectionStart + 1] = (size >> 8) & 0xff;
+    refixChecksum(tampered.image, edge.ownerFile);
+
+    expect(verifyRebuiltFirmware(graph, [edit], tampered, { codecs }).join(" ")).toMatch(/canonical|extra/);
+  });
+
+  it("flags a buffer, a range count or a layout record that disagree with the image", async () => {
+    const { graph, edit, value } = await rebuilt();
+    const otherRoot = { ...value, buffers: new Map(value.buffers) };
+    otherRoot.buffers.set(0, value.image.map((byte, index) => (index === 3 ? byte ^ 1 : byte)));
+    const badCount = { ...value, changedBytes: value.changedBytes + 1 };
+    const badRanges = { ...value, changedRanges: [] };
+    const badLayout = { ...value, layoutChanges: [{ ...value.layoutChanges[0], packedAfter: value.layoutChanges[0].packedAfter + 1 }] };
+    const missingLayout = { ...value, layoutChanges: [] };
+    const extraLayout = { ...value, layoutChanges: [...value.layoutChanges, { ...value.layoutChanges[0], sectionStart: 1 }] };
+
+    for (const tampered of [otherRoot, badCount, badRanges, badLayout, missingLayout, extraLayout]) {
+      expect(verifyRebuiltFirmware(graph, [edit], tampered, { codecs }).length).toBeGreaterThan(0);
+    }
+  });
+
   it("flags a byte changed outside the section it rebuilt", async () => {
     const { graph, edit, value } = await rebuilt();
     const tampered = { ...value, image: value.image.slice() };
     tampered.image[0x20] ^= 0x01;
 
     expect(verifyRebuiltFirmware(graph, [edit], tampered, { codecs }).join(" ")).toMatch(/outside the edits/);
+  });
+});
+
+describe("verifyRebuiltFirmware on two LZMA levels", () => {
+  it("flags a tampered intermediate buffer", async () => {
+    const outer = wrapInLzma(wrapInLzma(innerVolume(), { tail: 64 }), { tail: 64 });
+    const graph = await graphOf(outer);
+    const edit = flipEdit(graph, "setup-hii", 100, 8);
+    const value = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+    const middle = value.buffers.get(1);
+    if (!middle) throw new Error("no middle buffer");
+    const buffers = new Map(value.buffers);
+    buffers.set(1, middle.map((byte, index) => (index === 0x30 ? byte ^ 1 : byte)));
+
+    expect(verifyRebuiltFirmware(graph, [edit], { ...value, buffers }, { codecs }).length).toBeGreaterThan(0);
   });
 });

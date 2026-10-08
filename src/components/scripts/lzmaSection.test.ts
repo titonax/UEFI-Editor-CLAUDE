@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import * as lzma from "lzma";
 import { lzmaJsCodec } from "./lzmaJs";
 import { readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
-import { referenceLzmaDecode } from "./referenceLzma";
+import { referenceLzmaAvailable, referenceLzmaDecode } from "./referenceLzma";
+
+const hasXz = await referenceLzmaAvailable();
 import { patternBytes } from "./firmwareImageFixtures";
 
 // Text-like and binary-like payloads of a size where mode choice matters.
@@ -59,10 +62,27 @@ describe("lzmaJsCodec", () => {
     expect(lzmaJsCodec.decode(lzmaJsCodec.encode(data, 5))).toEqual(data);
   });
 
-  it("reads what a reference decoder (xz) reads", async () => {
-    const reference = await referenceLzmaDecode(originalStream(decoded, 5));
-    if (reference === null) return; // xz is not installed here; CI has it
-    expect(reference).toEqual(decoded);
+  it("writes less than the library's default, which adds an end marker", () => {
+    lzma.LZMA().disableEndMark = undefined;
+    const withMarker = Uint8Array.from(lzma.compress(decoded, 5), (value) => value & 0xff);
+
+    const ours = originalStream(decoded, 5);
+
+    expect(ours.length).toBeLessThan(withMarker.length);
+    // The size field is the same in both: only the marker differs.
+    expect(readLzmaHeader(withMarker)?.uncompressedSize).toBe(readLzmaHeader(ours)?.uncompressedSize);
+  });
+
+  it("does not leave the library's end-marker setting changed for anyone else", () => {
+    lzma.LZMA().disableEndMark = undefined;
+
+    originalStream(decoded, 5);
+
+    expect(lzma.LZMA().disableEndMark).toBeUndefined();
+  });
+
+  it.skipIf(!hasXz)("reads what a reference decoder (xz) reads", async () => {
+    expect(await referenceLzmaDecode(originalStream(decoded, 5))).toEqual(decoded);
   });
 });
 
@@ -71,7 +91,7 @@ describe("reencodeLzma", () => {
   edited[100] ^= 0xff;
   edited[2500] ^= 0x0f;
 
-  it("re-encodes edited data with the original's properties and dictionary size", async () => {
+  it("re-encodes edited data with the original's properties and dictionary size", () => {
     const original = originalStream(decoded, 8);
 
     const result = reencodeLzma(original, edited, lzmaJsCodec);
@@ -84,8 +104,12 @@ describe("reencodeLzma", () => {
     expect(header?.dictionarySize).toBe(originalHeader?.dictionarySize);
     expect(header?.uncompressedSize).toBe(BigInt(edited.length));
     expect(lzmaJsCodec.decode(result.stream)).toEqual(edited);
-    const reference = await referenceLzmaDecode(result.stream);
-    if (reference !== null) expect(reference).toEqual(edited);
+  });
+
+  it.skipIf(!hasXz)("writes a stream a reference decoder (xz) reads back to the data", async () => {
+    const result = reencodeLzma(originalStream(decoded, 8), edited, lzmaJsCodec);
+
+    expect(result.ok && (await referenceLzmaDecode(result.stream))).toEqual(edited);
   });
 
   it("never uses a dictionary larger than the original declared", () => {
@@ -132,10 +156,58 @@ describe("reencodeLzma", () => {
     expect(reencodeLzma(patternBytes(40, 1).fill(0xff, 0, 1), edited, lzmaJsCodec)).toMatchObject({ ok: false, code: "lzma-header" });
   });
 
+  it("refuses, with a reason, when the encoder or decoder throws", () => {
+    const original = originalStream(decoded);
+    const failingEncoder: LzmaCodec = { ...lzmaJsCodec, encode: () => { throw new Error("out of memory"); } };
+    const failingDecoder: LzmaCodec = { ...lzmaJsCodec, decode: () => { throw new Error("corrupted input"); } };
+
+    expect(reencodeLzma(original, edited, failingEncoder)).toMatchObject({ ok: false, code: "lzma-codec" });
+    expect(reencodeLzma(original, edited, failingDecoder)).toMatchObject({ ok: false, code: "lzma-codec" });
+    const result = reencodeLzma(original, edited, failingDecoder);
+    expect(!result.ok && result.message).toMatch(/corrupted input/);
+  });
+
+  it("refuses a dictionary the codec's own decoder could not check", () => {
+    const original = originalStream(decoded).slice();
+    new DataView(original.buffer).setUint32(1, 0x08000000, true); // 128 MiB, legal LZMA
+
+    const result = reencodeLzma(original, edited, lzmaJsCodec);
+
+    expect(result).toMatchObject({ ok: false, code: "lzma-dictionary" });
+  });
+
+  it("refuses to compress nothing", () => {
+    const original = originalStream(decoded).slice();
+    new DataView(original.buffer).setBigUint64(5, 0n, true);
+
+    expect(reencodeLzma(original, new Uint8Array(0), lzmaJsCodec)).toMatchObject({ ok: false, code: "lzma-size" });
+  });
+
   it("refuses to hand back a stream its own decoder cannot read back to the data", () => {
     const original = originalStream(decoded);
     const lying: LzmaCodec = { ...lzmaJsCodec, decode: (stream) => lzmaJsCodec.decode(stream).map((byte) => byte ^ 1) };
 
     expect(reencodeLzma(original, edited, lying)).toMatchObject({ ok: false, code: "lzma-roundtrip" });
+  });
+});
+
+describe("lzmaJs in a browser bundle", () => {
+  it("bundles for the browser without needing Node's path or __dirname", async () => {
+    // The package's own entry point resolves its engine with require(path) at
+    // import time, which a browser cannot do; the adapter must use the engine
+    // file directly. Bundling is the cheapest honest check short of a browser.
+    const esbuild = await import("esbuild");
+    const result = await esbuild.build({
+      entryPoints: ["src/components/scripts/lzmaJs.ts"],
+      bundle: true,
+      platform: "browser",
+      format: "esm",
+      write: false,
+      logLevel: "silent",
+    });
+    const code = result.outputFiles.map((file) => file.text).join("\n");
+
+    expect(result.errors).toEqual([]);
+    expect(code).not.toMatch(/__dirname|require\(["']path["']\)/);
   });
 });

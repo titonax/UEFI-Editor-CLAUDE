@@ -16,3 +16,16 @@ export async function referenceLzmaDecode(stream: Uint8Array): Promise<Uint8Arra
     throw error;
   }
 }
+
+// Whether `xz` can be run here, so a test can say it was skipped instead of
+// passing with nothing checked.
+export async function referenceLzmaAvailable(): Promise<boolean> {
+  const { execFileSync } = await import("node:child_process");
+  try {
+    execFileSync("xz", ["--version"], {});
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("ENOENT")) return false;
+    throw error;
+  }
+}

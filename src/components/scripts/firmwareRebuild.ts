@@ -282,11 +282,22 @@ function readSectionSize(bytes: Uint8Array, edge: FirmwareEncapsulationEdge) {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(edge.sectionStart + 4, true);
 }
 
+function alignUp4(value: number) {
+  return Math.ceil(value / 4) * 4;
+}
+
+// Padding is measured from where the next section would start: sections begin
+// on 4-byte boundaries, so a byte or two between a section and that boundary
+// is never looked at as a header.
+export function paddingAfterSection(sectionEnd: number, fileEnd: number) {
+  return Math.max(0, fileEnd - alignUp4(sectionEnd));
+}
+
 // Whether a change in the length of the erased padding after a section is
 // something the firmware has already shown it tolerates. With room for a
 // section header the parser has met this kind of padding; with less it never
 // looks, so the padding may change as long as it stays that short.
-function paddingChangeAllowed(before: number, after: number) {
+export function paddingChangeAllowed(before: number, after: number) {
   return before >= sectionHeaderBytes || after < sectionHeaderBytes;
 }
 
@@ -340,12 +351,14 @@ function propagateLzma(
   }
   const paddingBefore = owner.end - edge.sectionEnd;
   const paddingAfter = room - stream.length;
-  if (!paddingChangeAllowed(paddingBefore, paddingAfter)) {
+  const alignedBefore = paddingAfterSection(edge.sectionEnd, owner.end);
+  const alignedAfter = paddingAfterSection(edge.payloadStart + stream.length, owner.end);
+  if (!paddingChangeAllowed(alignedBefore, alignedAfter)) {
     return {
       ok: false,
       refusal: {
         code: "lzma-padding-change",
-        message: `${at} would leave ${String(paddingAfter)} bytes of padding where there were ${String(paddingBefore)}, which would create padding the firmware has not shown it tolerates.`,
+        message: `${at} would leave ${String(alignedAfter)} bytes of padding where there were ${String(alignedBefore)}, which would create padding the firmware has not shown it tolerates.`,
       },
     };
   }
@@ -498,6 +511,9 @@ export function rebuildFirmware(
     }
     const edge = node.parent;
     if (!edge) continue;
+    // A buffer no edit actually changed leaves its section exactly as the
+    // vendor wrote it: re-encoding it would alter bytes nobody asked to alter.
+    if (sameBytes(copy, node.bytes)) continue;
     const parentOriginal = nodes.get(edge.parentBufferId);
     const parentCopy = copyOf(edge.parentBufferId);
     // The part of the parent this edge rewrites must still be untouched there:
@@ -557,17 +573,25 @@ function verifyLzmaLink(
   parentCopy: Uint8Array,
   parentOriginal: Uint8Array,
   childCopy: Uint8Array,
+  childOriginal: Uint8Array,
   codec: LzmaCodec | undefined,
-): string[] {
+): { problems: string[]; packedAfter: number | null } {
   const at = `The LZMA section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
   const owner = edge.ownerFile;
-  if (!codec) return [`${at} cannot be checked without an LZMA codec.`];
-  if (!owner) return [`${at} is not inside an FFS file.`];
+  if (!owner) return { problems: [`${at} is not inside an FFS file.`], packedAfter: null };
+  // Nothing changed below this section: it must be the source's own bytes.
+  if (
+    sameBytes(childCopy, childOriginal) &&
+    sameBytes(parentCopy.subarray(edge.sectionStart, owner.end), parentOriginal.subarray(edge.sectionStart, owner.end))
+  ) {
+    return { problems: [], packedAfter: null };
+  }
+  if (!codec) return { problems: [`${at} cannot be checked without an LZMA codec.`], packedAfter: null };
   const problems: string[] = [];
   const size = readSectionSize(parentCopy, edge);
   const end = edge.sectionStart + size;
   if (end < edge.payloadStart || end > owner.end) {
-    return [`${at} declares a size that does not fit inside its file.`];
+    return { problems: [`${at} declares a size that does not fit inside its file.`], packedAfter: null };
   }
   if (!allErased(parentOriginal, edge.sectionEnd, owner.end)) {
     problems.push(`${at} was not followed by erased padding in the source.`);
@@ -575,7 +599,7 @@ function verifyLzmaLink(
   if (!allErased(parentCopy, end, owner.end)) {
     problems.push(`${at} is not followed by erased padding in the rebuilt image.`);
   }
-  if (!paddingChangeAllowed(owner.end - edge.sectionEnd, owner.end - end)) {
+  if (!paddingChangeAllowed(paddingAfterSection(edge.sectionEnd, owner.end), paddingAfterSection(end, owner.end))) {
     problems.push(`${at} changed the length of its padding in a way the source does not show is tolerated.`);
   }
   const stream = parentCopy.slice(edge.payloadStart, end);
@@ -597,7 +621,15 @@ function verifyLzmaLink(
   } catch (error) {
     problems.push(`${at} could not be decoded: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return problems;
+  // Bytes the decoder never reads (after the end of the data) would pass the
+  // checks above, so the stream must be exactly what the encoder writes.
+  const canonical = reencodeLzma(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd), childCopy, codec);
+  if (!canonical.ok) {
+    problems.push(`${at} cannot be re-derived from its buffer: ${canonical.message}`);
+  } else if (!sameBytes(stream, canonical.stream)) {
+    problems.push(`${at} is not the canonical re-encoding of its buffer (it holds extra or altered bytes).`);
+  }
+  return { problems, packedAfter: stream.length };
 }
 
 // Checks a rebuilt image against the source it was built from, without
@@ -634,6 +666,7 @@ export function verifyRebuiltFirmware(
   };
   const expectedFiles = new Map<string, FirmwareFileReference>();
   const links = new Map<number, FirmwareEncapsulationEdge>();
+  const actualLayouts = new Map<string, number>();
   const reported = new Set<string>();
   for (const [position, edit] of edits.entries()) {
     const artifact = graph.artifacts[edit.artifactIndex] as (typeof graph.artifacts)[number] | undefined;
@@ -673,8 +706,19 @@ export function verifyRebuiltFirmware(
         problems.push(`The section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)} does not carry its rebuilt child unchanged.`);
       }
     } else if (edge.compression === "lzma" && edge.ownerFile) {
-      allow(edge.parentBufferId, edge.sectionStart, edge.ownerFile.end);
-      problems.push(...verifyLzmaLink(edge, parentCopy, parentOriginal.bytes, childCopy, codecs.lzma));
+      // Only the section's size field, its payload and the padding behind it
+      // may differ; the rest of its header must be the source's.
+      const sizeStart = edge.sectionHeaderSize === 4 ? edge.sectionStart : edge.sectionStart + 4;
+      allow(edge.parentBufferId, sizeStart, edge.sectionHeaderSize === 4 ? sizeStart + 3 : sizeStart + 4);
+      allow(edge.parentBufferId, edge.payloadStart, edge.ownerFile.end);
+      const childOriginal = nodes.get(childId);
+      if (!childOriginal) {
+        problems.push(`Buffer ${String(childId)} is missing from the source graph.`);
+        continue;
+      }
+      const link = verifyLzmaLink(edge, parentCopy, parentOriginal.bytes, childCopy, childOriginal.bytes, codecs.lzma);
+      problems.push(...link.problems);
+      if (link.packedAfter !== null) actualLayouts.set(`${String(edge.parentBufferId)}:${String(edge.sectionStart)}`, link.packedAfter);
     }
   }
 
@@ -719,6 +763,26 @@ export function verifyRebuiltFirmware(
   }
 
   const changed = differingOffsets(root.bytes, rebuilt.image);
+  // What the rebuild reports about itself must match what the bytes show.
+  const rootCopy = rebuilt.buffers.get(graph.rootBufferId);
+  if (rootCopy && !sameBytes(rootCopy, rebuilt.image)) {
+    problems.push("The rebuilt buffers hold a different image than the one returned.");
+  }
+  if (rebuilt.changedBytes !== changed.length) {
+    problems.push(`The rebuild reports ${String(rebuilt.changedBytes)} changed byte(s); the image differs in ${String(changed.length)}.`);
+  }
+  if (JSON.stringify(rebuilt.changedRanges) !== JSON.stringify(mergeRanges(changed))) {
+    problems.push("The reported changed ranges are not the ranges in which the image differs from the source.");
+  }
+  const reportedLayouts = new Map(
+    rebuilt.layoutChanges.map((change) => [`${String(change.parentBufferId)}:${String(change.sectionStart)}`, change.packedAfter]),
+  );
+  if (
+    reportedLayouts.size !== actualLayouts.size ||
+    [...actualLayouts].some(([key, packed]) => reportedLayouts.get(key) !== packed)
+  ) {
+    problems.push("The reported LZMA layout changes are not the ones in the rebuilt image.");
+  }
   const region = biosRegionOf(root.bytes);
   if (region.kind === "region" && changed.some((offset) => offset < region.start || offset >= region.end)) {
     problems.push("A byte changed outside the BIOS region the flash descriptor declares.");

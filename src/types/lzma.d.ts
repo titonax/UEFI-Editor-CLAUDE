@@ -12,3 +12,16 @@ declare module "lzma" {
   // Returns a string instead of bytes when the data happens to be valid UTF-8.
   export function decompress(data: ArrayLike<number>): string | number[];
 }
+
+// The engine file itself, without the package's Node-only entry point (which
+// resolves it with require(path) at import time and cannot load in a browser).
+declare module "lzma/src/lzma_worker.js" {
+  export interface LzmaEngine {
+    disableEndMark?: boolean;
+    compress(data: Uint8Array | string, mode: number): number[];
+    decompress(data: ArrayLike<number>): string | number[];
+  }
+  export const LZMA_WORKER: LzmaEngine | undefined;
+  const moduleExports: { LZMA_WORKER?: LzmaEngine } | undefined;
+  export default moduleExports;
+}

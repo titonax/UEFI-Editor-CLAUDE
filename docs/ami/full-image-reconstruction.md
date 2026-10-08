@@ -81,10 +81,13 @@ the packed stream. For each LZMA section on the path, deepest first:
    file keeps its size, so no file header moves; the section's size field is
    updated and the bytes after the new end are filled with 0xFF.
 3. The padding may change length only where the source already shows the
-   firmware tolerates it: if there was room for a section header (4 bytes or
-   more) after the section, any non-negative padding is accepted; if there was
-   less, the padding must stay less than that. A result that does not fit, or
-   that would create padding where there was none, is refused with its own code.
+   firmware tolerates it. It is measured from where the next section would
+   start (the next 4-byte boundary): if there was room for a section header (4
+   bytes or more) after the section, any non-negative padding is accepted; if
+   there was less, the padding must stay less than that. A result that does not
+   fit, or that would create padding where there was none, is refused with its
+   own code. The padding must be 0xFF; a volume that erases to 0x00 is refused
+   rather than handled.
 4. The data checksum of the file is repaired, then the file's buffer is
    carried up to its parent the same way, so two nested LZMA levels work.
 
@@ -92,7 +95,20 @@ the packed stream. For each LZMA section on the path, deepest first:
 changed byte explained by an edit, a repaired checksum or a rebuilt section, and
 every link: an uncompressed section carries its child unchanged; an LZMA
 section decodes to its child, keeps the original's properties and dictionary
-size, declares the child's length, and is followed by erased padding.
+size, declares the child's length, is followed by erased padding and is exactly
+what the encoder writes for that child (so bytes the decoder never reads, such as
+garbage after the end of the data, cannot hide). Only a section's size field,
+payload and padding may differ from the source: any other byte of its header is
+unexplained. What the rebuild reports about itself (the buffers, the changed
+bytes and ranges, the layout changes) is checked against the bytes too.
+
+An edit that changes nothing leaves the image byte for byte as it was: a stream
+the vendor wrote is only rewritten when something below it really changed.
+
+The encoder is LZMA-JS (`lzma`, MIT), imported from its engine file rather than
+its Node-only entry point so that it bundles for a browser. It is synchronous,
+and encoding, the round-trip decode and the verification decodes can take long
+on a large image: the app must run it in a worker (stage 4).
 `verifyByReextraction` accepts the decompressor to read the image back with; in
 the app that is the project's WebAssembly decoder, which shares no code with
 the encoder. The tests also decode with `xz` when it is installed.
@@ -106,7 +122,11 @@ the encoder. The tests also decode with `xz` when it is installed.
 - That the padding rule matches how a given firmware parses a file's tail. It
   rests on the source already containing such padding.
 - LZMA-JS fixes the properties and chooses its own dictionary, so an image built
-  with other properties is refused.
+  with other properties is refused, and so is one declaring a dictionary above
+  what its decoder can check (about 100 MB).
+- A vendor stream that carries both a declared size and an end marker is
+  re-encoded with the size and no marker. Decoders that stop at the declared
+  size read both, but that is again something only a board can confirm.
 
 ### What a file checksum repair does
 
