@@ -12,6 +12,9 @@ export interface CaseSimilarity {
   compared: number;
   agreeing: FingerprintField[];
   differing: FingerprintField[];
+  // The differing fields that rule out calling two images alike: any
+  // difference in structure. Content counts are not among them.
+  blocking: FingerprintField[];
 }
 
 export interface CaseMatch {
@@ -24,6 +27,14 @@ export interface CaseMatch {
 // Below this many comparable fields a percentage means nothing (one shared
 // container type would read as 100%), so such pairs are not reported.
 export const minimumComparedFields = 3;
+
+// Counts of what the Setup contains. They change between revisions of the same
+// kind of image (two boards of one family, two versions of one board), so a
+// difference in them is reported but does not rule out a resemblance. Every
+// other field describes how the image is built (container, volumes, where the
+// Setup sits, navigation, generation); a difference in one of those means the
+// two are not the same kind of image, however many other fields agree.
+export const contentFields = ["formSets", "forms", "refs"] as const satisfies readonly FingerprintField[];
 
 export function compareFingerprints(
   left: FirmwareFingerprint,
@@ -38,7 +49,14 @@ export function compareFingerprints(
     (a === b ? agreeing : differing).push(field);
   }
   const compared = agreeing.length + differing.length;
-  return { similarity: compared === 0 ? 0 : agreeing.length / compared, compared, agreeing, differing };
+  const blocking = differing.filter((field) => !(contentFields as readonly FingerprintField[]).includes(field));
+  return {
+    similarity: compared === 0 ? 0 : agreeing.length / compared,
+    compared,
+    agreeing,
+    differing,
+    blocking,
+  };
 }
 
 export function matchCases(

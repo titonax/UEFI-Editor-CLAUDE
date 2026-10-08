@@ -28,6 +28,13 @@ all, so one shared container type never reads as a 100% match. It says how
 alike two images look as observed, not how likely an image is to be a given
 vendor or generation.
 
+An image is only called similar when it is also **built the same way**: any
+difference in a structural field (container, family, generation, volume and FFS
+counts, where the Setup sits, contexts, navigation) rules it out, however high
+the score. The counts of what the Setup holds (`formSets`, `forms`, `refs`;
+`contentFields` in `caseMatcher.ts`) may differ, because they change between
+revisions of one kind of image. Those differences are still listed.
+
 ## Adding a case
 
 An agent follows `.claude/skills/add-firmware-case/SKILL.md`, which is this section
@@ -64,7 +71,8 @@ and calls `classifyEntry()` (`corpusKnowledge.ts`):
 
 - **Known case**: the SHA-256 is a recorded case.
 - **Similar** (`≈ N% like <id>`): no exact case, but a case agrees on at least
-  `similarThreshold` (80%) of at least `minimumComparedFields` comparable fields.
+  `similarThreshold` (80%) of at least `minimumComparedFields` comparable fields
+  and differs from it in no structural field (only in the content counts).
 - **New case**: nothing resembles it closely enough; a candidate to record.
 
 Each file shows one badge, the dashboard counts the three classes over distinct

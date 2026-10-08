@@ -338,6 +338,11 @@ function KnowledgeNote({ entry }: { entry: CorpusRunEntry }) {
           {`Differ: ${nearest.differing.map((difference) => `${label(difference.field)} (${String(difference.image)} here, ${String(difference.recorded)} in the case)`).join("; ")}`}
         </Text>
       )}
+      {verdict.kind === "novel" && nearest.blocking.length > 0 && (
+        <Text size="xs" c="dimmed">
+          {`Not called similar because it is built differently in: ${nearest.blocking.map(label).join(", ")}`}
+        </Text>
+      )}
     </Stack>
   );
 }

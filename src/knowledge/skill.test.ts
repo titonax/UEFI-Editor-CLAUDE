@@ -3,7 +3,7 @@ import packageJson from "../../package.json?raw";
 import binaryPatchReviewer from "../../.claude/agents/binary-patch-reviewer.md?raw";
 import silentFailureHunter from "../../.claude/agents/silent-failure-hunter.md?raw";
 import skill from "../../.claude/skills/add-firmware-case/SKILL.md?raw";
-import { minimumComparedFields } from "./caseMatcher";
+import { contentFields, minimumComparedFields } from "./caseMatcher";
 import { similarThreshold } from "./corpusKnowledge";
 
 // The skill is instructions for an agent, so it must not drift from the
@@ -61,6 +61,8 @@ describe("the add-firmware-case skill", () => {
 
   it("quotes the thresholds the code actually uses", () => {
     expect(text).toContain(`at least ${String(Math.round(similarThreshold * 100))}%`);
+    expect(text).toContain("in no structural field");
+    for (const field of contentFields) expect(text.toLowerCase()).toContain(field === "formSets" ? "formsets" : field);
     expect(text).toContain(`at least ${String(minimumComparedFields)} comparable fields`);
   });
 

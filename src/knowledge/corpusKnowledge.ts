@@ -19,6 +19,9 @@ export interface NearestCase {
   compared: number;
   agreeing: FingerprintField[];
   differing: FieldDifference[];
+  // Fields that differ and describe how the image is built, not what its Setup
+  // holds. Any of them keeps the image from being called similar.
+  blocking: FingerprintField[];
 }
 
 // How a corpus run's image relates to the recorded cases. Purely descriptive:
@@ -32,7 +35,8 @@ export type KnowledgeVerdict =
   | { kind: "novel"; nearest?: NearestCase };
 
 // Minimum structural similarity (see caseMatcher.ts) to call an unknown image
-// "similar" to a case. Below it the image is novel: worth recording.
+// "similar" to a case, and the case must not differ in any structural field
+// either. Otherwise the image is novel: worth recording.
 export const similarThreshold = 0.8;
 
 function describeNearest(image: FirmwareFingerprint, best: CaseSimilarity): NearestCase {
@@ -51,17 +55,21 @@ function describeNearest(image: FirmwareFingerprint, best: CaseSimilarity): Near
     compared: best.compared,
     agreeing: best.agreeing,
     differing,
+    blocking: best.blocking,
   };
 }
 
 export function classifyEntry(entry: CorpusRunEntry, cases: readonly FirmwareCase[]): KnowledgeVerdict {
   const fingerprint = fingerprintFromEntry(entry);
-  const match = matchCases({ sha256: entry.sha256 || undefined, fingerprint }, cases);
+  // Every case, not the default handful: the closest one by score may differ
+  // structurally while a slightly lower one does not.
+  const match = matchCases({ sha256: entry.sha256 || undefined, fingerprint }, cases, { limit: cases.length });
   if (match.exact) return { kind: "exact", case: match.exact };
   const best = match.similar[0] as (typeof match.similar)[number] | undefined;
   if (!best) return { kind: "novel" };
-  const nearest = describeNearest(fingerprint, best);
-  return best.similarity >= similarThreshold ? { kind: "similar", ...nearest } : { kind: "novel", nearest };
+  const alike = match.similar.find((one) => one.similarity >= similarThreshold && one.blocking.length === 0);
+  if (alike) return { kind: "similar", ...describeNearest(fingerprint, alike) };
+  return { kind: "novel", nearest: describeNearest(fingerprint, best) };
 }
 
 export interface KnowledgeBreakdown {
