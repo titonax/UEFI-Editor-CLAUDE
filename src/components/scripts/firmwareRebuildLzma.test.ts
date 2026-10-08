@@ -137,7 +137,7 @@ describe("rebuildFirmware through an LZMA section", () => {
       expect(edge.sectionStart + sizeField).toBe(newEnd);
       expect(rebuilt.image.slice(newEnd, owner.end).every((byte) => byte === 0xff)).toBe(true);
       expect(change.paddingBefore + change.packedBefore).toBe(change.paddingAfter + change.packedAfter);
-      expect(sum8(rebuilt.image, owner.bodyStart, owner.end) + rebuilt.image[owner.fileStart + 17]).toBe(256);
+      expect((sum8(rebuilt.image, owner.bodyStart, owner.end) + rebuilt.image[owner.fileStart + 17]) & 0xff).toBe(0);
       // Every changed byte is in the section's payload or padding, or is the
       // file's data checksum; nothing in the section's own header but its size.
       const sizeStart = edge.sectionHeaderSize === 4 ? edge.sectionStart : edge.sectionStart + 4;
@@ -235,7 +235,7 @@ describe("rebuildFirmware refuses an LZMA section it cannot resize safely", () =
 
     const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, randomBytes(1800, 7))], { codecs });
 
-    expect(codesOf(result)).toEqual(["lzma-does-not-fit"]);
+    expect(codesOf(result)).toEqual(["compressed-does-not-fit"]);
   });
 
   it("refuses to create padding where the source had none", async () => {
@@ -244,7 +244,7 @@ describe("rebuildFirmware refuses an LZMA section it cannot resize safely", () =
 
     const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500))], { codecs });
 
-    expect(codesOf(result)).toEqual(["lzma-padding-change"]);
+    expect(codesOf(result)).toEqual(["compressed-padding-change"]);
   });
 
   it("refuses a stream whose properties this encoder cannot reproduce", async () => {
@@ -260,17 +260,6 @@ describe("rebuildFirmware refuses an LZMA section it cannot resize safely", () =
 
     expect(codesOf(result)).toEqual(["lzma-recompression"]);
     if (!result.ok) expect(result.refusals[0].message).toMatch(/properties/);
-  });
-
-  it("still refuses an EFI/Tiano section, codec or not", async () => {
-    const inner = innerVolume();
-    const image = firmwareVolume([
-      { guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: concat(sectionStream(compressionSection(1, inner.length, inner)), erasedTail(64)) },
-    ]);
-    const graph = await graphOf(image, rawDecompress(inner));
-    expect(graph.buffers[1].parent?.compression).toBe("standard");
-
-    expect(codesOf(rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100)], { codecs }))).toEqual(["compressed-section"]);
   });
 });
 

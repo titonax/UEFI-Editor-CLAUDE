@@ -16,8 +16,9 @@ import {
   type FirmwareProvenanceGraph,
 } from "./firmwareProvenance";
 import { readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
+import { builtInTianoCodec, reencodeTiano, tianoStreamProblems, type TianoCodec } from "./tianoSection";
 
-// Full-image reconstruction (stages 1 and 2): same-size edits to a decoded
+// Full-image reconstruction (stages 1 to 3): same-size edits to a decoded
 // artifact, carried back up to the source image. The edited bytes are written
 // into the artifact's decoded buffer, then copied up through each section into
 // its parent, repairing the data checksum of every FFS file on the way.
@@ -26,7 +27,9 @@ import { readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
 //     re-encoded with the original's properties and dictionary. The section
 //     may change size only if it is the last one in its file and the bytes
 //     after it are erased (0xFF) padding; the file keeps its size.
-//   - EFI/Tiano sections are refused.
+//   - Through an EFI/Tiano section the buffer is re-encoded in the variant
+//     (EFI or Tiano) that reads the original stream back to the original
+//     bytes, under the same rules about size and padding.
 // Every other length stays put, so no file or volume header moves.
 //
 // This module only builds and checks an image. Nothing calls it from the
@@ -60,9 +63,10 @@ export type RebuildRefusalCode =
   | "invalid-file-checksum"
   | "unsupported-file-attributes"
   | "lzma-recompression"
+  | "tiano-recompression"
   | "section-not-terminal"
-  | "lzma-does-not-fit"
-  | "lzma-padding-change"
+  | "compressed-does-not-fit"
+  | "compressed-padding-change"
   | "section-too-large"
   | "descriptor-invalid"
   | "outside-bios-region"
@@ -76,6 +80,8 @@ export interface RebuildRefusal {
 export interface RebuildCodecs {
   // Without it, an LZMA section on the path is refused.
   lzma?: LzmaCodec;
+  // The EFI/Tiano codec; the built-in one when omitted.
+  tiano?: TianoCodec;
 }
 
 export interface RebuildOptions {
@@ -96,8 +102,9 @@ export interface RepairedFile {
   changed: boolean;
 }
 
-// One LZMA section that changed size inside its file.
-export interface LzmaLayoutChange {
+// One compressed section that changed size inside its file.
+export interface SectionLayoutChange {
+  format: "lzma" | "standard";
   parentBufferId: number;
   sectionStart: number;
   packedBefore: number;
@@ -115,7 +122,7 @@ export interface RebuiltFirmware {
   changedRanges: ByteRange[];
   changedBytes: number;
   repairedFiles: RepairedFile[];
-  layoutChanges: LzmaLayoutChange[];
+  layoutChanges: SectionLayoutChange[];
 }
 
 export type RebuildResult =
@@ -140,17 +147,96 @@ function allErased(bytes: Uint8Array, start: number, end: number) {
   return true;
 }
 
+// What differs between the compressed formats a section can carry. Everything
+// else about resizing a section inside its file is shared.
+interface StreamFormat {
+  kind: "lzma" | "standard";
+  label: string;
+  recompressionCode: "lzma-recompression" | "tiano-recompression";
+  // The stream for `decoded` in place of `originalStream` (which decodes to
+  // `originalDecoded`), or why there is none.
+  reencode(
+    originalStream: Uint8Array,
+    originalDecoded: Uint8Array,
+    decoded: Uint8Array,
+  ): { ok: true; stream: Uint8Array } | { ok: false; message: string };
+  // What is wrong with `stream` as the replacement, reading it independently.
+  streamProblems(
+    originalStream: Uint8Array,
+    originalDecoded: Uint8Array,
+    stream: Uint8Array,
+    decoded: Uint8Array,
+  ): string[];
+}
+
+function lzmaFormat(codec: LzmaCodec): StreamFormat {
+  return {
+    kind: "lzma",
+    label: "LZMA",
+    recompressionCode: "lzma-recompression",
+    reencode: (originalStream, _originalDecoded, decoded) => reencodeLzma(originalStream, decoded, codec),
+    streamProblems: (originalStream, _originalDecoded, stream, decoded) => {
+      const at = "The stream";
+      const problems: string[] = [];
+      const before = readLzmaHeader(originalStream);
+      const after = readLzmaHeader(stream);
+      if (!before || !after) {
+        problems.push(`${at} does not start with an LZMA header.`);
+      } else if (
+        after.propsByte !== before.propsByte ||
+        after.dictionarySize !== before.dictionarySize ||
+        after.uncompressedSize !== BigInt(decoded.length)
+      ) {
+        problems.push(`${at} does not keep the original's LZMA properties, dictionary size and declared length.`);
+      }
+      try {
+        if (!sameBytes(codec.decode(stream), decoded)) {
+          problems.push(`${at} does not decode to the buffer it is meant to carry.`);
+        }
+      } catch (error) {
+        problems.push(`${at} could not be decoded: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      // Bytes the decoder never reads (after the end of the data) would pass
+      // the checks above, so the stream must be exactly what the encoder writes.
+      const canonical = reencodeLzma(originalStream, decoded, codec);
+      if (!canonical.ok) {
+        problems.push(`${at} cannot be re-derived from its buffer: ${canonical.message}`);
+      } else if (!sameBytes(stream, canonical.stream)) {
+        problems.push(`${at} is not the canonical re-encoding of its buffer (it holds extra or altered bytes).`);
+      }
+      return problems;
+    },
+  };
+}
+
+function tianoFormat(codec: TianoCodec): StreamFormat {
+  return {
+    kind: "standard",
+    label: "EFI/Tiano",
+    recompressionCode: "tiano-recompression",
+    reencode: (originalStream, originalDecoded, decoded) => reencodeTiano(originalStream, originalDecoded, decoded, codec),
+    streamProblems: (originalStream, originalDecoded, stream, decoded) =>
+      tianoStreamProblems(originalStream, originalDecoded, stream, decoded, codec),
+  };
+}
+
+// The format of a compressed edge, or undefined when this rebuild has no codec
+// for it.
+function formatOf(edge: FirmwareEncapsulationEdge, codecs: RebuildCodecs): StreamFormat | undefined {
+  if (edge.compression === "lzma") return codecs.lzma ? lzmaFormat(codecs.lzma) : undefined;
+  if (edge.compression === "standard") return tianoFormat(codecs.tiano ?? builtInTianoCodec);
+  return undefined;
+}
+
 function checkEdge(
   edge: FirmwareEncapsulationEdge,
   child: FirmwareBufferNode,
   codecs: RebuildCodecs,
 ): RebuildRefusal | null {
   const at = `the section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
-  if (edge.compression === "standard") {
-    return { code: "compressed-section", message: `${at} is EFI/Tiano compressed, and that recompression is not implemented.` };
-  }
-  if (edge.compression === "lzma") {
-    if (!codecs.lzma) {
+  if (edge.compression !== "none") {
+    const format = formatOf(edge, codecs);
+    if (!format) {
       return { code: "compressed-section", message: `${at} is LZMA compressed and no LZMA codec was supplied.` };
     }
     if (edge.ownerFile?.bufferId !== edge.parentBufferId) {
@@ -160,7 +246,7 @@ function checkEdge(
       };
     }
     if (edge.sectionType !== 0x01 && edge.sectionType !== 0x02) {
-      return { code: "unsupported-section", message: `${at} has type ${hex(edge.sectionType)}, which is not an LZMA wrapper this rebuild handles.` };
+      return { code: "unsupported-section", message: `${at} has type ${hex(edge.sectionType)}, which is not a ${format.label} wrapper this rebuild handles.` };
     }
     return null;
   }
@@ -307,21 +393,22 @@ interface ValidEdit {
   bufferStart: number;
 }
 
-type LzmaPropagation =
-  | { ok: true; change: LzmaLayoutChange }
+type Propagation =
+  | { ok: true; change: SectionLayoutChange }
   | { ok: false; refusal: RebuildRefusal };
 
-// Writes the re-encoded LZMA stream of `childCopy` into `parentCopy` in place of
+// Writes the re-encoded stream of `childCopy` into `parentCopy` in place of
 // the section's original payload, resizing the section within its file.
-function propagateLzma(
+function propagateCompressed(
   edge: FirmwareEncapsulationEdge,
+  childOriginal: Uint8Array,
   childCopy: Uint8Array,
   parentOriginal: Uint8Array,
   parentCopy: Uint8Array,
-  codec: LzmaCodec,
-): LzmaPropagation {
+  format: StreamFormat,
+): Propagation {
   const owner = edge.ownerFile;
-  const at = `the LZMA section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
+  const at = `the ${format.label} section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
   if (!owner) {
     return { ok: false, refusal: { code: "incomplete-path", message: `${at} is not inside an FFS file.` } };
   }
@@ -334,9 +421,9 @@ function propagateLzma(
       },
     };
   }
-  const reencoded = reencodeLzma(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd), childCopy, codec);
+  const reencoded = format.reencode(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd), childOriginal, childCopy);
   if (!reencoded.ok) {
-    return { ok: false, refusal: { code: "lzma-recompression", message: `${at}: ${reencoded.message}` } };
+    return { ok: false, refusal: { code: format.recompressionCode, message: `${at}: ${reencoded.message}` } };
   }
   const stream = reencoded.stream;
   const room = owner.end - edge.payloadStart;
@@ -344,7 +431,7 @@ function propagateLzma(
     return {
       ok: false,
       refusal: {
-        code: "lzma-does-not-fit",
+        code: "compressed-does-not-fit",
         message: `${at} would need ${String(stream.length)} bytes and its file has room for ${String(room)}.`,
       },
     };
@@ -357,7 +444,7 @@ function propagateLzma(
     return {
       ok: false,
       refusal: {
-        code: "lzma-padding-change",
+        code: "compressed-padding-change",
         message: `${at} would leave ${String(alignedAfter)} bytes of padding where there were ${String(alignedBefore)}, which would create padding the firmware has not shown it tolerates.`,
       },
     };
@@ -372,6 +459,7 @@ function propagateLzma(
   return {
     ok: true,
     change: {
+      format: format.kind,
       parentBufferId: edge.parentBufferId,
       sectionStart: edge.sectionStart,
       packedBefore: edge.payloadEnd - edge.payloadStart,
@@ -494,7 +582,7 @@ export function rebuildFirmware(
   for (const item of valid) copyOf(item.bufferId).set(item.edit.replacement, item.bufferStart);
 
   const repairedFiles: RepairedFile[] = [];
-  const layoutChanges: LzmaLayoutChange[] = [];
+  const layoutChanges: SectionLayoutChange[] = [];
   const deepestFirst = [...affected].sort((left, right) => (nodes.get(right)?.depth ?? 0) - (nodes.get(left)?.depth ?? 0));
   for (const id of deepestFirst) {
     const node = nodes.get(id);
@@ -518,8 +606,8 @@ export function rebuildFirmware(
     const parentCopy = copyOf(edge.parentBufferId);
     // The part of the parent this edge rewrites must still be untouched there:
     // an edit that landed inside it from outside would be overwritten.
-    const regionEnd = edge.compression === "lzma" && edge.ownerFile ? edge.ownerFile.end : edge.payloadEnd;
-    const regionStart = edge.compression === "lzma" ? edge.sectionStart : edge.payloadStart;
+    const regionEnd = edge.compression !== "none" && edge.ownerFile ? edge.ownerFile.end : edge.payloadEnd;
+    const regionStart = edge.compression !== "none" ? edge.sectionStart : edge.payloadStart;
     if (
       !parentOriginal ||
       !sameBytes(parentCopy.subarray(regionStart, regionEnd), parentOriginal.bytes.subarray(regionStart, regionEnd))
@@ -527,10 +615,10 @@ export function rebuildFirmware(
       refuse("conflicting-edit", `An edit lands inside the section at ${hex(edge.sectionStart)} that another edit rebuilds.`);
       continue;
     }
-    if (edge.compression === "lzma") {
-      const codec = codecs.lzma;
-      if (!codec) continue; // refused above by checkEdge
-      const propagated = propagateLzma(edge, copy, parentOriginal.bytes, parentCopy, codec);
+    if (edge.compression !== "none") {
+      const format = formatOf(edge, codecs);
+      if (!format) continue; // refused above by checkEdge
+      const propagated = propagateCompressed(edge, node.bytes, copy, parentOriginal.bytes, parentCopy, format);
       if (propagated.ok) layoutChanges.push(propagated.change);
       else refusals.push(propagated.refusal);
     } else {
@@ -568,15 +656,16 @@ export function rebuildFirmware(
   return { ok: true, value };
 }
 
-function verifyLzmaLink(
+function verifyCompressedLink(
   edge: FirmwareEncapsulationEdge,
   parentCopy: Uint8Array,
   parentOriginal: Uint8Array,
   childCopy: Uint8Array,
   childOriginal: Uint8Array,
-  codec: LzmaCodec | undefined,
+  format: StreamFormat | undefined,
 ): { problems: string[]; packedAfter: number | null } {
-  const at = `The LZMA section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
+  const label = format?.label ?? (edge.compression === "lzma" ? "LZMA" : "EFI/Tiano");
+  const at = `The ${label} section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
   const owner = edge.ownerFile;
   if (!owner) return { problems: [`${at} is not inside an FFS file.`], packedAfter: null };
   // Nothing changed below this section: it must be the source's own bytes.
@@ -586,7 +675,7 @@ function verifyLzmaLink(
   ) {
     return { problems: [], packedAfter: null };
   }
-  if (!codec) return { problems: [`${at} cannot be checked without an LZMA codec.`], packedAfter: null };
+  if (!format) return { problems: [`${at} cannot be checked without a ${label} codec.`], packedAfter: null };
   const problems: string[] = [];
   const size = readSectionSize(parentCopy, edge);
   const end = edge.sectionStart + size;
@@ -603,31 +692,13 @@ function verifyLzmaLink(
     problems.push(`${at} changed the length of its padding in a way the source does not show is tolerated.`);
   }
   const stream = parentCopy.slice(edge.payloadStart, end);
-  const before = readLzmaHeader(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd));
-  const after = readLzmaHeader(stream);
-  if (!before || !after) {
-    problems.push(`${at} does not start with an LZMA header.`);
-  } else if (
-    after.propsByte !== before.propsByte ||
-    after.dictionarySize !== before.dictionarySize ||
-    after.uncompressedSize !== BigInt(childCopy.length)
-  ) {
-    problems.push(`${at} does not keep the original's LZMA properties, dictionary size and declared length.`);
-  }
-  try {
-    if (!sameBytes(codec.decode(stream), childCopy)) {
-      problems.push(`${at} does not decode to the buffer it is meant to carry.`);
-    }
-  } catch (error) {
-    problems.push(`${at} could not be decoded: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  // Bytes the decoder never reads (after the end of the data) would pass the
-  // checks above, so the stream must be exactly what the encoder writes.
-  const canonical = reencodeLzma(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd), childCopy, codec);
-  if (!canonical.ok) {
-    problems.push(`${at} cannot be re-derived from its buffer: ${canonical.message}`);
-  } else if (!sameBytes(stream, canonical.stream)) {
-    problems.push(`${at} is not the canonical re-encoding of its buffer (it holds extra or altered bytes).`);
+  for (const problem of format.streamProblems(
+    parentOriginal.subarray(edge.payloadStart, edge.payloadEnd),
+    childOriginal,
+    stream,
+    childCopy,
+  )) {
+    problems.push(`${at}: ${problem}`);
   }
   return { problems, packedAfter: stream.length };
 }
@@ -636,8 +707,8 @@ function verifyLzmaLink(
 // trusting how it was built. Buffer by buffer: the same length, every changed
 // byte explained by an edit, a repaired checksum or a section that was rebuilt
 // from its child, and every replacement in place. Link by link: an
-// uncompressed section carries its child unchanged, an LZMA section decodes to
-// its child with the original's properties, followed by erased padding. For a
+// uncompressed section carries its child unchanged, a compressed section
+// decodes to its child in the original's format, followed by erased padding. For a
 // complete SPI image, nothing outside the BIOS region.
 export function verifyRebuiltFirmware(
   graph: FirmwareProvenanceGraph,
@@ -705,7 +776,7 @@ export function verifyRebuiltFirmware(
       if (!sameBytes(parentCopy.subarray(edge.payloadStart, edge.payloadEnd), childCopy)) {
         problems.push(`The section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)} does not carry its rebuilt child unchanged.`);
       }
-    } else if (edge.compression === "lzma" && edge.ownerFile) {
+    } else if (edge.ownerFile) {
       // Only the section's size field, its payload and the padding behind it
       // may differ; the rest of its header must be the source's.
       const sizeStart = edge.sectionHeaderSize === 4 ? edge.sectionStart : edge.sectionStart + 4;
@@ -716,7 +787,7 @@ export function verifyRebuiltFirmware(
         problems.push(`Buffer ${String(childId)} is missing from the source graph.`);
         continue;
       }
-      const link = verifyLzmaLink(edge, parentCopy, parentOriginal.bytes, childCopy, childOriginal.bytes, codecs.lzma);
+      const link = verifyCompressedLink(edge, parentCopy, parentOriginal.bytes, childCopy, childOriginal.bytes, formatOf(edge, codecs));
       problems.push(...link.problems);
       if (link.packedAfter !== null) actualLayouts.set(`${String(edge.parentBufferId)}:${String(edge.sectionStart)}`, link.packedAfter);
     }
@@ -781,7 +852,7 @@ export function verifyRebuiltFirmware(
     reportedLayouts.size !== actualLayouts.size ||
     [...actualLayouts].some(([key, packed]) => reportedLayouts.get(key) !== packed)
   ) {
-    problems.push("The reported LZMA layout changes are not the ones in the rebuilt image.");
+    problems.push("The reported layout changes of compressed sections are not the ones in the rebuilt image.");
   }
   const region = biosRegionOf(root.bytes);
   if (region.kind === "region" && changed.some((offset) => offset < region.start || offset >= region.end)) {
