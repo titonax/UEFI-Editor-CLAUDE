@@ -62,6 +62,7 @@ describe("the add-firmware-case skill", () => {
   it("quotes the thresholds the code actually uses", () => {
     expect(text).toContain(`at least ${String(Math.round(similarThreshold * 100))}%`);
     expect(text).toContain("in no structural field");
+    expect(text).toContain("beyond\n     container, family and generation");
     for (const field of contentFields) expect(text.toLowerCase()).toContain(field === "formSets" ? "formsets" : field);
     expect(text).toContain(`at least ${String(minimumComparedFields)} comparable fields`);
   });

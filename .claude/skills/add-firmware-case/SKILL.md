@@ -46,7 +46,8 @@ is by reading it; a case or a vendor family never selects a code path. Read
    - **Similar** (`≈ N% like <id>`): no recorded case has this SHA-256, but one
      agrees on at least 80% of at least 3 comparable fields and differs from it
      in no structural field. Only the counts of what the Setup holds (FormSets,
-     Forms, Refs) may differ.
+     Forms, Refs) may differ. They must also agree on something beyond
+     container, family and generation.
    - **New case**: nothing resembles it closely enough, or there was too little
      observed to compare. See `src/knowledge/corpusKnowledge.ts`.
 2. **Explain the difference, not a verdict.** For a similar or new image, use

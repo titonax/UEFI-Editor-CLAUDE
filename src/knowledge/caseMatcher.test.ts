@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareFingerprints, contentFields, matchCases, minimumComparedFields } from "./caseMatcher";
+import { compareFingerprints, contentFields, genericFields, isHollow, matchCases, minimumComparedFields } from "./caseMatcher";
 import { fingerprintFromCase, fingerprintFromEntry } from "./fingerprint";
 import type { FirmwareCase } from "./schema";
 import type { CorpusRunEntry } from "../components/scripts/corpusDashboard";
@@ -129,5 +129,27 @@ describe("fingerprintFromEntry", () => {
     });
     expect(fingerprint.container).toBeUndefined();
     expect(fingerprint.vendorFamily).toBeUndefined();
+  });
+});
+
+describe("hollow matches", () => {
+  const sparse = (hex: string) => makeCase(hex, { container: "vendor-image", features: {} });
+
+  it("flags a pair that only shares the generic fields, even at 100%", () => {
+    const subject = fingerprintFromCase(sparse("a"));
+    const comparison = compareFingerprints(subject, fingerprintFromCase(sparse("b")));
+
+    expect(comparison).toMatchObject({ compared: 3, similarity: 1 });
+    expect(isHollow(comparison)).toBe(true);
+    expect(genericFields).toEqual(["container", "vendorFamily", "generation"]);
+    // It is still listed, so a new image can say what it was compared with.
+    expect(matchCases({ fingerprint: subject }, [sparse("b")]).similar).toHaveLength(1);
+  });
+
+  it("is not hollow once a field beyond the generic ones agrees", () => {
+    const withVolumes = (hex: string) => makeCase(hex, { container: "vendor-image", features: { firmwareVolumes: 3 } });
+    const comparison = compareFingerprints(fingerprintFromCase(withVolumes("a")), fingerprintFromCase(withVolumes("b")));
+
+    expect(isHollow(comparison)).toBe(false);
   });
 });

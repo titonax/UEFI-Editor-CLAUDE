@@ -33,7 +33,11 @@ difference in a structural field (container, family, generation, volume and FFS
 counts, where the Setup sits, contexts, navigation) rules it out, however high
 the score. The counts of what the Setup holds (`formSets`, `forms`, `refs`;
 `contentFields` in `caseMatcher.ts`) may differ, because they change between
-revisions of one kind of image. Those differences are still listed.
+revisions of one kind of image. Those differences are still listed. And two
+images that agree only on container, family and generation (`genericFields`:
+every case is `unresolved` for generation) are never similar, whatever the
+share; the closest such case is still named so a new image can say what it was
+compared with.
 
 ## Adding a case
 
@@ -72,7 +76,8 @@ and calls `classifyEntry()` (`corpusKnowledge.ts`):
 - **Known case**: the SHA-256 is a recorded case.
 - **Similar** (`≈ N% like <id>`): no exact case, but a case agrees on at least
   `similarThreshold` (80%) of at least `minimumComparedFields` comparable fields
-  and differs from it in no structural field (only in the content counts).
+  and differs from it in no structural field (only in the content counts), and
+  they agree on something beyond container, family and generation.
 - **New case**: nothing resembles it closely enough; a candidate to record.
 
 Each file shows one badge, the dashboard counts the three classes over distinct

@@ -72,6 +72,33 @@ describe("bundled firmware cases", () => {
     }
   });
 
+  it("records the three non-Aptio images from the GPT fork's records, saying they were transcribed", () => {
+    const fromGpt = knownCases.filter((entry) => entry.source.startsWith("titonax/UEFI-Editor-GPT "));
+
+    expect(fromGpt.map((entry) => entry.sha256).sort()).toEqual([
+      "78575954ba80c09b40b0283a0dc6b918ffeb4b9623a58613225cd85dd544ca4b",
+      "d34c9695d6d54595836212021797dd7557cabae0d25fd33cd0faa87c25640194",
+      "d7ec1c70607c9186fbdd9d30e657b32e139fee2cf144c2f59b36fb48bec42c71",
+    ]);
+    for (const entry of fromGpt) {
+      expect(["award", "ami-legacy", "phoenix"], entry.id).toContain(entry.vendorFamily);
+      expect(entry.generation, entry.id).toBe("unresolved");
+      expect(entry.notes?.join(" "), entry.id).toMatch(/transcribed from the GPT fork's record, not re-derived here/);
+    }
+  });
+
+  it("states a container only where a record or the classifier backs it", () => {
+    const container = (prefix: string) => knownCases.find((entry) => entry.id === prefix)?.container;
+
+    // No Intel descriptor and a volume at offset 0 (docs/aptio-iv/samples/hp-boa-8005.md).
+    expect(container("ami-c0a18c73")).toBe("firmware-volume-image");
+    // The four capsules: taken from the GPT fork's case for the same SHA-256.
+    for (const id of ["ami-772c44e1", "ami-cb71e90c", "ami-9344b904", "ami-e862e5b0"]) {
+      expect(container(id), id).toBe("vendor-image");
+      expect(knownCases.find((entry) => entry.id === id)?.notes?.join(" "), id).toMatch(/container.*GPT fork/i);
+    }
+  });
+
   it("keeps every case file at cases/<family>/<id>.json", () => {
     const first = knownCases[0];
     const rightPlace = `./cases/ami/${first.id}.json`;

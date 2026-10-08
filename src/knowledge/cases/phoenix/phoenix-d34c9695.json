@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "phoenix-d34c9695",
+  "sha256": "d34c9695d6d54595836212021797dd7557cabae0d25fd33cd0faa87c25640194",
+  "size": 1048576,
+  "names": [
+    "ACER-Z03-20140701.bin"
+  ],
+  "vendorFamily": "phoenix",
+  "container": "phoenix-rom",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {},
+  "blockers": [],
+  "source": "titonax/UEFI-Editor-GPT docs/phoenix/setup-menu.md",
+  "notes": [
+    "PhoenixBIOS 4.0 Release 6.1 with a 34-module inventory (docs/phoenix/README.md). Case transcribed from the GPT fork's record, not re-derived here."
+  ]
+}

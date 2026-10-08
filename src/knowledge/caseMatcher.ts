@@ -36,6 +36,17 @@ export const minimumComparedFields = 3;
 // two are not the same kind of image, however many other fields agree.
 export const contentFields = ["formSets", "forms", "refs"] as const satisfies readonly FingerprintField[];
 
+// Fields every image has some value for, and that say little about how it is
+// built: two unrelated images routinely share them (every case here is
+// "unresolved" for generation). A pair that agrees on these and nothing else is
+// not a resemblance, however high the share (see isHollow). It is still listed
+// as the closest case, so a new image can say what it was compared with.
+export const genericFields = ["container", "vendorFamily", "generation"] as const satisfies readonly FingerprintField[];
+
+export function isHollow(comparison: Pick<CaseSimilarity, "agreeing">): boolean {
+  return comparison.agreeing.every((field) => (genericFields as readonly FingerprintField[]).includes(field));
+}
+
 export function compareFingerprints(
   left: FirmwareFingerprint,
   right: FirmwareFingerprint,

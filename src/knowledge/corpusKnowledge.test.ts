@@ -173,6 +173,17 @@ describe("why an image is similar or new", () => {
     expect(verdict.nearest?.differing).toEqual([{ field: "directSetupFiles", image: 1, recorded: 0 }]);
   });
 
+  it("does not call an image similar when it only shares container, family and generation", () => {
+    const sparse: FirmwareCase = { ...known, features: {} };
+    const verdict = classifyEntry(entry({ volumes: undefined, contextCount: 0 }), [sparse]);
+
+    expect(verdict.kind).toBe("novel");
+    if (verdict.kind !== "novel") return;
+    // 100% of 3 comparable fields, all generic: listed as closest, never similar.
+    expect(verdict.nearest?.similarity).toBe(1);
+    expect(verdict.nearest?.agreeing).toEqual(["container", "vendorFamily", "generation"]);
+  });
+
   it("prefers a case it can be similar to over a closer-scoring case it differs from structurally", () => {
     const structurallyOff: FirmwareCase = {
       ...recorded,

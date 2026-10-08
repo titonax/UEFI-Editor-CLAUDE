@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "award-d7ec1c70",
+  "sha256": "d7ec1c70607c9186fbdd9d30e657b32e139fee2cf144c2f59b36fb48bec42c71",
+  "size": 1048576,
+  "names": [
+    "R01A2(1).BIN"
+  ],
+  "vendorFamily": "award",
+  "container": "unknown",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 0,
+    "forms": 0
+  },
+  "blockers": [],
+  "source": "titonax/UEFI-Editor-GPT docs/award/emachines-el1200-r01a2.md",
+  "notes": [
+    "Award Legacy: 23 checksum-valid LHA modules, no PI volume, 0 HII packages and 0 IFR forms. Case transcribed from the GPT fork's record, not re-derived here."
+  ]
+}

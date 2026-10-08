@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import interchange from "../../docs/knowledge-interchange.md?raw";
-import { contentFields, minimumComparedFields } from "./caseMatcher";
+import { contentFields, genericFields, minimumComparedFields } from "./caseMatcher";
 import { similarThreshold } from "./corpusKnowledge";
 import { fingerprintFields } from "./fingerprint";
 import { ruleEvidenceLevels } from "./ruleSchema";
@@ -39,6 +39,10 @@ describe("docs/knowledge-interchange.md", () => {
 
   it("lists exactly the content fields that may differ between similar images", () => {
     expect(listed("content fields")).toEqual([...contentFields]);
+  });
+
+  it("lists exactly the generic fields that cannot make two images similar on their own", () => {
+    expect(listed("generic fields")).toEqual([...genericFields]);
   });
 
   it("lists exactly the fingerprint fields, in comparison order", () => {

@@ -7,7 +7,7 @@
     "BOA_8005.BIN"
   ],
   "vendorFamily": "ami-aptio",
-  "container": "unknown",
+  "container": "firmware-volume-image",
   "generation": "unresolved",
   "generationEvidence": "unresolved",
   "features": {
@@ -22,6 +22,7 @@
   "source": "docs/aptio-iv/samples/hp-boa-8005.md",
   "notes": [
     "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
-    "No flash descriptor. Setup and AMITSE appear only after decompressing the nested main volume (0x7E0000 bytes)."
+    "No flash descriptor. Setup and AMITSE appear only after decompressing the nested main volume (0x7E0000 bytes).",
+    "Container: no Intel descriptor and a volume at offset 0, which the project's classifier calls firmware-volume-image."
   ]
 }
