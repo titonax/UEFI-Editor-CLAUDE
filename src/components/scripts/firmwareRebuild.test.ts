@@ -4,11 +4,13 @@ import {
   AMITSE_GUID,
   FFS_ATTRIB_CHECKSUM,
   FFS_ATTRIB_TAIL_PRESENT,
+  HII_GUID,
   LZMA_CUSTOM_DECOMPRESS_GUID,
   PASS_THROUGH_GUID,
   compressionSection,
   concat,
   firmwareVolume,
+  freeformSection,
   guidDefinedSection,
   patternBytes,
   sectionStream,
@@ -130,6 +132,8 @@ describe("rebuildFirmware on an uncompressed image", () => {
     const rebuilt = unwrap(rebuildFirmware(graph, edits));
 
     expect(rebuilt.changedBytes).toBe(2 + 2 + 3 + 2);
+    expect(rebuilt.changedRanges.reduce((total, range) => total + range.end - range.start, 0)).toBe(rebuilt.changedBytes);
+    expect(rebuilt.changedRanges.length).toBeGreaterThan(1);
     expect(rebuilt.repairedFiles.map((file) => file.guid).sort()).toEqual(
       [AMITSE_GUID, "899407D7-99FE-43D8-9A21-79EC328CAC21"].sort(),
     );
@@ -320,6 +324,149 @@ describe("rebuildFirmware through an uncompressed encapsulation", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.refusals.map((refusal) => refusal.code)).toEqual(["compressed-section"]);
+  });
+});
+
+describe("rebuildFirmware when the payload sits behind a wrapper section of its own file", () => {
+  const raw = (hii: Uint8Array) => sectionStream(freeformSection(HII_GUID, hii));
+  const setupWrapped = (section: Uint8Array) =>
+    firmwareVolume([{ guid: "899407D7-99FE-43D8-9A21-79EC328CAC21", attributes: checksummed, body: sectionStream(section) }]);
+
+  it("rebuilds through an uncompressed wrapper and repairs the Setup file that holds it", async () => {
+    const image = setupWrapped(guidDefinedSection(PASS_THROUGH_GUID, 0, raw(payloads.hii)));
+    const graph = await graphOf(image);
+    expect(graph.artifacts[0].bufferId).toBe(1);
+    expect(graph.artifacts[0].sourceFile.bufferId).toBe(0);
+    const edit = flipEdit(graph, "setup-hii", 10);
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit]));
+
+    const file = graph.artifacts[0].sourceFile;
+    expect(sum8(rebuilt.image, file.bodyStart, file.end) + rebuilt.image[file.fileStart + 17]).toBe(256);
+    expect(rebuilt.changedBytes).toBe(4 + 1);
+    expect(await verifyByReextraction(graph, [edit], rebuilt.image)).toEqual([]);
+  });
+
+  it("names the compression, not a missing file, when that wrapper is compressed", async () => {
+    const image = setupWrapped(compressionSection(2, raw(payloads.hii).length, raw(payloads.hii)));
+    const graph = await graphOf(image, identityDecompression);
+
+    const result = rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 10)]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusals.map((refusal) => refusal.code)).toEqual(["compressed-section"]);
+  });
+
+  it("names the wrapper's own data, not a missing file, when it carries a checksum", async () => {
+    const image = setupWrapped(guidDefinedSection(PASS_THROUGH_GUID, 0, raw(payloads.hii), new Uint8Array([9, 9, 9, 9])));
+    const graph = await graphOf(image);
+
+    const result = rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 10)]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusals.map((refusal) => refusal.code)).toEqual(["unsupported-section"]);
+  });
+});
+
+describe("rebuildFirmware across three levels", () => {
+  it("repairs a file at every level and still changes only the edit and the one checksum that moved", async () => {
+    const innermost = firmwareVolume(setupFiles(payloads, 0));
+    const middle = firmwareVolume([
+      { guid: "AAAAAAAA-0000-0000-0000-000000000001", attributes: checksummed, body: sectionStream(guidDefinedSection(PASS_THROUGH_GUID, 0, innermost)) },
+    ]);
+    const outer = firmwareVolume([
+      { guid: "AAAAAAAA-0000-0000-0000-000000000002", attributes: checksummed, body: sectionStream(guidDefinedSection(PASS_THROUGH_GUID, 0, middle)) },
+    ]);
+    const graph = await graphOf(outer);
+    expect(graph.buffers.map((buffer) => buffer.depth)).toEqual([0, 1, 2]);
+    const edit = flipEdit(graph, "setup-hii", 6);
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit]));
+
+    expect(rebuilt.repairedFiles.map((file) => file.bufferId).sort()).toEqual([0, 1, 2]);
+    // The middle file's checksum moves; the outer one's compensates it.
+    expect(rebuilt.changedBytes).toBe(4 + 1);
+    expect(verifyRebuiltFirmware(graph, [edit], rebuilt)).toEqual([]);
+    expect(await verifyByReextraction(graph, [edit], rebuilt.image)).toEqual([]);
+  });
+});
+
+describe("rebuildFirmware refuses paths it cannot account for", () => {
+  const inner = firmwareVolume(setupFiles(payloads, checksummed));
+  const nested = firmwareVolume([
+    { guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: sectionStream(guidDefinedSection(PASS_THROUGH_GUID, 0, inner)) },
+  ]);
+
+  it("refuses a section that is not inside an FFS file of the image", async () => {
+    const graph = await graphOf(nested);
+    const child = graph.buffers[1];
+    const broken: FirmwareProvenanceGraph = {
+      ...graph,
+      buffers: [graph.buffers[0], { ...child, parent: child.parent && { ...child.parent, ownerFile: undefined } }],
+    };
+
+    const result = rebuildFirmware(broken, [flipEdit(broken, "setup-hii", 6)]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusals.map((refusal) => refusal.code)).toEqual(["incomplete-path"]);
+  });
+
+  it("refuses an edit made from outside a section that another edit rebuilds", async () => {
+    const graph = await graphOf(nested);
+    const parent = graph.buffers[1].parent;
+    if (!parent?.ownerFile) throw new Error("no edge");
+    // An artifact in the outer buffer that lies inside the wrapped section.
+    const inside = {
+      kind: "amitse" as const,
+      bufferId: 0,
+      payloadStart: parent.payloadStart + 10,
+      payloadEnd: parent.payloadStart + 20,
+      sourceFile: parent.ownerFile,
+    };
+    const crowded: FirmwareProvenanceGraph = { ...graph, artifacts: [...graph.artifacts, inside] };
+    const outside: ArtifactEdit = {
+      artifactIndex: crowded.artifacts.length - 1,
+      offset: 0,
+      expected: graph.buffers[0].bytes.slice(inside.payloadStart, inside.payloadStart + 2),
+      replacement: new Uint8Array([0xde, 0xad]),
+    };
+
+    const result = rebuildFirmware(crowded, [flipEdit(crowded, "setup-hii", 6), outside]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusals.map((refusal) => refusal.code)).toContain("conflicting-edit");
+  });
+
+  it("does not map offsets through a compressed section when verifying", async () => {
+    const image = firmwareVolume([
+      { guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: sectionStream(compressionSection(2, inner.length, inner)) },
+    ]);
+    const graph = await graphOf(image, identityDecompression);
+    const edit = flipEdit(graph, "setup-hii", 6);
+    const source = graph.buffers[0].bytes;
+
+    const problems = verifyRebuiltFirmware(graph, [edit], {
+      image: source.slice(),
+      changedRanges: [],
+      changedBytes: 0,
+      repairedFiles: [],
+    });
+
+    expect(problems.join(" ")).toMatch(/cannot be placed/);
+  });
+});
+
+describe("rebuildFirmware with 32-byte FFS headers", () => {
+  it("repairs a large-file header and leaves its large-file bit alone", async () => {
+    const files = setupFiles(payloads, checksummed | FFS_ATTRIB_TAIL_PRESENT);
+    files[0].extendedHeader = true;
+    const graph = await graphOf(firmwareVolume(files));
+    expect(graph.artifacts[0].sourceFile.headerSize).toBe(32);
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 10)]));
+
+    expect(rebuilt.changedBytes).toBe(4 + 1);
+    expect(verifyRebuiltFirmware(graph, [flipEdit(graph, "setup-hii", 10)], rebuilt)).toEqual([]);
   });
 });
 

@@ -31,4 +31,11 @@ describe("biosRegionOf", () => {
       if (result.kind === "invalid") expect(result.reason.length).toBeGreaterThan(10);
     }
   });
+
+  it("does not switch the guard off for a descriptor header found at offset 0", () => {
+    const image = patternBytes(0x4000, 1);
+    new DataView(image.buffer).setUint32(0, 0x0ff0a55a, true);
+
+    expect(biosRegionOf(image)).toMatchObject({ kind: "invalid" });
+  });
 });

@@ -9,6 +9,7 @@ import { biosRegionOf } from "./flashDescriptor";
 import {
   assessFirmwareReconstruction,
   type FirmwareArtifactKind,
+  type FirmwareArtifactLocation,
   type FirmwareBufferNode,
   type FirmwareEncapsulationEdge,
   type FirmwareFileReference,
@@ -95,14 +96,15 @@ function fileKey(file: FirmwareFileReference) {
   return `${String(file.bufferId)}:${String(file.fileStart)}`;
 }
 
-// Where a byte of a decoded buffer sits in the whole image. Valid only while
-// every edge on the way is uncompressed, which is checked before it is used.
+// Where a byte of a decoded buffer sits in the whole image, or null when a
+// compressed edge stands in the way (the decoded offsets mean nothing there).
 function rootOffsetOf(nodes: Map<number, FirmwareBufferNode>, rootId: number, bufferId: number, offset: number) {
   let id = bufferId;
   let result = offset;
   for (let hops = 0; hops <= nodes.size && id !== rootId; hops++) {
     const edge = nodes.get(id)?.parent;
-    if (!edge) return null;
+    // A compressed edge's offsets are inside the decoded stream, not the image.
+    if (edge?.compression !== "none") return null;
     result += edge.payloadStart;
     id = edge.parentBufferId;
   }
@@ -150,6 +152,57 @@ function checkEdge(
     };
   }
   return null;
+}
+
+interface ArtifactPath {
+  // Every buffer from the artifact's own up to, but not including, the image.
+  bufferIds: number[];
+  // The FFS files whose data checksum depends on the artifact's bytes.
+  files: FirmwareFileReference[];
+  refusals: RebuildRefusal[];
+}
+
+// What an edit to this artifact touches on the way back to the source image:
+// the buffers to copy upward, the FFS files to repair, and why the path cannot
+// be rebuilt if it cannot. Used both to rebuild and to verify, so the two agree
+// on which files must be consistent without sharing the rebuild's bookkeeping.
+function pathOf(
+  nodes: Map<number, FirmwareBufferNode>,
+  rootId: number,
+  artifact: FirmwareArtifactLocation,
+): ArtifactPath {
+  const path: ArtifactPath = { bufferIds: [], files: [], refusals: [] };
+  let id = artifact.bufferId;
+  for (let hops = 0; hops <= nodes.size && id !== rootId; hops++) {
+    const node = nodes.get(id);
+    const edge = node?.parent;
+    if (!node || !edge) break;
+    path.bufferIds.push(id);
+    const problem = checkEdge(edge, node);
+    if (problem) path.refusals.push(problem);
+    if (edge.ownerFile) {
+      path.files.push(edge.ownerFile);
+    } else if (edge.parentBufferId === rootId) {
+      // A section directly in the image with no FFS file around it has no
+      // data checksum to repair; the extractor never produces one, so refuse.
+      path.refusals.push({
+        code: "incomplete-path",
+        message: `The section at ${hex(edge.sectionStart)} of the image is not inside an FFS file.`,
+      });
+    }
+    id = edge.parentBufferId;
+  }
+  // A file in the artifact's own buffer holds the payload directly. A file in
+  // an ancestor must be one the walk already reached as an owner.
+  if (artifact.sourceFile.bufferId === artifact.bufferId) {
+    path.files.push(artifact.sourceFile);
+  } else if (!path.files.some((file) => fileKey(file) === fileKey(artifact.sourceFile))) {
+    path.refusals.push({
+      code: "source-file-elsewhere",
+      message: `The ${artifact.kind} payload's file is not on its path back to the image.`,
+    });
+  }
+  return path;
 }
 
 function mergeRanges(offsets: number[]): ByteRange[] {
@@ -238,31 +291,18 @@ export function rebuildFirmware(graph: FirmwareProvenanceGraph, edits: ArtifactE
   // has to be copied into its parent, found by walking each edited artifact
   // back to the source image.
   const files = new Map<string, FirmwareFileReference>();
-  const affected = new Set<number>();
-  const checkedEdges = new Set<number>();
+  const affected = new Set<number>([graph.rootBufferId]);
+  const reported = new Set<string>();
   for (const item of valid) {
-    const artifact = graph.artifacts[item.edit.artifactIndex];
-    if (artifact.sourceFile.bufferId !== artifact.bufferId) {
-      refuse("source-file-elsewhere", `The ${artifact.kind} payload is not inside a file of its own buffer.`);
-      continue;
+    const path = pathOf(nodes, graph.rootBufferId, graph.artifacts[item.edit.artifactIndex]);
+    for (const problem of path.refusals) {
+      if (reported.has(problem.message)) continue;
+      reported.add(problem.message);
+      refusals.push(problem);
     }
-    files.set(fileKey(artifact.sourceFile), artifact.sourceFile);
-    let id = item.bufferId;
-    for (let hops = 0; hops <= nodes.size && id !== graph.rootBufferId; hops++) {
-      affected.add(id);
-      const node = nodes.get(id);
-      const edge = node?.parent;
-      if (!node || !edge) break;
-      if (!checkedEdges.has(id)) {
-        checkedEdges.add(id);
-        const problem = checkEdge(edge, node);
-        if (problem) refusals.push(problem);
-      }
-      if (edge.ownerFile) files.set(fileKey(edge.ownerFile), edge.ownerFile);
-      id = edge.parentBufferId;
-    }
+    for (const id of path.bufferIds) affected.add(id);
+    for (const file of path.files) files.set(fileKey(file), file);
   }
-  affected.add(graph.rootBufferId);
 
   if (valid.length > 0 && refusals.length === 0) {
     const region = biosRegionOf(root.bytes);
@@ -384,23 +424,44 @@ export function verifyRebuiltFirmware(
   }
 
   const allowed = new Set<number>();
+  const expectedFiles = new Map<string, FirmwareFileReference>();
   for (const [position, edit] of edits.entries()) {
     const artifact = graph.artifacts[edit.artifactIndex] as (typeof graph.artifacts)[number] | undefined;
     if (!artifact) continue;
     const start = rootOffsetOf(nodes, graph.rootBufferId, artifact.bufferId, artifact.payloadStart + edit.offset);
-    if (start === null) continue;
+    if (start === null) {
+      problems.push(`Edit ${String(position + 1)} cannot be placed in the image: its path is compressed or incomplete.`);
+      continue;
+    }
     for (let index = 0; index < edit.replacement.length; index++) allowed.add(start + index);
     if (!sameBytes(rebuilt.image.subarray(start, start + edit.replacement.length), edit.replacement)) {
       problems.push(`The replacement of edit ${String(position + 1)} is not in place at ${hex(start)} of the rebuilt image.`);
     }
+    for (const file of pathOf(nodes, graph.rootBufferId, artifact).files) expectedFiles.set(fileKey(file), file);
   }
-  for (const file of rebuilt.repairedFiles) {
-    if (file.changed) allowed.add(file.checksumRootOffset);
-    if (!ffsHeaderChecksumValid(rebuilt.image, file.rootBounds)) {
-      problems.push(`The FFS file at ${hex(file.rootBounds.fileStart)} has an invalid header checksum in the rebuilt image.`);
+  // Every file the edits depend on must be consistent in the rebuilt image,
+  // whether or not the rebuild says it repaired it.
+  for (const file of expectedFiles.values()) {
+    const start = rootOffsetOf(nodes, graph.rootBufferId, file.bufferId, file.fileStart);
+    if (start === null) {
+      problems.push(`The FFS file at ${hex(file.fileStart)} of buffer ${String(file.bufferId)} cannot be placed in the image.`);
+      continue;
     }
-    if (!ffsFileChecksumValid(rebuilt.image, file.rootBounds)) {
-      problems.push(`The FFS file at ${hex(file.rootBounds.fileStart)} has an invalid data checksum in the rebuilt image.`);
+    const bounds: FfsFileBounds = {
+      fileStart: start,
+      bodyStart: start + (file.bodyStart - file.fileStart),
+      end: start + (file.end - file.fileStart),
+      headerSize: file.headerSize,
+    };
+    allowed.add(start + 17);
+    if (!ffsHeaderChecksumValid(rebuilt.image, bounds)) {
+      problems.push(`The FFS file at ${hex(start)} has an invalid header checksum in the rebuilt image.`);
+    }
+    if (!ffsFileChecksumValid(rebuilt.image, bounds)) {
+      problems.push(`The FFS file at ${hex(start)} has an invalid data checksum in the rebuilt image.`);
+    }
+    if (!rebuilt.repairedFiles.some((one) => one.bufferId === file.bufferId && one.fileStart === file.fileStart)) {
+      problems.push(`The FFS file at ${hex(start)} was not among the files the rebuild repaired.`);
     }
   }
 

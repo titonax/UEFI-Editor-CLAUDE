@@ -121,27 +121,40 @@ export interface FixtureFile {
   // Leave the stored checksums wrong, to prove they are checked.
   badHeaderChecksum?: boolean;
   badFileChecksum?: boolean;
+  // A 32-byte header (the 0xFFFFFF size escape plus an 8-byte size), as FFS3
+  // large files use. Attribute bit 0x01 then means "large file", not "tail".
+  extendedHeader?: boolean;
+  // Store 0x00 instead of the fixed 0xAA in a file without a data checksum.
+  oddFixedChecksum?: boolean;
 }
 
 function fileBytes(file: FixtureFile) {
-  const size = 24 + file.body.length;
+  const headerSize = file.extendedHeader ? 32 : 24;
+  const size = headerSize + file.body.length;
   const bytes = new Uint8Array(size);
   writeGuid(bytes, 0, file.guid);
   bytes[18] = file.type ?? 0x07;
   bytes[19] = file.attributes ?? 0;
-  writeUint24(bytes, 20, size);
+  if (file.extendedHeader) {
+    writeUint24(bytes, 20, 0xffffff);
+    new DataView(bytes.buffer).setBigUint64(24, BigInt(size), true);
+  } else {
+    writeUint24(bytes, 20, size);
+  }
   bytes[23] = 0xf8;
-  bytes.set(file.body, 24);
+  bytes.set(file.body, headerSize);
   // Header checksum: the header sums to zero with the file-checksum and state
   // bytes counted as zero.
-  const headerSum = sum8(bytes, 0, 24) - bytes[17] - bytes[23];
+  const headerSum = sum8(bytes, 0, headerSize) - bytes[17] - bytes[23];
   bytes[16] = (0x100 - (headerSum & 0xff)) & 0xff;
   if (file.badHeaderChecksum) bytes[16] ^= 0x5a;
   bytes[17] =
     ((file.attributes ?? 0) & FFS_ATTRIB_CHECKSUM) !== 0
-      ? (0x100 - sum8(bytes, 24, size)) & 0xff
+      ? (0x100 - sum8(bytes, headerSize, size)) & 0xff
       : 0xaa;
   if (file.badFileChecksum) bytes[17] ^= 0x33;
+  // A file that never had a data checksum but stores something other than 0xAA.
+  if (file.oddFixedChecksum) bytes[17] = 0x00;
   return bytes;
 }
 

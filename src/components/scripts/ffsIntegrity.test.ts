@@ -107,4 +107,27 @@ describe("repairFfsFileChecksum", () => {
       code: "unsupported-file-attributes",
     });
   });
+
+  it("refuses a file without a data checksum whose stored byte is not the fixed 0xAA", () => {
+    const volume = volumeWith(0, { oddFixedChecksum: true });
+
+    expect(repairFfsFileChecksum(volume, volume.slice(), fileOf(volume))).toMatchObject({
+      ok: false,
+      code: "invalid-file-checksum",
+    });
+  });
+
+  it("repairs a 32-byte header file, and does not mistake its large-file bit for a tail", () => {
+    const volume = firmwareVolume([
+      { guid: SETUP_GUID, attributes: FFS_ATTRIB_CHECKSUM | FFS_ATTRIB_TAIL_PRESENT, body: patternBytes(40, 3), extendedHeader: true },
+    ]);
+    const size = 32 + 40;
+    const file = { fileStart, bodyStart: fileStart + 32, end: fileStart + size, headerSize: 32 };
+    expect(ffsHeaderChecksumValid(volume, file)).toBe(true);
+    const working = volume.slice();
+    working[file.bodyStart + 5] ^= 0xff;
+
+    expect(repairFfsFileChecksum(volume, working, file)).toMatchObject({ ok: true, changed: true });
+    expect(ffsFileChecksumValid(working, file)).toBe(true);
+  });
 });

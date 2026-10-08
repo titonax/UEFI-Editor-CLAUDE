@@ -8,6 +8,7 @@ export type BiosRegion =
   | { kind: "invalid"; reason: string };
 
 const descriptorSignatureOffset = 0x10;
+const descriptorSignature = 0x0ff0a55a;
 const blockSize = 0x1000;
 
 function u32(bytes: Uint8Array, offset: number) {
@@ -18,7 +19,13 @@ function u32(bytes: Uint8Array, offset: number) {
 // or vendor image and carries no region constraint; one that has it but whose
 // region cannot be read is reported as invalid, never guessed.
 export function biosRegionOf(image: Uint8Array): BiosRegion {
-  if (image.length < descriptorSignatureOffset + 4 || u32(image, descriptorSignatureOffset) !== 0x0ff0a55a) {
+  if (image.length >= 4 && u32(image, 0) === descriptorSignature) {
+    // The preflight and this reader look for the descriptor at 0x10. One found
+    // at 0 is a layout neither understands: refuse rather than assume the image
+    // has no region constraint.
+    return { kind: "invalid", reason: "An Intel flash descriptor signature at offset 0 is not a layout this reader understands." };
+  }
+  if (image.length < descriptorSignatureOffset + 4 || u32(image, descriptorSignatureOffset) !== descriptorSignature) {
     return { kind: "none" };
   }
   if (image.length < 0x18) {

@@ -31,16 +31,26 @@ payload, the bytes expected there and the replacement of the same length.
 3. The edited bytes are written into a copy of the artifact's buffer, the data
    checksum of the FFS file that holds them is repaired (`ffsIntegrity.ts`),
    the buffer is copied into its parent through the section, and the owning
-   FFS file there is repaired too, deepest first. Nothing changes length, so no
+   FFS file there is repaired too, deepest first. The payload may sit directly
+   in its file, behind a wrapper section of that file, or in a volume nested
+   inside another file; every FFS file on the path is repaired. A section that
+   is directly in the image with no FFS file around it is refused. Nothing changes length, so no
    section, file or volume header moves, and the volume header checksum is not
    affected.
 4. For a complete Intel SPI image the descriptor is read (`flashDescriptor.ts`)
    and only bytes inside the BIOS region may change. A descriptor whose region
-   cannot be read refuses the rebuild instead of assuming one.
+   cannot be read refuses the rebuild instead of assuming one. The signature is
+   looked for at offset 0x10, like the preflight does; one found at offset 0 is
+   refused as a layout nothing here understands. Whether real dumps ever differ
+   from that has not been checked against a real SPI image.
 5. The result is checked against the source (`verifyRebuiltFirmware`): same
    size, every changed byte explained by an edit or a repaired checksum, every
    replacement in place, every repaired file consistent. Any problem refuses the
    rebuild.
+
+`verifyRebuiltFirmware` does not take the rebuild's own list of repaired files on
+trust: it works out from the graph which FFS files the edits depend on and
+requires each to be consistent in the output (and to have been repaired).
 
 `verifyByReextraction` is the independent half: it reads the rebuilt image back
 with the real extractor and requires every artifact to be the source's artifact
@@ -53,8 +63,8 @@ With no edits the rebuilt image is the source image, byte for byte.
 An FFS header sums to zero with its file-checksum and state bytes counted as
 zero. A same-size edit never changes the header, so only the data checksum can
 move, and only for a file with the checksum attribute set (otherwise the byte
-is the fixed 0xAA). A source file whose own checksums were already wrong, or
-that carries a tail, is refused: the rebuild does not correct what it was not
+is the fixed 0xAA, which is checked in the source too). A source file whose own
+checksums were already wrong, or that carries a tail, is refused: the rebuild does not correct what it was not
 asked to touch. When the edit changes the data sum by exactly what an inner
 checksum byte compensates (an uncompressed volume inside a file), the outer
 checksum legitimately does not change.

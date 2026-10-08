@@ -100,15 +100,16 @@ export function repairFfsFileChecksum(
   }
   const offset = file.fileStart + fileChecksumOffset;
   const before = working[offset];
-  if ((attributes & checksumAttribute) === 0) {
-    return { ok: true, changed: false, before, after: before, checksumOffset: offset };
-  }
   if (!ffsFileChecksumValid(original, file)) {
     return {
       ok: false,
       code: "invalid-file-checksum",
       message: `The data checksum of the FFS file at ${at} is already wrong in the source image.`,
     };
+  }
+  if ((attributes & checksumAttribute) === 0) {
+    // Nothing depends on the body: the byte is the fixed 0xAA, already checked.
+    return { ok: true, changed: false, before, after: before, checksumOffset: offset };
   }
   const after = expectedFfsFileChecksum(working, file);
   working[offset] = after;
