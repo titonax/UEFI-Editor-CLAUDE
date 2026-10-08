@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { patternBytes } from "./firmwareImageFixtures";
 import { referenceTianoAvailable, referenceTianoDecode } from "./referenceTiano";
-import { decodeTiano, encodeTiano, readTianoHeader, type TianoVariant } from "./tianoCodec";
+import { TianoDecodeError, decodeTiano, encodeTiano, readTianoHeader, type TianoVariant } from "./tianoCodec";
 
 const hasReference = await referenceTianoAvailable();
 const variants: TianoVariant[] = ["efi", "tiano"];
@@ -50,6 +50,38 @@ const samples: [string, () => Uint8Array][] = [
   ["a long run then noise", () => Uint8Array.from([...new Uint8Array(600).fill(7), ...randomBytes(200, 5)])],
   ["every byte value in order", () => Uint8Array.from({ length: 512 }, (_, index) => index & 0xff)],
 ];
+
+describe("the reference decoder", () => {
+  it("is available wherever CI runs, so the independent checks cannot vanish unnoticed", () => {
+    // Locally a machine without gcc skips the C-decoder tests, visibly; in CI
+    // (GitHub sets CI=true) a skip would hide the only independent oracle.
+    if (process.env.CI) expect(hasReference).toBe(true);
+  });
+});
+
+// Fixed streams: the encoder is deterministic, and a change to what it writes
+// (which moves the rebuild and its own "canonical" check together) must be a
+// decision, not an accident. Each is also read by the C decoder when present.
+const golden: Record<TianoVariant, string> = {
+  efi: "1c0000002900000000153b8a86150310b01ca36791f18a0026dc6517936d38576e849904",
+  tiano: "1c0000002900000000153b8a86150310b01ca36791f18500136e328bc9b69c2bb7424c82",
+};
+const goldenText = new TextEncoder().encode("setup setup setup advanced advanced boot ");
+const hexOf = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+describe("golden streams", () => {
+  for (const variant of variants) {
+    it(`writes the same ${variant} bytes as before`, () => {
+      expect(hexOf(encodeTiano(goldenText, variant))).toBe(golden[variant]);
+    });
+
+    it.skipIf(!hasReference)(`has its ${variant} golden stream read by the C decoder`, async () => {
+      const stream = Uint8Array.from(golden[variant].match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+
+      expectSameBytes(await referenceTianoDecode(stream, variant), goldenText);
+    });
+  }
+});
 
 describe("encodeTiano / decodeTiano", () => {
   for (const variant of variants) {
@@ -131,6 +163,29 @@ describe("decodeTiano on bad streams", () => {
     }
     const intact = result !== null && result.length === data.length && result.every((byte, index) => byte === data[index]);
     expect(intact).toBe(false);
+  });
+
+  it("refuses a block size that cannot advance", () => {
+    for (const blockSymbols of [0, -1, Number.NaN, 1.5]) {
+      expect(() => encodeTiano(Uint8Array.of(1, 2, 3), "efi", { blockSymbols })).toThrow(/blockSymbols/);
+    }
+  });
+
+  it("tells a rejection the C decoder shares from one it does not", () => {
+    const stream = encodeTiano(structured(2000), "efi").slice();
+    const header = new DataView(stream.buffer);
+    header.setUint32(0, stream.length, true); // packed size beyond the data
+    const shared = (bytes: Uint8Array) => {
+      try {
+        decodeTiano(bytes, "efi");
+      } catch (error) {
+        return error instanceof TianoDecodeError ? error.sharedWithReference : undefined;
+      }
+      return undefined;
+    };
+
+    expect(shared(stream)).toBe(true); // truncated: the C decoder rejects it too
+    expect(shared(Uint8Array.of(1, 2))).toBe(true); // shorter than the header
   });
 
   it("rejects a corrupted code table instead of looping or reading past the end", () => {

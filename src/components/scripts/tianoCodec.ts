@@ -39,6 +39,26 @@ const variants: Record<TianoVariant, { positionCountBits: number; windowBits: nu
   tiano: { positionCountBits: 5, windowBits: 19 },
 };
 
+// Largest output the project's decoder wrapper (tools/tiano-wasi/main.c) will
+// produce; this codec refuses the same, so a header cannot ask for gigabytes.
+export const maxTianoOutput = 64 * 1024 * 1024;
+
+// A stream this codec cannot read. `sharedWithReference` says whether the
+// project's C decoder rejects the same input at the same point. This decoder
+// is stricter than that one in places (an all-zero length table, a block that
+// declares no symbols, running past the end of the data), where the C decoder
+// goes on and returns bytes: a rejection that is not shared proves nothing
+// about what the C decoder would do.
+export class TianoDecodeError extends Error {
+  readonly sharedWithReference: boolean;
+
+  constructor(message: string, sharedWithReference: boolean) {
+    super(message);
+    this.name = "TianoDecodeError";
+    this.sharedWithReference = sharedWithReference;
+  }
+}
+
 export interface TianoHeader {
   // Bytes after the header that belong to the stream.
   packedSize: number;
@@ -76,7 +96,7 @@ class BitReader {
 
   skip(count: number) {
     this.position += count;
-    if (this.position > this.limit) throw new Error("The compressed data ends before the stream does.");
+    if (this.position > this.limit) throw new TianoDecodeError("The compressed data ends before the stream does.", false);
   }
 
   read(count: number): number {
@@ -99,13 +119,17 @@ interface CodeDecoder {
 function makeDecoder(lengths: number[]): CodeDecoder {
   const counts = new Array<number>(maxCodeLength + 1).fill(0);
   for (const length of lengths) {
-    if (length > maxCodeLength) throw new Error("A code length is longer than 16 bits.");
+    if (length > maxCodeLength) throw new TianoDecodeError("A code length is longer than 16 bits.", true);
     counts[length]++;
   }
   counts[0] = 0;
   let kraft = 0;
   for (let length = 1; length <= maxCodeLength; length++) kraft += counts[length] * 2 ** (maxCodeLength - length);
-  if (kraft !== 2 ** maxCodeLength) throw new Error("A code table is not a complete prefix code.");
+  if (kraft !== 2 ** maxCodeLength) {
+    // The C decoder only rejects a table whose code space does not add up to a
+    // multiple of 2^16; an empty table, for one, it accepts.
+    throw new TianoDecodeError("A code table is not a complete prefix code.", kraft % 2 ** maxCodeLength !== 0);
+  }
   const first = new Array<number>(maxCodeLength + 1).fill(0);
   const offset = new Array<number>(maxCodeLength + 1).fill(0);
   let code = 0;
@@ -130,7 +154,7 @@ function makeDecoder(lengths: number[]): CodeDecoder {
           return sorted[offset[length] + delta];
         }
       }
-      throw new Error("The compressed data holds a code that is in no table.");
+      throw new TianoDecodeError("The compressed data holds a code that is in no table.", false);
     },
   };
 }
@@ -144,7 +168,7 @@ function readLengthTable(reader: BitReader, symbols: number, countBits: number, 
   const count = reader.read(countBits);
   if (count === 0) {
     const symbol = reader.read(countBits);
-    if (symbol >= symbols) throw new Error("A single-symbol table names a symbol that does not exist.");
+    if (symbol >= symbols) throw new TianoDecodeError("A single-symbol table names a symbol that does not exist.", false);
     return singleSymbol(symbol);
   }
   const lengths = new Array<number>(Math.max(symbols, positionSymbols)).fill(0);
@@ -154,7 +178,7 @@ function readLengthTable(reader: BitReader, symbols: number, countBits: number, 
     if (length === 7) {
       while (reader.read(1) === 1) {
         length++;
-        if (length > maxCodeLength) throw new Error("A code length is longer than 16 bits.");
+        if (length > maxCodeLength) throw new TianoDecodeError("A code length is longer than 16 bits.", true);
       }
     }
     lengths[index++] = length;
@@ -167,7 +191,7 @@ function readCharacterTable(reader: BitReader, extra: CodeDecoder): CodeDecoder 
   const count = reader.read(characterCountBits);
   if (count === 0) {
     const symbol = reader.read(characterCountBits);
-    if (symbol >= characterSymbols) throw new Error("A single-symbol table names a symbol that does not exist.");
+    if (symbol >= characterSymbols) throw new TianoDecodeError("A single-symbol table names a symbol that does not exist.", false);
     return singleSymbol(symbol);
   }
   const lengths = new Array<number>(characterSymbols).fill(0);
@@ -186,11 +210,14 @@ function readCharacterTable(reader: BitReader, extra: CodeDecoder): CodeDecoder 
 
 export function decodeTiano(stream: Uint8Array, variant: TianoVariant): Uint8Array {
   const header = readTianoHeader(stream);
-  if (!header) throw new Error("The stream is shorter than its 8-byte header.");
+  if (!header) throw new TianoDecodeError("The stream is shorter than its 8-byte header.", true);
   if (stream.length < header.packedSize + headerBytes) {
-    throw new Error("The stream is shorter than its header says (truncated).");
+    throw new TianoDecodeError("The stream is shorter than its header says (truncated).", true);
   }
   const { originalSize } = header;
+  if (originalSize > maxTianoOutput) {
+    throw new TianoDecodeError(`The header declares ${String(originalSize)} bytes, more than the ${String(maxTianoOutput)} the decoder produces.`, true);
+  }
   const output = new Uint8Array(originalSize);
   if (originalSize === 0) return output;
   const reader = new BitReader(stream.subarray(headerBytes, headerBytes + header.packedSize));
@@ -202,13 +229,13 @@ export function decodeTiano(stream: Uint8Array, variant: TianoVariant): Uint8Arr
   while (position < originalSize) {
     if (blockLeft === 0) {
       blockLeft = reader.read(16);
-      if (blockLeft === 0) throw new Error("A block declares no symbols.");
+      if (blockLeft === 0) throw new TianoDecodeError("A block declares no symbols.", false);
       const extra = readLengthTable(reader, extraSymbols, extraCountBits, 3);
       characters = readCharacterTable(reader, extra);
       positions = readLengthTable(reader, positionSymbols, positionCountBits, -1);
     }
     blockLeft--;
-    if (!characters || !positions) throw new Error("A block has no tables.");
+    if (!characters || !positions) throw new TianoDecodeError("A block has no tables.", false);
     const symbol = characters.decode(reader);
     if (symbol < 256) {
       output[position++] = symbol;
@@ -218,7 +245,7 @@ export function decodeTiano(stream: Uint8Array, variant: TianoVariant): Uint8Arr
     const positionSymbol = positions.decode(reader);
     const back = positionSymbol > 1 ? 2 ** (positionSymbol - 1) + reader.read(positionSymbol - 1) : positionSymbol;
     let source = position - back - 1;
-    if (source < 0) throw new Error("A match points before the start of the data.");
+    if (source < 0) throw new TianoDecodeError("A match points before the start of the data.", true);
     for (let copied = 0; copied < length && position < originalSize; copied++) output[position++] = output[source++];
   }
   return output;
@@ -437,7 +464,14 @@ export interface TianoEncodeOptions {
 
 export function encodeTiano(data: Uint8Array, variant: TianoVariant, options: TianoEncodeOptions = {}): Uint8Array {
   if (data.length === 0) throw new Error("There is nothing to compress: the data is empty.");
-  const blockSymbols = Math.min(65535, options.blockSymbols ?? defaultBlockSymbols);
+  if (data.length > maxTianoOutput) {
+    throw new Error(`The data is ${String(data.length)} bytes; the decoder produces at most ${String(maxTianoOutput)}.`);
+  }
+  const requested = options.blockSymbols ?? defaultBlockSymbols;
+  if (!Number.isInteger(requested) || requested < 1) {
+    throw new Error(`blockSymbols must be a whole number of at least 1, not ${String(requested)}.`);
+  }
+  const blockSymbols = Math.min(65535, requested);
   const { positionCountBits, windowBits } = variants[variant];
   const tokens = parse(data, windowBits);
   const writer = new BitWriter();

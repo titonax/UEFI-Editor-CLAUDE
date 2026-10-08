@@ -24,3 +24,6 @@ declare module "node:os" {
 declare module "node:path" {
   export function join(...parts: string[]): string;
 }
+
+// Only to ask whether the run is in CI (see tianoCodec.test.ts).
+declare const process: { env: Record<string, string | undefined> };

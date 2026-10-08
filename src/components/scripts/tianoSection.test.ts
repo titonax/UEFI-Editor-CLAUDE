@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { builtInTianoCodec, reencodeTiano, tianoStreamProblems, type TianoCodec } from "./tianoSection";
-import { decodeTiano, encodeTiano, type TianoVariant } from "./tianoCodec";
+import { referenceTianoAvailable, referenceTianoDecode } from "./referenceTiano";
+import { TianoDecodeError, decodeTiano, encodeTiano, type TianoVariant } from "./tianoCodec";
+
+const hasReference = await referenceTianoAvailable();
 
 function text(length: number) {
   return Uint8Array.from({ length }, (_, index) => 0x20 + ((index * index + index) % 61));
@@ -126,5 +129,113 @@ describe("tianoStreamProblems", () => {
     const problems = tianoStreamProblems(noisyOriginal, noisy, encodeTiano(noisyEdited, "efi"), noisyEdited, other);
 
     expect(problems.join("\n")).toMatch(/canonical/);
+  });
+});
+
+// Incompressible data has no matches, so the EFI stream's position table is
+// empty; the project's C decoder then reads it as a Tiano stream without
+// complaint and returns other bytes, while this codec's stricter Tiano decoder
+// throws. The data is the xorshift sequence that first showed it.
+function unprovenEfiStreams() {
+  const found: { bytes: Uint8Array; stream: Uint8Array }[] = [];
+  let state = 99;
+  const next = () => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state;
+  };
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const length = 1 + (next() % 4000);
+    const bytes = Uint8Array.from({ length }, (_, index) =>
+      attempt % 3 === 0 ? next() & 255 : attempt % 3 === 1 ? (index * 7) & 255 : next() % 5 === 0 ? next() & 255 : 65 + (index % 11),
+    );
+    const stream = encodeTiano(bytes, "efi");
+    try {
+      decodeTiano(stream, "tiano");
+    } catch (error) {
+      if (error instanceof TianoDecodeError && !error.sharedWithReference) found.push({ bytes, stream });
+    }
+  }
+  if (found.length === 0) throw new Error("no such stream was found");
+  return found;
+}
+
+describe("an EFI stream the Tiano decoder of the extractor might accept", () => {
+  it("is reported rather than passed when this codec cannot show the C decoder rejects it", () => {
+    for (const { bytes, stream } of unprovenEfiStreams()) {
+      const problems = tianoStreamProblems(stream, bytes, stream, bytes);
+
+      expect(problems.join("\n")).toMatch(/cannot show that the project's decoder rejects/);
+    }
+  });
+
+  it.skipIf(!hasReference)("really is read by the C Tiano decoder as other bytes, which is why", async () => {
+    let misread = 0;
+    for (const { bytes, stream } of unprovenEfiStreams()) {
+      let read: Uint8Array;
+      try {
+        read = await referenceTianoDecode(stream, "tiano");
+      } catch {
+        continue; // this one the C decoder does reject
+      }
+      expect(read.length).toBe(bytes.length);
+      if (read.some((byte, index) => byte !== bytes[index])) misread++;
+    }
+
+    expect(misread).toBeGreaterThan(0);
+  });
+});
+
+describe("hostile headers and codec failures", () => {
+  it("does not allocate what a header asks for", () => {
+    const header = Uint8Array.of(0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff);
+
+    expect(() => decodeTiano(header, "efi")).toThrow(TianoDecodeError);
+    expect(() => decodeTiano(header, "efi")).toThrow(/more than/);
+  });
+
+  it("does not decode a rebuilt stream whose header already disagrees with the buffer", () => {
+    const original = encodeTiano(data, "efi");
+    const lying = encodeTiano(edited, "efi").slice();
+    new DataView(lying.buffer).setUint32(4, 0xffffffff, true);
+    let decodes = 0;
+    const counting: TianoCodec = {
+      encode: builtInTianoCodec.encode,
+      decode: (bytes, variant) => {
+        decodes++;
+        return decodeTiano(bytes, variant);
+      },
+    };
+
+    const problems = tianoStreamProblems(original, data, lying, edited, counting);
+
+    expect(problems.join("\n")).toMatch(/declares/);
+    expect(decodes).toBe(0);
+  });
+
+  it("names why neither variant read the original", () => {
+    const original = encodeTiano(data, "efi");
+
+    const result = reencodeTiano(original, edited, edited);
+
+    expect(result).toMatchObject({ ok: false, code: "tiano-variant" });
+    if (!result.ok) expect(result.message).toMatch(/efi: decodes to other bytes/);
+  });
+
+  it("reports a codec defect as a codec failure, not as an unknown variant", () => {
+    const original = encodeTiano(data, "efi");
+    const buggy: TianoCodec = {
+      encode: builtInTianoCodec.encode,
+      decode: () => {
+        throw new TypeError("Cannot read properties of undefined");
+      },
+    };
+
+    const result = reencodeTiano(original, data, edited, buggy);
+
+    expect(result).toMatchObject({ ok: false, code: "tiano-codec" });
   });
 });

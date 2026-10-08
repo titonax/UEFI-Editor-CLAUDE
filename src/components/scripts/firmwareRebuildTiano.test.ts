@@ -200,6 +200,18 @@ describe("rebuildFirmware through an EFI/Tiano section", () => {
     expect(await verifyByReextraction(graph, [edit], rebuilt.image, { decompress })).toEqual([]);
   });
 
+  it("rebuilds two edits in one volume, in two files, through one re-encode of their shared section", async () => {
+    const graph = await graphOf(wrapInTiano(innerVolume(), "tiano"));
+    const edits = [flipEdit(graph, "setup-hii", 100), flipEdit(graph, "amitse", 8, 4)];
+
+    const rebuilt = unwrap(rebuildFirmware(graph, edits));
+
+    expect(rebuilt.layoutChanges).toHaveLength(1);
+    expect(rebuilt.repairedFiles.length).toBeGreaterThanOrEqual(3);
+    expect(verifyRebuiltFirmware(graph, edits, rebuilt)).toEqual([]);
+    expect(await verifyByReextraction(graph, edits, rebuilt.image, { decompress })).toEqual([]);
+  });
+
   it("is deterministic", async () => {
     const graph = await graphOf(wrapInTiano(innerVolume(), "efi"));
     const edit = flipEdit(graph, "setup-hii", 100);

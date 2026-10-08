@@ -4,7 +4,7 @@
 // bytes, so the variant (EFI or Tiano) is not assumed: it is the one that
 // reads the ORIGINAL stream back to the original decoded bytes.
 
-import { decodeTiano, encodeTiano, readTianoHeader, type TianoVariant } from "./tianoCodec";
+import { TianoDecodeError, decodeTiano, encodeTiano, readTianoHeader, type TianoVariant } from "./tianoCodec";
 
 export interface TianoCodec {
   encode: (data: Uint8Array, variant: TianoVariant) => Uint8Array;
@@ -36,7 +36,11 @@ function reason(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-type Decoding = { ok: true; bytes: Uint8Array } | { ok: false; message: string };
+type Decoding =
+  | { ok: true; bytes: Uint8Array }
+  // `defect`: the codec failed in a way that is not "this is not a stream of
+  // this variant" (a bug, an exhausted resource), so nothing can be concluded.
+  | { ok: false; message: string; sharedWithReference: boolean; defect: boolean };
 
 // A decode attempt as a typed result: a stream one variant cannot parse is the
 // ordinary outcome of asking the wrong variant, not an exception to hide.
@@ -44,15 +48,24 @@ function decodeWith(codec: TianoCodec, stream: Uint8Array, variant: TianoVariant
   try {
     return { ok: true, bytes: codec.decode(stream, variant) };
   } catch (error) {
-    return { ok: false, message: reason(error) };
+    if (error instanceof TianoDecodeError) {
+      return { ok: false, message: error.message, sharedWithReference: error.sharedWithReference, defect: false };
+    }
+    return { ok: false, message: reason(error), sharedWithReference: false, defect: true };
   }
 }
 
-// The variants whose decoder reads `stream` back to exactly `decoded`.
-function variantsReading(stream: Uint8Array, decoded: Uint8Array, codec: TianoCodec): TianoVariant[] {
-  return variants.filter((variant) => {
-    const result = decodeWith(codec, stream, variant);
-    return result.ok && sameBytes(result.bytes, decoded);
+interface Reading {
+  variant: TianoVariant;
+  decoding: Decoding;
+  // Whether it decoded to exactly the expected bytes.
+  matches: boolean;
+}
+
+function readingsOf(stream: Uint8Array, decoded: Uint8Array, codec: TianoCodec): Reading[] {
+  return variants.map((variant) => {
+    const decoding = decodeWith(codec, stream, variant);
+    return { variant, decoding, matches: decoding.ok && sameBytes(decoding.bytes, decoded) };
   });
 }
 
@@ -81,12 +94,18 @@ function variantOfOriginal(originalStream: Uint8Array, originalDecoded: Uint8Arr
       message: `The original declares ${String(header.originalSize)} bytes; the image holds ${String(originalDecoded.length)}.`,
     };
   }
-  const reading = variantsReading(originalStream, originalDecoded, codec);
+  const readings = readingsOf(originalStream, originalDecoded, codec);
+  const defect = readings.find((one) => !one.decoding.ok && one.decoding.defect);
+  if (defect && !defect.decoding.ok) {
+    return { ok: false, code: "tiano-codec", message: `The EFI/Tiano codec failed on the original stream (${defect.variant}): ${defect.decoding.message}` };
+  }
+  const reading = readings.filter((one) => one.matches).map((one) => one.variant);
   if (reading.length === 0) {
+    const why = readings.map((one) => `${one.variant}: ${one.decoding.ok ? "decodes to other bytes" : one.decoding.message}`).join("; ");
     return {
       ok: false,
       code: "tiano-variant",
-      message: "Neither the EFI nor the Tiano decoder of this codec reads the original stream back to the bytes the image holds, so the variant the firmware uses is unknown.",
+      message: `Neither the EFI nor the Tiano decoder of this codec reads the original stream back to the bytes the image holds, so the variant the firmware uses is unknown (${why}).`,
     };
   }
   if (reading.length > 1) {
@@ -157,8 +176,15 @@ export function tianoStreamProblems(
   if (header.originalSize !== decoded.length) {
     problems.push(`The stream declares ${String(header.originalSize)} bytes of data; the buffer it carries has ${String(decoded.length)}.`);
   }
-  const reading = variantsReading(stream, decoded, codec);
-  if (reading.length === 0) problems.push("The stream does not decode to the buffer it is meant to carry.");
+  // A header that already disagrees is not worth decoding: its sizes would
+  // drive the allocation.
+  if (problems.length > 0) return problems;
+  const readings = readingsOf(stream, decoded, codec);
+  const reading = readings.filter((one) => one.matches).map((one) => one.variant);
+  if (reading.length === 0) {
+    const why = readings.map((one) => `${one.variant}: ${one.decoding.ok ? "decodes to other bytes" : one.decoding.message}`).join("; ");
+    problems.push(`The stream does not decode to the buffer it is meant to carry (${why}).`);
+  }
   const original = variantOfOriginal(originalStream, originalDecoded, codec);
   if (!original.ok) {
     problems.push(`The original stream cannot serve as the reference: ${original.message}`);
@@ -175,11 +201,20 @@ export function tianoStreamProblems(
   }
   // The project's extractor tries the Tiano decoder first and keeps the first
   // stream that parses. An EFI stream the Tiano decoder also accepts, to other
-  // bytes, would be misread there.
+  // bytes, would be misread there. This codec's Tiano decoder may reject a
+  // stream the project's C decoder accepts, so only a rejection both share
+  // counts as proof; anything else is left unproven and reported, to be settled
+  // by reading the image back with the real decoder.
   if (original.variant === "efi") {
     const misread = decodeWith(codec, stream, "tiano");
-    if (misread.ok && !sameBytes(misread.bytes, decoded)) {
-      problems.push("The extractor tries the Tiano decoder first, and it would read this EFI stream as different bytes.");
+    if (misread.ok) {
+      if (!sameBytes(misread.bytes, decoded)) {
+        problems.push("The extractor tries the Tiano decoder first, and it would read this EFI stream as different bytes.");
+      }
+    } else if (!misread.sharedWithReference) {
+      problems.push(
+        `The extractor tries the Tiano decoder first, and this codec cannot show that the project's decoder rejects this EFI stream (${misread.message}); it may read it as other bytes.`,
+      );
     }
   }
   return problems;
