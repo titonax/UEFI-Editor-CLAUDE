@@ -222,7 +222,7 @@ export function assessFirmwareReconstruction(
     blockers.push("At least one artifact has an incomplete path to the source image.");
   }
   if (compressions.includes("lzma")) {
-    blockers.push("Deterministic LZMA recompression is not implemented yet.");
+    blockers.push("LZMA recompression exists (firmwareRebuild.ts, a codec of LZMA-JS) but is not connected to the export yet.");
   }
   if (compressions.includes("standard")) {
     blockers.push("Deterministic EFI/Tiano recompression is not implemented yet.");

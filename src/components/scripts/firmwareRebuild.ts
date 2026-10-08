@@ -15,18 +15,25 @@ import {
   type FirmwareFileReference,
   type FirmwareProvenanceGraph,
 } from "./firmwareProvenance";
+import { readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
 
-// Full-image reconstruction, stage 1: same-size edits on a path where every
-// encapsulation is uncompressed. The edited bytes are written into the
-// artifact's decoded buffer, copied up through each uncompressed section into
-// its parent, and the data checksum of every FFS file on the way is repaired.
-// Nothing here changes a length, so no section, file or volume header moves.
+// Full-image reconstruction (stages 1 and 2): same-size edits to a decoded
+// artifact, carried back up to the source image. The edited bytes are written
+// into the artifact's decoded buffer, then copied up through each section into
+// its parent, repairing the data checksum of every FFS file on the way.
+//   - Through an uncompressed section the payload is copied back unchanged.
+//   - Through an LZMA section (when an LZMA codec is supplied) the buffer is
+//     re-encoded with the original's properties and dictionary. The section
+//     may change size only if it is the last one in its file and the bytes
+//     after it are erased (0xFF) padding; the file keeps its size.
+//   - EFI/Tiano sections are refused.
+// Every other length stays put, so no file or volume header moves.
 //
 // This module only builds and checks an image. Nothing calls it from the
 // export yet, and a rebuilt image proves the structure survived, not that the
-// firmware will boot: other integrity layers (vendor signatures, ME, Boot
-// Guard) are not known to this code, and a physical flash is the only test of
-// those.
+// firmware will boot: whether the platform's own LZMA decoder accepts the
+// re-encoded stream, and the other integrity layers (vendor signatures, ME,
+// Boot Guard), are not known to this code. A physical flash is the only test.
 
 export interface ArtifactEdit {
   // Index into `graph.artifacts`.
@@ -52,6 +59,11 @@ export type RebuildRefusalCode =
   | "invalid-file-header"
   | "invalid-file-checksum"
   | "unsupported-file-attributes"
+  | "lzma-recompression"
+  | "section-not-terminal"
+  | "lzma-does-not-fit"
+  | "lzma-padding-change"
+  | "section-too-large"
   | "descriptor-invalid"
   | "outside-bios-region"
   | "verification-failed";
@@ -59,6 +71,15 @@ export type RebuildRefusalCode =
 export interface RebuildRefusal {
   code: RebuildRefusalCode;
   message: string;
+}
+
+export interface RebuildCodecs {
+  // Without it, an LZMA section on the path is refused.
+  lzma?: LzmaCodec;
+}
+
+export interface RebuildOptions {
+  codecs?: RebuildCodecs;
 }
 
 export interface ByteRange {
@@ -70,18 +91,31 @@ export interface ByteRange {
 export interface RepairedFile {
   bufferId: number;
   guid: string;
+  // Offset of the file in its own decoded buffer.
   fileStart: number;
-  // The same file in the coordinates of the whole image.
-  rootBounds: FfsFileBounds;
-  checksumRootOffset: number;
   changed: boolean;
 }
 
+// One LZMA section that changed size inside its file.
+export interface LzmaLayoutChange {
+  parentBufferId: number;
+  sectionStart: number;
+  packedBefore: number;
+  packedAfter: number;
+  // Bytes of erased padding between the section and the end of its file.
+  paddingBefore: number;
+  paddingAfter: number;
+}
+
 export interface RebuiltFirmware {
+  // The whole image; the same bytes as `buffers.get(0)`.
   image: Uint8Array;
+  // Every decoded buffer the edits touched, rebuilt, by buffer id.
+  buffers: Map<number, Uint8Array>;
   changedRanges: ByteRange[];
   changedBytes: number;
   repairedFiles: RepairedFile[];
+  layoutChanges: LzmaLayoutChange[];
 }
 
 export type RebuildResult =
@@ -96,35 +130,39 @@ function fileKey(file: FirmwareFileReference) {
   return `${String(file.bufferId)}:${String(file.fileStart)}`;
 }
 
-// Where a byte of a decoded buffer sits in the whole image, or null when a
-// compressed edge stands in the way (the decoded offsets mean nothing there).
-function rootOffsetOf(nodes: Map<number, FirmwareBufferNode>, rootId: number, bufferId: number, offset: number) {
-  let id = bufferId;
-  let result = offset;
-  for (let hops = 0; hops <= nodes.size && id !== rootId; hops++) {
-    const edge = nodes.get(id)?.parent;
-    // A compressed edge's offsets are inside the decoded stream, not the image.
-    if (edge?.compression !== "none") return null;
-    result += edge.payloadStart;
-    id = edge.parentBufferId;
-  }
-  return id === rootId ? result : null;
-}
+const erased = 0xff;
+// Below this a parent cannot even hold a section header, so a tail that short
+// behaves the same however long it is.
+const sectionHeaderBytes = 4;
 
-function compressionName(edge: FirmwareEncapsulationEdge) {
-  return edge.compression === "lzma" ? "LZMA" : "EFI/Tiano";
+function allErased(bytes: Uint8Array, start: number, end: number) {
+  for (let index = start; index < end; index++) if (bytes[index] !== erased) return false;
+  return true;
 }
 
 function checkEdge(
   edge: FirmwareEncapsulationEdge,
   child: FirmwareBufferNode,
+  codecs: RebuildCodecs,
 ): RebuildRefusal | null {
   const at = `the section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
-  if (edge.compression !== "none") {
-    return {
-      code: "compressed-section",
-      message: `${at} is ${compressionName(edge)} compressed, and recompression is not implemented.`,
-    };
+  if (edge.compression === "standard") {
+    return { code: "compressed-section", message: `${at} is EFI/Tiano compressed, and that recompression is not implemented.` };
+  }
+  if (edge.compression === "lzma") {
+    if (!codecs.lzma) {
+      return { code: "compressed-section", message: `${at} is LZMA compressed and no LZMA codec was supplied.` };
+    }
+    if (edge.ownerFile?.bufferId !== edge.parentBufferId) {
+      return {
+        code: "incomplete-path",
+        message: `${at} is not inside an FFS file, so there is no file end to absorb a change of size.`,
+      };
+    }
+    if (edge.sectionType !== 0x01 && edge.sectionType !== 0x02) {
+      return { code: "unsupported-section", message: `${at} has type ${hex(edge.sectionType)}, which is not an LZMA wrapper this rebuild handles.` };
+    }
+    return null;
   }
   if (child.bytes.length !== edge.payloadEnd - edge.payloadStart) {
     return {
@@ -155,30 +193,32 @@ function checkEdge(
 }
 
 interface ArtifactPath {
-  // Every buffer from the artifact's own up to, but not including, the image.
-  bufferIds: number[];
+  // The buffers from the artifact's own up to, but not including, the image,
+  // each with the edge that joins it to its parent.
+  links: { childId: number; edge: FirmwareEncapsulationEdge }[];
   // The FFS files whose data checksum depends on the artifact's bytes.
   files: FirmwareFileReference[];
   refusals: RebuildRefusal[];
 }
 
 // What an edit to this artifact touches on the way back to the source image:
-// the buffers to copy upward, the FFS files to repair, and why the path cannot
-// be rebuilt if it cannot. Used both to rebuild and to verify, so the two agree
+// the links to rebuild, the FFS files to repair, and why the path cannot be
+// rebuilt if it cannot. Used both to rebuild and to verify, so the two agree
 // on which files must be consistent without sharing the rebuild's bookkeeping.
 function pathOf(
   nodes: Map<number, FirmwareBufferNode>,
   rootId: number,
   artifact: FirmwareArtifactLocation,
+  codecs: RebuildCodecs,
 ): ArtifactPath {
-  const path: ArtifactPath = { bufferIds: [], files: [], refusals: [] };
+  const path: ArtifactPath = { links: [], files: [], refusals: [] };
   let id = artifact.bufferId;
   for (let hops = 0; hops <= nodes.size && id !== rootId; hops++) {
     const node = nodes.get(id);
     const edge = node?.parent;
     if (!node || !edge) break;
-    path.bufferIds.push(id);
-    const problem = checkEdge(edge, node);
+    path.links.push({ childId: id, edge });
+    const problem = checkEdge(edge, node, codecs);
     if (problem) path.refusals.push(problem);
     if (edge.ownerFile) {
       path.files.push(edge.ownerFile);
@@ -225,13 +265,129 @@ function sameBytes(a: Uint8Array, b: Uint8Array) {
   return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
 
+function writeSectionSize(bytes: Uint8Array, edge: FirmwareEncapsulationEdge, size: number) {
+  if (edge.sectionHeaderSize === 4) {
+    bytes[edge.sectionStart] = size & 0xff;
+    bytes[edge.sectionStart + 1] = (size >>> 8) & 0xff;
+    bytes[edge.sectionStart + 2] = (size >>> 16) & 0xff;
+  } else {
+    new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(edge.sectionStart + 4, size, true);
+  }
+}
+
+function readSectionSize(bytes: Uint8Array, edge: FirmwareEncapsulationEdge) {
+  if (edge.sectionHeaderSize === 4) {
+    return bytes[edge.sectionStart] | (bytes[edge.sectionStart + 1] << 8) | (bytes[edge.sectionStart + 2] << 16);
+  }
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(edge.sectionStart + 4, true);
+}
+
+function alignUp4(value: number) {
+  return Math.ceil(value / 4) * 4;
+}
+
+// Padding is measured from where the next section would start: sections begin
+// on 4-byte boundaries, so a byte or two between a section and that boundary
+// is never looked at as a header.
+export function paddingAfterSection(sectionEnd: number, fileEnd: number) {
+  return Math.max(0, fileEnd - alignUp4(sectionEnd));
+}
+
+// Whether a change in the length of the erased padding after a section is
+// something the firmware has already shown it tolerates. With room for a
+// section header the parser has met this kind of padding; with less it never
+// looks, so the padding may change as long as it stays that short.
+export function paddingChangeAllowed(before: number, after: number) {
+  return before >= sectionHeaderBytes || after < sectionHeaderBytes;
+}
+
 interface ValidEdit {
   edit: ArtifactEdit;
   bufferId: number;
   bufferStart: number;
 }
 
-export function rebuildFirmware(graph: FirmwareProvenanceGraph, edits: ArtifactEdit[]): RebuildResult {
+type LzmaPropagation =
+  | { ok: true; change: LzmaLayoutChange }
+  | { ok: false; refusal: RebuildRefusal };
+
+// Writes the re-encoded LZMA stream of `childCopy` into `parentCopy` in place of
+// the section's original payload, resizing the section within its file.
+function propagateLzma(
+  edge: FirmwareEncapsulationEdge,
+  childCopy: Uint8Array,
+  parentOriginal: Uint8Array,
+  parentCopy: Uint8Array,
+  codec: LzmaCodec,
+): LzmaPropagation {
+  const owner = edge.ownerFile;
+  const at = `the LZMA section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
+  if (!owner) {
+    return { ok: false, refusal: { code: "incomplete-path", message: `${at} is not inside an FFS file.` } };
+  }
+  if (!allErased(parentOriginal, edge.sectionEnd, owner.end)) {
+    return {
+      ok: false,
+      refusal: {
+        code: "section-not-terminal",
+        message: `${at} is followed by data other than erased padding, so it cannot change size without moving it.`,
+      },
+    };
+  }
+  const reencoded = reencodeLzma(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd), childCopy, codec);
+  if (!reencoded.ok) {
+    return { ok: false, refusal: { code: "lzma-recompression", message: `${at}: ${reencoded.message}` } };
+  }
+  const stream = reencoded.stream;
+  const room = owner.end - edge.payloadStart;
+  if (stream.length > room) {
+    return {
+      ok: false,
+      refusal: {
+        code: "lzma-does-not-fit",
+        message: `${at} would need ${String(stream.length)} bytes and its file has room for ${String(room)}.`,
+      },
+    };
+  }
+  const paddingBefore = owner.end - edge.sectionEnd;
+  const paddingAfter = room - stream.length;
+  const alignedBefore = paddingAfterSection(edge.sectionEnd, owner.end);
+  const alignedAfter = paddingAfterSection(edge.payloadStart + stream.length, owner.end);
+  if (!paddingChangeAllowed(alignedBefore, alignedAfter)) {
+    return {
+      ok: false,
+      refusal: {
+        code: "lzma-padding-change",
+        message: `${at} would leave ${String(alignedAfter)} bytes of padding where there were ${String(alignedBefore)}, which would create padding the firmware has not shown it tolerates.`,
+      },
+    };
+  }
+  const size = edge.payloadStart - edge.sectionStart + stream.length;
+  if (edge.sectionHeaderSize === 4 && size >= 0xffffff) {
+    return { ok: false, refusal: { code: "section-too-large", message: `${at} would not fit a 4-byte section header.` } };
+  }
+  parentCopy.fill(erased, edge.payloadStart, owner.end);
+  parentCopy.set(stream, edge.payloadStart);
+  writeSectionSize(parentCopy, edge, size);
+  return {
+    ok: true,
+    change: {
+      parentBufferId: edge.parentBufferId,
+      sectionStart: edge.sectionStart,
+      packedBefore: edge.payloadEnd - edge.payloadStart,
+      packedAfter: stream.length,
+      paddingBefore,
+      paddingAfter,
+    },
+  };
+}
+
+export function rebuildFirmware(
+  graph: FirmwareProvenanceGraph,
+  edits: ArtifactEdit[],
+  options: RebuildOptions = {},
+): RebuildResult {
+  const codecs = options.codecs ?? {};
   const refusals: RebuildRefusal[] = [];
   const refuse = (code: RebuildRefusalCode, message: string) => refusals.push({ code, message });
   const nodes = new Map(graph.buffers.map((node) => [node.id, node]));
@@ -294,13 +450,13 @@ export function rebuildFirmware(graph: FirmwareProvenanceGraph, edits: ArtifactE
   const affected = new Set<number>([graph.rootBufferId]);
   const reported = new Set<string>();
   for (const item of valid) {
-    const path = pathOf(nodes, graph.rootBufferId, graph.artifacts[item.edit.artifactIndex]);
+    const path = pathOf(nodes, graph.rootBufferId, graph.artifacts[item.edit.artifactIndex], codecs);
     for (const problem of path.refusals) {
       if (reported.has(problem.message)) continue;
       reported.add(problem.message);
       refusals.push(problem);
     }
-    for (const id of path.bufferIds) affected.add(id);
+    for (const link of path.links) affected.add(link.childId);
     for (const file of path.files) files.set(fileKey(file), file);
   }
 
@@ -310,7 +466,18 @@ export function rebuildFirmware(graph: FirmwareProvenanceGraph, edits: ArtifactE
   }
   if (refusals.length > 0) return { ok: false, refusals };
   if (valid.length === 0) {
-    return { ok: true, value: { image: root.bytes.slice(), changedRanges: [], changedBytes: 0, repairedFiles: [] } };
+    const image = root.bytes.slice();
+    return {
+      ok: true,
+      value: {
+        image,
+        buffers: new Map([[graph.rootBufferId, image]]),
+        changedRanges: [],
+        changedBytes: 0,
+        repairedFiles: [],
+        layoutChanges: [],
+      },
+    };
   }
 
   const copies = new Map<number, Uint8Array>();
@@ -327,6 +494,7 @@ export function rebuildFirmware(graph: FirmwareProvenanceGraph, edits: ArtifactE
   for (const item of valid) copyOf(item.bufferId).set(item.edit.replacement, item.bufferStart);
 
   const repairedFiles: RepairedFile[] = [];
+  const layoutChanges: LzmaLayoutChange[] = [];
   const deepestFirst = [...affected].sort((left, right) => (nodes.get(right)?.depth ?? 0) - (nodes.get(left)?.depth ?? 0));
   for (const id of deepestFirst) {
     const node = nodes.get(id);
@@ -339,41 +507,33 @@ export function rebuildFirmware(graph: FirmwareProvenanceGraph, edits: ArtifactE
         refuse(repair.code, repair.message);
         continue;
       }
-      const rootStart = rootOffsetOf(nodes, graph.rootBufferId, id, file.fileStart);
-      if (rootStart === null) {
-        refuse("incomplete-path", `The FFS file at ${hex(file.fileStart)} of buffer ${String(id)} cannot be placed in the image.`);
-        continue;
-      }
-      repairedFiles.push({
-        bufferId: id,
-        guid: file.guid,
-        fileStart: file.fileStart,
-        rootBounds: {
-          fileStart: rootStart,
-          bodyStart: rootStart + (file.bodyStart - file.fileStart),
-          end: rootStart + (file.end - file.fileStart),
-          headerSize: file.headerSize,
-        },
-        checksumRootOffset: rootStart + (repair.checksumOffset - file.fileStart),
-        changed: repair.changed,
-      });
+      repairedFiles.push({ bufferId: id, guid: file.guid, fileStart: file.fileStart, changed: repair.changed });
     }
     const edge = node.parent;
-    if (edge) {
-      const parentOriginal = nodes.get(edge.parentBufferId);
-      const parentCopy = copyOf(edge.parentBufferId);
-      // The section being rebuilt must still be untouched in its parent: an
-      // edit that landed inside it from outside would be overwritten here.
-      if (
-        !parentOriginal ||
-        !sameBytes(
-          parentCopy.subarray(edge.payloadStart, edge.payloadEnd),
-          parentOriginal.bytes.subarray(edge.payloadStart, edge.payloadEnd),
-        )
-      ) {
-        refuse("conflicting-edit", `An edit lands inside the section at ${hex(edge.sectionStart)} that another edit rebuilds.`);
-        continue;
-      }
+    if (!edge) continue;
+    // A buffer no edit actually changed leaves its section exactly as the
+    // vendor wrote it: re-encoding it would alter bytes nobody asked to alter.
+    if (sameBytes(copy, node.bytes)) continue;
+    const parentOriginal = nodes.get(edge.parentBufferId);
+    const parentCopy = copyOf(edge.parentBufferId);
+    // The part of the parent this edge rewrites must still be untouched there:
+    // an edit that landed inside it from outside would be overwritten.
+    const regionEnd = edge.compression === "lzma" && edge.ownerFile ? edge.ownerFile.end : edge.payloadEnd;
+    const regionStart = edge.compression === "lzma" ? edge.sectionStart : edge.payloadStart;
+    if (
+      !parentOriginal ||
+      !sameBytes(parentCopy.subarray(regionStart, regionEnd), parentOriginal.bytes.subarray(regionStart, regionEnd))
+    ) {
+      refuse("conflicting-edit", `An edit lands inside the section at ${hex(edge.sectionStart)} that another edit rebuilds.`);
+      continue;
+    }
+    if (edge.compression === "lzma") {
+      const codec = codecs.lzma;
+      if (!codec) continue; // refused above by checkEdge
+      const propagated = propagateLzma(edge, copy, parentOriginal.bytes, parentCopy, codec);
+      if (propagated.ok) layoutChanges.push(propagated.change);
+      else refusals.push(propagated.refusal);
+    } else {
       parentCopy.set(copy.subarray(0, edge.payloadEnd - edge.payloadStart), edge.payloadStart);
     }
   }
@@ -395,26 +555,97 @@ export function rebuildFirmware(graph: FirmwareProvenanceGraph, edits: ArtifactE
   }
   const value: RebuiltFirmware = {
     image,
+    buffers: copies,
     changedRanges: mergeRanges(changed),
     changedBytes: changed.length,
     repairedFiles,
+    layoutChanges,
   };
-  const problems = verifyRebuiltFirmware(graph, edits, value);
+  const problems = verifyRebuiltFirmware(graph, edits, value, options);
   if (problems.length > 0) {
     return { ok: false, refusals: problems.map((message) => ({ code: "verification-failed", message })) };
   }
   return { ok: true, value };
 }
 
+function verifyLzmaLink(
+  edge: FirmwareEncapsulationEdge,
+  parentCopy: Uint8Array,
+  parentOriginal: Uint8Array,
+  childCopy: Uint8Array,
+  childOriginal: Uint8Array,
+  codec: LzmaCodec | undefined,
+): { problems: string[]; packedAfter: number | null } {
+  const at = `The LZMA section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
+  const owner = edge.ownerFile;
+  if (!owner) return { problems: [`${at} is not inside an FFS file.`], packedAfter: null };
+  // Nothing changed below this section: it must be the source's own bytes.
+  if (
+    sameBytes(childCopy, childOriginal) &&
+    sameBytes(parentCopy.subarray(edge.sectionStart, owner.end), parentOriginal.subarray(edge.sectionStart, owner.end))
+  ) {
+    return { problems: [], packedAfter: null };
+  }
+  if (!codec) return { problems: [`${at} cannot be checked without an LZMA codec.`], packedAfter: null };
+  const problems: string[] = [];
+  const size = readSectionSize(parentCopy, edge);
+  const end = edge.sectionStart + size;
+  if (end < edge.payloadStart || end > owner.end) {
+    return { problems: [`${at} declares a size that does not fit inside its file.`], packedAfter: null };
+  }
+  if (!allErased(parentOriginal, edge.sectionEnd, owner.end)) {
+    problems.push(`${at} was not followed by erased padding in the source.`);
+  }
+  if (!allErased(parentCopy, end, owner.end)) {
+    problems.push(`${at} is not followed by erased padding in the rebuilt image.`);
+  }
+  if (!paddingChangeAllowed(paddingAfterSection(edge.sectionEnd, owner.end), paddingAfterSection(end, owner.end))) {
+    problems.push(`${at} changed the length of its padding in a way the source does not show is tolerated.`);
+  }
+  const stream = parentCopy.slice(edge.payloadStart, end);
+  const before = readLzmaHeader(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd));
+  const after = readLzmaHeader(stream);
+  if (!before || !after) {
+    problems.push(`${at} does not start with an LZMA header.`);
+  } else if (
+    after.propsByte !== before.propsByte ||
+    after.dictionarySize !== before.dictionarySize ||
+    after.uncompressedSize !== BigInt(childCopy.length)
+  ) {
+    problems.push(`${at} does not keep the original's LZMA properties, dictionary size and declared length.`);
+  }
+  try {
+    if (!sameBytes(codec.decode(stream), childCopy)) {
+      problems.push(`${at} does not decode to the buffer it is meant to carry.`);
+    }
+  } catch (error) {
+    problems.push(`${at} could not be decoded: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // Bytes the decoder never reads (after the end of the data) would pass the
+  // checks above, so the stream must be exactly what the encoder writes.
+  const canonical = reencodeLzma(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd), childCopy, codec);
+  if (!canonical.ok) {
+    problems.push(`${at} cannot be re-derived from its buffer: ${canonical.message}`);
+  } else if (!sameBytes(stream, canonical.stream)) {
+    problems.push(`${at} is not the canonical re-encoding of its buffer (it holds extra or altered bytes).`);
+  }
+  return { problems, packedAfter: stream.length };
+}
+
 // Checks a rebuilt image against the source it was built from, without
-// trusting how it was built: same size, every changed byte explained by an
-// edit or a repaired checksum, every replacement in place, every repaired file
-// consistent, and (for a complete SPI image) nothing outside the BIOS region.
+// trusting how it was built. Buffer by buffer: the same length, every changed
+// byte explained by an edit, a repaired checksum or a section that was rebuilt
+// from its child, and every replacement in place. Link by link: an
+// uncompressed section carries its child unchanged, an LZMA section decodes to
+// its child with the original's properties, followed by erased padding. For a
+// complete SPI image, nothing outside the BIOS region.
 export function verifyRebuiltFirmware(
   graph: FirmwareProvenanceGraph,
   edits: ArtifactEdit[],
   rebuilt: RebuiltFirmware,
+  options: RebuildOptions = {},
 ): string[] {
+  const codecs = options.codecs ?? {};
   const problems: string[] = [];
   const nodes = new Map(graph.buffers.map((node) => [node.id, node]));
   const root = nodes.get(graph.rootBufferId);
@@ -422,56 +653,135 @@ export function verifyRebuiltFirmware(
   if (rebuilt.image.length !== root.bytes.length) {
     return [`The rebuilt image has size ${String(rebuilt.image.length)}, the source ${String(root.bytes.length)}.`];
   }
+  const copyOf = (id: number) => (id === graph.rootBufferId ? rebuilt.image : rebuilt.buffers.get(id));
 
-  const allowed = new Set<number>();
+  const allowed = new Map<number, Set<number>>();
+  const allow = (bufferId: number, start: number, end: number) => {
+    let set = allowed.get(bufferId);
+    if (!set) {
+      set = new Set<number>();
+      allowed.set(bufferId, set);
+    }
+    for (let index = start; index < end; index++) set.add(index);
+  };
   const expectedFiles = new Map<string, FirmwareFileReference>();
+  const links = new Map<number, FirmwareEncapsulationEdge>();
+  const actualLayouts = new Map<string, number>();
+  const reported = new Set<string>();
   for (const [position, edit] of edits.entries()) {
     const artifact = graph.artifacts[edit.artifactIndex] as (typeof graph.artifacts)[number] | undefined;
     if (!artifact) continue;
-    const start = rootOffsetOf(nodes, graph.rootBufferId, artifact.bufferId, artifact.payloadStart + edit.offset);
-    if (start === null) {
-      problems.push(`Edit ${String(position + 1)} cannot be placed in the image: its path is compressed or incomplete.`);
+    const start = artifact.payloadStart + edit.offset;
+    const copy = copyOf(artifact.bufferId);
+    if (!copy) {
+      problems.push(`Buffer ${String(artifact.bufferId)} is missing from the rebuilt image.`);
       continue;
     }
-    for (let index = 0; index < edit.replacement.length; index++) allowed.add(start + index);
-    if (!sameBytes(rebuilt.image.subarray(start, start + edit.replacement.length), edit.replacement)) {
-      problems.push(`The replacement of edit ${String(position + 1)} is not in place at ${hex(start)} of the rebuilt image.`);
+    allow(artifact.bufferId, start, start + edit.replacement.length);
+    if (!sameBytes(copy.subarray(start, start + edit.replacement.length), edit.replacement)) {
+      problems.push(`The replacement of edit ${String(position + 1)} is not in place at ${hex(start)} of buffer ${String(artifact.bufferId)}.`);
     }
-    for (const file of pathOf(nodes, graph.rootBufferId, artifact).files) expectedFiles.set(fileKey(file), file);
+    const path = pathOf(nodes, graph.rootBufferId, artifact, codecs);
+    for (const problem of path.refusals) {
+      if (!reported.has(problem.message)) {
+        reported.add(problem.message);
+        problems.push(problem.message);
+      }
+    }
+    for (const link of path.links) links.set(link.childId, link.edge);
+    for (const file of path.files) expectedFiles.set(fileKey(file), file);
   }
-  // Every file the edits depend on must be consistent in the rebuilt image,
+
+  for (const [childId, edge] of links) {
+    const parentOriginal = nodes.get(edge.parentBufferId);
+    const parentCopy = copyOf(edge.parentBufferId);
+    const childCopy = copyOf(childId);
+    if (!parentOriginal || !parentCopy || !childCopy) {
+      problems.push(`Buffer ${String(childId)} or its parent is missing from the rebuilt image.`);
+      continue;
+    }
+    if (edge.compression === "none") {
+      allow(edge.parentBufferId, edge.payloadStart, edge.payloadEnd);
+      if (!sameBytes(parentCopy.subarray(edge.payloadStart, edge.payloadEnd), childCopy)) {
+        problems.push(`The section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)} does not carry its rebuilt child unchanged.`);
+      }
+    } else if (edge.compression === "lzma" && edge.ownerFile) {
+      // Only the section's size field, its payload and the padding behind it
+      // may differ; the rest of its header must be the source's.
+      const sizeStart = edge.sectionHeaderSize === 4 ? edge.sectionStart : edge.sectionStart + 4;
+      allow(edge.parentBufferId, sizeStart, edge.sectionHeaderSize === 4 ? sizeStart + 3 : sizeStart + 4);
+      allow(edge.parentBufferId, edge.payloadStart, edge.ownerFile.end);
+      const childOriginal = nodes.get(childId);
+      if (!childOriginal) {
+        problems.push(`Buffer ${String(childId)} is missing from the source graph.`);
+        continue;
+      }
+      const link = verifyLzmaLink(edge, parentCopy, parentOriginal.bytes, childCopy, childOriginal.bytes, codecs.lzma);
+      problems.push(...link.problems);
+      if (link.packedAfter !== null) actualLayouts.set(`${String(edge.parentBufferId)}:${String(edge.sectionStart)}`, link.packedAfter);
+    }
+  }
+
+  // Every file the edits depend on must be consistent in the rebuilt buffer,
   // whether or not the rebuild says it repaired it.
   for (const file of expectedFiles.values()) {
-    const start = rootOffsetOf(nodes, graph.rootBufferId, file.bufferId, file.fileStart);
-    if (start === null) {
-      problems.push(`The FFS file at ${hex(file.fileStart)} of buffer ${String(file.bufferId)} cannot be placed in the image.`);
+    const copy = copyOf(file.bufferId);
+    if (!copy) {
+      problems.push(`Buffer ${String(file.bufferId)} is missing from the rebuilt image.`);
       continue;
     }
-    const bounds: FfsFileBounds = {
-      fileStart: start,
-      bodyStart: start + (file.bodyStart - file.fileStart),
-      end: start + (file.end - file.fileStart),
-      headerSize: file.headerSize,
-    };
-    allowed.add(start + 17);
-    if (!ffsHeaderChecksumValid(rebuilt.image, bounds)) {
-      problems.push(`The FFS file at ${hex(start)} has an invalid header checksum in the rebuilt image.`);
+    allow(file.bufferId, file.fileStart + 17, file.fileStart + 18);
+    const bounds: FfsFileBounds = file;
+    if (!ffsHeaderChecksumValid(copy, bounds)) {
+      problems.push(`The FFS file at ${hex(file.fileStart)} of buffer ${String(file.bufferId)} has an invalid header checksum in the rebuilt image.`);
     }
-    if (!ffsFileChecksumValid(rebuilt.image, bounds)) {
-      problems.push(`The FFS file at ${hex(start)} has an invalid data checksum in the rebuilt image.`);
+    if (!ffsFileChecksumValid(copy, bounds)) {
+      problems.push(`The FFS file at ${hex(file.fileStart)} of buffer ${String(file.bufferId)} has an invalid data checksum in the rebuilt image.`);
     }
     if (!rebuilt.repairedFiles.some((one) => one.bufferId === file.bufferId && one.fileStart === file.fileStart)) {
-      problems.push(`The FFS file at ${hex(start)} was not among the files the rebuild repaired.`);
+      problems.push(`The FFS file at ${hex(file.fileStart)} of buffer ${String(file.bufferId)} was not among the files the rebuild repaired.`);
+    }
+  }
+
+  const rebuiltIds = new Set<number>([graph.rootBufferId, ...rebuilt.buffers.keys(), ...allowed.keys()]);
+  for (const id of rebuiltIds) {
+    const original = nodes.get(id);
+    const copy = copyOf(id);
+    if (!original || !copy) continue;
+    if (copy.length !== original.bytes.length) {
+      problems.push(`Buffer ${String(id)} changed length from ${String(original.bytes.length)} to ${String(copy.length)}.`);
+      continue;
+    }
+    const permitted = allowed.get(id);
+    const unexplained = differingOffsets(original.bytes, copy).filter((offset) => !permitted?.has(offset));
+    if (unexplained.length > 0) {
+      const first = unexplained.slice(0, 3).map(hex).join(", ");
+      problems.push(
+        `${String(unexplained.length)} byte(s) of buffer ${String(id)} changed outside the edits and the repaired checksums (first: ${first}).`,
+      );
     }
   }
 
   const changed = differingOffsets(root.bytes, rebuilt.image);
-  const unexplained = changed.filter((offset) => !allowed.has(offset));
-  if (unexplained.length > 0) {
-    const first = unexplained.slice(0, 3).map(hex).join(", ");
-    problems.push(
-      `${String(unexplained.length)} byte(s) changed outside the edits and the repaired checksums (first: ${first}).`,
-    );
+  // What the rebuild reports about itself must match what the bytes show.
+  const rootCopy = rebuilt.buffers.get(graph.rootBufferId);
+  if (rootCopy && !sameBytes(rootCopy, rebuilt.image)) {
+    problems.push("The rebuilt buffers hold a different image than the one returned.");
+  }
+  if (rebuilt.changedBytes !== changed.length) {
+    problems.push(`The rebuild reports ${String(rebuilt.changedBytes)} changed byte(s); the image differs in ${String(changed.length)}.`);
+  }
+  if (JSON.stringify(rebuilt.changedRanges) !== JSON.stringify(mergeRanges(changed))) {
+    problems.push("The reported changed ranges are not the ranges in which the image differs from the source.");
+  }
+  const reportedLayouts = new Map(
+    rebuilt.layoutChanges.map((change) => [`${String(change.parentBufferId)}:${String(change.sectionStart)}`, change.packedAfter]),
+  );
+  if (
+    reportedLayouts.size !== actualLayouts.size ||
+    [...actualLayouts].some(([key, packed]) => reportedLayouts.get(key) !== packed)
+  ) {
+    problems.push("The reported LZMA layout changes are not the ones in the rebuilt image.");
   }
   const region = biosRegionOf(root.bytes);
   if (region.kind === "region" && changed.some((offset) => offset < region.start || offset >= region.end)) {
@@ -483,13 +793,21 @@ export function verifyRebuiltFirmware(
 }
 
 const refuseDecompression: FirmwareDecompressor = () =>
-  Promise.reject(new Error("recompression is not part of this check"));
+  Promise.reject(new Error("no decompressor was supplied for this check"));
 
 const artifactPayloadOf: Record<FirmwareArtifactKind, "hii" | "amitse" | "setupData"> = {
   "setup-hii": "hii",
   amitse: "amitse",
   setupdata: "setupData",
 };
+
+export interface ReextractionOptions {
+  artifactSetId?: string;
+  // The decompressor used to read the rebuilt image back. In the app this is
+  // the project's WebAssembly decoder, which shares no code with the encoder;
+  // without one, any compressed section on the way makes the check fail.
+  decompress?: FirmwareDecompressor;
+}
 
 // Reads the rebuilt image back with the real extractor and checks that every
 // artifact is exactly the source's artifact with the requested edits applied,
@@ -499,11 +817,16 @@ export async function verifyByReextraction(
   graph: FirmwareProvenanceGraph,
   edits: ArtifactEdit[],
   image: Uint8Array,
-  options: { artifactSetId?: string } = {},
+  options: ReextractionOptions = {},
 ): Promise<string[]> {
   let extracted;
   try {
-    extracted = await extractAptioIvBytes(image, () => Promise.resolve(""), refuseDecompression, options);
+    extracted = await extractAptioIvBytes(
+      image,
+      () => Promise.resolve(""),
+      options.decompress ?? refuseDecompression,
+      options.artifactSetId === undefined ? {} : { artifactSetId: options.artifactSetId },
+    );
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return [`The rebuilt image could not be read back: ${reason}`];

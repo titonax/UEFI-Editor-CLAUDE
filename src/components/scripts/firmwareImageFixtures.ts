@@ -84,6 +84,18 @@ export function compressionSection(compressionType: number, uncompressedLength: 
   return section(0x01, body);
 }
 
+// A Compression Section with an 8-byte header (the 0xFFFFFF size escape).
+export function compressionSectionExtended(compressionType: number, uncompressedLength: number, payload: Uint8Array) {
+  const bytes = new Uint8Array(8 + 5 + payload.length);
+  writeUint24(bytes, 0, 0xffffff);
+  bytes[3] = 0x01;
+  new DataView(bytes.buffer).setUint32(4, bytes.length, true);
+  new DataView(bytes.buffer).setUint32(8, uncompressedLength, true);
+  bytes[12] = compressionType;
+  bytes.set(payload, 13);
+  return bytes;
+}
+
 export function concat(...parts: Uint8Array[]) {
   const bytes = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
   let cursor = 0;
