@@ -1,4 +1,4 @@
-import { matchCases, type CaseSimilarity } from "./caseMatcher";
+import { isHollow, matchCases, type CaseSimilarity } from "./caseMatcher";
 import { fingerprintFromCase, fingerprintFromEntry, type FingerprintField, type FirmwareFingerprint } from "./fingerprint";
 import type { FirmwareCase } from "./schema";
 import type { CorpusRunEntry } from "../components/scripts/corpusDashboard";
@@ -35,8 +35,9 @@ export type KnowledgeVerdict =
   | { kind: "novel"; nearest?: NearestCase };
 
 // Minimum structural similarity (see caseMatcher.ts) to call an unknown image
-// "similar" to a case, and the case must not differ in any structural field
-// either. Otherwise the image is novel: worth recording.
+// "similar" to a case. The case must not differ in any structural field, and
+// they must agree on something beyond container, family and generation.
+// Otherwise the image is novel: worth recording.
 export const similarThreshold = 0.8;
 
 function describeNearest(image: FirmwareFingerprint, best: CaseSimilarity): NearestCase {
@@ -67,7 +68,7 @@ export function classifyEntry(entry: CorpusRunEntry, cases: readonly FirmwareCas
   if (match.exact) return { kind: "exact", case: match.exact };
   const best = match.similar[0] as (typeof match.similar)[number] | undefined;
   if (!best) return { kind: "novel" };
-  const alike = match.similar.find((one) => one.similarity >= similarThreshold && one.blocking.length === 0);
+  const alike = match.similar.find((one) => one.similarity >= similarThreshold && one.blocking.length === 0 && !isHollow(one));
   if (alike) return { kind: "similar", ...describeNearest(fingerprint, alike) };
   return { kind: "novel", nearest: describeNearest(fingerprint, best) };
 }

@@ -15,9 +15,9 @@ documents, not on running its tests.
 ## What the two forks share
 
 - **Identity.** The SHA-256 of the whole analysed image, in lower-case hex, plus
-  its size. Of the 22 images recorded here, 14 are also recorded there with the
-  **same SHA-256**; 8 are only recorded here and 3 only there.
-- **No contradicted measurement.** For those 14, every count and container that
+  its size. Of the 25 images recorded here, 17 are also recorded there with the
+  **same SHA-256**; 8 are only recorded here and none only there.
+- **No contradicted measurement.** For those 17, every count and container that
   both forks recorded agrees. Where the values differ, one side leaves the
   field out (see "Where they differ").
 - **Principles.** Metadata only, never firmware bytes. An unobserved field is
@@ -66,22 +66,24 @@ A field with no counterpart is dropped when translating a case, never guessed.
   all of them `unresolved` because the records rest on structures the IV and V
   corpora share (`docs/ami/sample-corpus.md`). That is a policy difference, not
   a measurement difference, and it is not settled.
-- **Container.** For the ASUS capsules the GPT fork records `vendor-image`, and
-  `firmware-volume-image` for HP BOA; this fork recorded `unknown` for these
-  five because its records do not state a container. The project's classifier
-  returns `firmware-volume-image` when a volume starts at offset 0 and
-  `vendor-image` when volumes exist elsewhere, both without an Intel
-  descriptor. This fork has not rechecked those five images against it.
+- **Container.** This fork now records `firmware-volume-image` for HP BOA (no
+  Intel descriptor, a volume at offset 0) and, for the four ASUS capsules,
+  `vendor-image` taken from the GPT fork's case for the same SHA-256 and not
+  re-measured here (each case says so). This fork's vocabulary has no
+  `award-rom` or `ami-legacy-rom`, so those two cases keep `unknown`.
 - **Similarity.** This fork reports a case as similar when at least 80% of at
   least 3 comparable fields agree and no structural field differs; only the
-  content counts (`formSets`, `forms`, `refs`) may. The GPT fork requires 4
+  content counts (`formSets`, `forms`, `refs`) may, and they must agree on
+  something beyond `container`, `vendorFamily` and `generation`. The GPT fork
+  requires 4
   matching fields, one of them distinctive, and no contradicting field at all,
   and it reports no percentage. It also has the statuses `insufficient-evidence`
-  and `conflict`. Treating each of the 22 cases recorded here as a new image,
-  the two rules give the same answer for 18. Of the other 4, two are the GPT
-  fork's `insufficient-evidence` (this fork has no such status; it says "new"),
-  and two are the ASUS pair that differs only in its Form count, which this
-  fork calls similar and the GPT fork new.
+  and `conflict`. Treating each of the 25 cases recorded here as a new image,
+  the two rules give the same answer for 20. Of the other 5, three are the
+  GPT fork's `insufficient-evidence` (this fork has no such status; it says
+  "new"; they are the Award, AMIBIOS8 and Phoenix images), and two are the ASUS
+  pair that differs only in its Form count, which this fork calls similar and
+  the GPT fork new.
 - **Rules.** Both keep a register that no parser consults. Here a rule is JSON
   (`AREA-TOPIC-NNN`, `minimumCases`, evidence `single-sample`, `multi-sample` or
   `externally-confirmed`); there it is TypeScript with `implementation`
@@ -152,6 +154,7 @@ values agree only when they are strictly equal.
    counts may differ; every other field is structural.
 
 - `content fields`: `formSets`, `forms`, `refs`
+- `generic fields`: `container`, `vendorFamily`, `generation`
 
 Similarity is how alike two images look as observed. It is not a probability
 that the image is a given vendor or generation, and it never changes how the

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ami-legacy-78575954",
+  "sha256": "78575954ba80c09b40b0283a0dc6b918ffeb4b9623a58613225cd85dd544ca4b",
+  "size": 1048576,
+  "names": [
+    "ASUS N10J BIOS.BIN"
+  ],
+  "vendorFamily": "ami-legacy",
+  "container": "unknown",
+  "generation": "unresolved",
+  "generationEvidence": "unresolved",
+  "features": {
+    "firmwareVolumes": 0
+  },
+  "blockers": [],
+  "source": "titonax/UEFI-Editor-GPT docs/ami/asus-n10j-amibios8.md",
+  "notes": [
+    "AMIBIOS8 legacy ROM, not Aptio: no checksummed PI firmware volume. Case transcribed from the GPT fork's record, not re-derived here."
+  ]
+}

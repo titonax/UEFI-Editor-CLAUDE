@@ -7,7 +7,7 @@
     "SZ390E.CAP"
   ],
   "vendorFamily": "ami-aptio",
-  "container": "unknown",
+  "container": "vendor-image",
   "generation": "unresolved",
   "generationEvidence": "unresolved",
   "features": {
@@ -18,6 +18,7 @@
   "blockers": [],
   "source": "docs/ami/single-formset-ifr-navigation.md",
   "notes": [
-    "Outer layout: vendor capsule header (0x1000) plus a 16 MiB image."
+    "Outer layout: vendor capsule header (0x1000) plus a 16 MiB image.",
+    "Container taken from the GPT fork's case for the same SHA-256, not re-measured here."
   ]
 }

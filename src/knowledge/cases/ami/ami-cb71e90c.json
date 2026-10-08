@@ -7,7 +7,7 @@
     "ASUS Sabertooth Z97 Mark 1 2702 CAP"
   ],
   "vendorFamily": "ami-aptio",
-  "container": "unknown",
+  "container": "vendor-image",
   "generation": "unresolved",
   "generationEvidence": "unresolved",
   "features": {
@@ -19,6 +19,7 @@
   "notes": [
     "Docs call it Aptio IV; generation stays unresolved because shared structures do not resolve it.",
     "Name is the label used in the record, not a file name. 0x800-byte ASUS capsule header.",
-    "Counts are from the intake offsets table, not a corpus-runner run."
+    "Counts are from the intake offsets table, not a corpus-runner run.",
+    "Container taken from the GPT fork's case for the same SHA-256, not re-measured here."
   ]
 }
