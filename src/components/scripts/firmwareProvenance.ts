@@ -225,10 +225,10 @@ export function assessFirmwareReconstruction(
     blockers.push("LZMA recompression exists (firmwareRebuild.ts, a codec of LZMA-JS) but is not connected to the export yet.");
   }
   if (compressions.includes("standard")) {
-    blockers.push("Deterministic EFI/Tiano recompression is not implemented yet.");
+    blockers.push("EFI/Tiano recompression exists (firmwareRebuild.ts, tianoCodec.ts) but is not connected to the export yet.");
   }
   blockers.push(
-    "Bottom-up section replacement, FFS checksum repair and full re-extraction verification exist only for same-size edits on uncompressed paths (firmwareRebuild.ts) and are not connected to the export yet.",
+    "Bottom-up section replacement, FFS checksum repair and full re-extraction verification exist only for same-size edits (firmwareRebuild.ts) and are not connected to the export yet.",
   );
 
   return {

@@ -10,7 +10,7 @@ stages and what each one guarantees.
 | --- | --- | --- |
 | 1 | Same-size edits on a path where every encapsulation is uncompressed | Built, tested on synthetic images, **not connected to the export** |
 | 2 | LZMA recompression that fits inside the original file | Built with LZMA-JS, tested on synthetic images, **not connected to the export** |
-| 3 | EFI/Tiano recompression | Not started |
+| 3 | EFI/Tiano recompression that fits inside the original file | Built (`tianoCodec.ts`, written here), tested on synthetic images and against the project's own C decoder, **not connected to the export** |
 | 4 | Export in the UI: "Check firmware output", download, `changelog.txt` | Not started |
 
 ## Stage 1: `firmwareRebuild.ts`
@@ -63,7 +63,7 @@ With no edits the rebuilt image is the source image, byte for byte.
 `rebuildFirmware(graph, edits, { codecs: { lzma } })` also goes through LZMA
 sections (a Compression Section of type LZMA, or a GUID-defined section with the
 LZMA GUID). Without a codec such a section is refused, as before. EFI/Tiano
-sections are still refused.
+sections are covered by stage 3.
 
 Edits keep their size, so the decoded buffer keeps its length; what changes is
 the packed stream. For each LZMA section on the path, deepest first:
@@ -112,6 +112,14 @@ on a large image: the app must run it in a worker (stage 4).
 `verifyByReextraction` accepts the decompressor to read the image back with; in
 the app that is the project's WebAssembly decoder, which shares no code with
 the encoder. The tests also decode with `xz` when it is installed.
+
+### How often a section fits
+
+The encoder's output is not the vendor's, and the section may only grow into
+padding that already follows it. On code-like data the encoder came within a few
+percent of EDK2's compressor in review, but a low-entropy or unusual buffer can
+come out larger, and a small edit can then be refused (`compressed-does-not-fit`)
+in a file with no spare tail. That is a refusal, never a truncated stream.
 
 ### What this stage does not prove
 
@@ -163,3 +171,85 @@ about it.
 Writing is meant to be enabled by what the rebuild proves about the image in
 hand (the checks above), not by which board or SHA-256 the image is: a recorded
 case or vendor family never selects a code path.
+
+## Stage 3: EFI/Tiano sections
+
+`rebuildFirmware` also goes through EFI/Tiano sections (a Compression Section of
+type 1, or a GUID-defined section with the Tiano GUID). The codec is written in
+this repository (`tianoCodec.ts`) because no maintained JavaScript one exists,
+and is used unless `codecs.tiano` supplies another. The size and padding rules
+are exactly those of stage 2: the section may change size only if it is the last
+one in its FFS file and the bytes after it are erased padding, the file keeps its
+size, and padding may change length only where the source shows it is tolerated.
+The refusal codes for those rules are shared (`compressed-does-not-fit`,
+`compressed-padding-change`, `section-not-terminal`).
+
+### The format
+
+A stream is an 8-byte header (packed size without the header, original size)
+then blocks of Huffman-coded symbols: a literal/length table, an extra-length
+table and a position table, each coded as a set of code lengths. There are two
+variants, **EFI** (position symbols of 4 bits, a window of 2^13 bytes) and
+**Tiano** (5 bits, 2^19 bytes). Both are read by the C decoder in
+`tools/tiano-wasi`, which the app builds to WebAssembly; the codec follows that
+code, not a description of it.
+
+### How the variant is chosen
+
+It is not assumed from the section type. The original stream is decoded with
+both variants (`tianoSection.ts`) and the variant that reads it back to exactly
+the bytes the image holds is taken as the one the firmware uses (evidence, not
+proof: the firmware's own decoder is not run here). If neither does (the
+codec cannot read the vendor's stream) or both do, the rebuild **refuses**
+(`tiano-recompression`) instead of guessing. It also refuses an original with
+bytes after its packed data, since they would move or be lost, and one whose
+header size differs from the decoded length.
+
+### What the encoder writes
+
+A greedy-with-one-step-lookahead LZ77 over a hash chain of 3-byte prefixes
+(chain limit 128), blocks of up to 32768 symbols, a Huffman code per block
+limited to the 16 bits and the alphabets the decoder accepts, and the code
+tables in the form the decoder reads. It is deterministic. It does not match
+the compression ratio or the exact bytes of Intel's `TianoCompress`, so a
+rebuilt stream is **not** the vendor's: that is why a section nothing changed
+below is left untouched and the verification demands the encoder's own canonical
+form for a rewritten one.
+
+### Verification
+
+`verifyRebuiltFirmware` adds, per EFI/Tiano link, to the shared checks (erased
+padding, size field, only the size field, payload and padding changed): the
+header's packed and original sizes match the stream and the child; the stream
+decodes, in the variant of the stream it replaces, to the child; it is exactly
+the encoder's output for that child; and, because the project's extractor tries
+the Tiano decoder first and keeps the first that parses, an EFI stream is
+checked not to be read by the Tiano decoder as other bytes. That check needs
+care: this codec's decoder is **stricter** than the C one (it rejects an empty
+code table, a block that declares no symbols and input that runs out, where the
+C decoder carries on and returns bytes), so a rejection by it proves nothing
+unless the C decoder rejects at the same point (`TianoDecodeError
+.sharedWithReference`). A stream with no matches (incompressible data) has an
+empty position table in EFI form, which the C Tiano decoder accepts and reads
+as other bytes (about 7 % of random-looking inputs in the tests): such a
+rebuilt stream is reported as unproven and the rebuild fails verification. The
+original of such a section could not have been read correctly by the extractor
+either.
+
+### What this stage does not prove
+
+- Whether the **platform's own decoder** accepts the stream. The codec is
+  validated against the C decoder in `tools/tiano-wasi` (the tests compile it
+  with `gcc` when present and are skipped, visibly, when not), which is the same
+  source the app runs and the EDK2 reference the format comes from. Firmware
+  builds can carry older or modified decoders; only a flash test settles that.
+- That a vendor's stream the codec cannot read (a different table layout, an
+  unusual block) is rare. It is refused, not rebuilt.
+- Cost. The encoder is synchronous, allocates a token object per input byte
+  and is not cancellable (about 3 s and 430 MB for 4 MiB of incompressible
+  data); both directions refuse more than 64 MiB, the limit of the WebAssembly
+  wrapper. It must run in a worker (stage 4).
+- Bytes inside the declared packed size that the decoder never reads (after the
+  last symbol) are dropped by the canonical re-encode, not reported.
+- Anything in the section or file headers the firmware computes from the
+  compressed bytes beyond the sizes and the FFS data checksum.
