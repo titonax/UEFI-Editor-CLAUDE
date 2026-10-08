@@ -437,7 +437,7 @@ describe("rebuildFirmware refuses paths it cannot account for", () => {
     if (!result.ok) expect(result.refusals.map((refusal) => refusal.code)).toContain("conflicting-edit");
   });
 
-  it("does not map offsets through a compressed section when verifying", async () => {
+  it("cannot check a compressed link without a codec, and says so", async () => {
     const image = firmwareVolume([
       { guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: sectionStream(compressionSection(2, inner.length, inner)) },
     ]);
@@ -447,12 +447,14 @@ describe("rebuildFirmware refuses paths it cannot account for", () => {
 
     const problems = verifyRebuiltFirmware(graph, [edit], {
       image: source.slice(),
+      buffers: new Map([[1, graph.buffers[1].bytes.slice()]]),
       changedRanges: [],
       changedBytes: 0,
       repairedFiles: [],
+      layoutChanges: [],
     });
 
-    expect(problems.join(" ")).toMatch(/cannot be placed/);
+    expect(problems.join(" ")).toMatch(/LZMA codec/);
   });
 });
 

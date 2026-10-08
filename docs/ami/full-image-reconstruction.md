@@ -9,7 +9,7 @@ stages and what each one guarantees.
 | Stage | Scope | Status |
 | --- | --- | --- |
 | 1 | Same-size edits on a path where every encapsulation is uncompressed | Built, tested on synthetic images, **not connected to the export** |
-| 2 | LZMA recompression that fits the original allocation | Not started |
+| 2 | LZMA recompression that fits inside the original file | Built with LZMA-JS, tested on synthetic images, **not connected to the export** |
 | 3 | EFI/Tiano recompression | Not started |
 | 4 | Export in the UI: "Check firmware output", download, `changelog.txt` | Not started |
 
@@ -57,6 +57,56 @@ with the real extractor and requires every artifact to be the source's artifact
 with the requested edits applied, at the same place.
 
 With no edits the rebuilt image is the source image, byte for byte.
+
+## Stage 2: LZMA sections
+
+`rebuildFirmware(graph, edits, { codecs: { lzma } })` also goes through LZMA
+sections (a Compression Section of type LZMA, or a GUID-defined section with the
+LZMA GUID). Without a codec such a section is refused, as before. EFI/Tiano
+sections are still refused.
+
+Edits keep their size, so the decoded buffer keeps its length; what changes is
+the packed stream. For each LZMA section on the path, deepest first:
+
+1. The buffer is re-encoded (`lzmaSection.ts`). The original's header is read
+   first and the re-encode **refuses** unless it can reproduce it: the same
+   properties byte (this encoder only writes `0x5D`, lc=3 lp=0 pb=2), a declared
+   size equal to the data's length (a stream that relies on an end marker is
+   refused) and a dictionary no larger than the original's. The stream is written
+   with no end marker, the way EDK2's `LzmaCompress` writes it, and its header
+   declares the original's dictionary size. The result must decode back to the
+   data with the codec's own decoder.
+2. The section may change size only if it is **the last section of its FFS
+   file and everything after it in the file is erased padding (0xFF)**. The
+   file keeps its size, so no file header moves; the section's size field is
+   updated and the bytes after the new end are filled with 0xFF.
+3. The padding may change length only where the source already shows the
+   firmware tolerates it: if there was room for a section header (4 bytes or
+   more) after the section, any non-negative padding is accepted; if there was
+   less, the padding must stay less than that. A result that does not fit, or
+   that would create padding where there was none, is refused with its own code.
+4. The data checksum of the file is repaired, then the file's buffer is
+   carried up to its parent the same way, so two nested LZMA levels work.
+
+`verifyRebuiltFirmware` checks every buffer on its own: the same length, every
+changed byte explained by an edit, a repaired checksum or a rebuilt section, and
+every link: an uncompressed section carries its child unchanged; an LZMA
+section decodes to its child, keeps the original's properties and dictionary
+size, declares the child's length, and is followed by erased padding.
+`verifyByReextraction` accepts the decompressor to read the image back with; in
+the app that is the project's WebAssembly decoder, which shares no code with
+the encoder. The tests also decode with `xz` when it is installed.
+
+### What this stage does not prove
+
+- Whether the **platform's own LZMA decoder** accepts the re-encoded stream.
+  The stream is valid LZMA with the original's properties and declared size, but
+  it is not byte-identical to what the vendor's tool wrote, and nobody here has
+  run it on a real board. Only a flash test settles that.
+- That the padding rule matches how a given firmware parses a file's tail. It
+  rests on the source already containing such padding.
+- LZMA-JS fixes the properties and chooses its own dictionary, so an image built
+  with other properties is refused.
 
 ### What a file checksum repair does
 
