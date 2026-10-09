@@ -154,8 +154,9 @@ export default function RootVisibilityAnalysis({
         )}
         <Text size="xs" c="dimmed">
           Original evidence remains immutable. Buttons record a reversible desired state
-          in the pending change set. Full-image writing remains disabled until the
-          reconstruction path can rebuild and verify every enclosing firmware layer. The
+          in the pending change set. A root visibility change lives in the Setup
+          module's PE32 section, which the full-image output cannot rebuild yet, so it
+          cannot be written. The
           original BIOS contains {String(originalVisible)} visible roots.
         </Text>
       </Stack>

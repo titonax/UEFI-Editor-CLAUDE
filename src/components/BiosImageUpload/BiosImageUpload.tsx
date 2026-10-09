@@ -854,7 +854,10 @@ export default function BiosImageUpload({ onExtracted }: BiosImageUploadProps) {
                   </Text>
                 ))}
                 <Text size="xs" c="dimmed">
-                  Writing remains disabled: {reconstruction.blockers.join(" ")}
+                  {reconstruction.writeEnabled
+                    ? "A complete image can be attempted once edits are applied (Firmware image → Check firmware output); the check may still refuse a given plan. "
+                    : "A complete image cannot be produced from this image: "}
+                  {[...reconstruction.blockers, ...reconstruction.caveats].join(" ")}
                 </Text>
               </Stack>
             </Alert>

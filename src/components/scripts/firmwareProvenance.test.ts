@@ -63,11 +63,11 @@ function traceableGraph(): FirmwareProvenanceGraph {
 }
 
 describe("assessFirmwareReconstruction", () => {
-  it("walks sparse buffer ids back to the source image and lists every blocker", () => {
+  it("walks sparse buffer ids back to the source image and lists what holds for every output", () => {
     const assessment = assessFirmwareReconstruction(traceableGraph());
 
     expect(assessment.traceComplete).toBe(true);
-    expect(assessment.writeEnabled).toBe(false);
+    expect(assessment.writeEnabled).toBe(true);
     expect(assessment.compressions).toEqual(["lzma", "standard"]);
     expect(assessment.traces[0].labels).toEqual([
       "Firmware image",
@@ -75,10 +75,11 @@ describe("assessFirmwareReconstruction", () => {
       "EFI/Tiano section @ 0x20",
       "Setup HII",
     ]);
-    expect(assessment.blockers).toEqual([
-      "LZMA recompression exists (firmwareRebuild.ts, a codec of LZMA-JS) but is not connected to the export yet.",
-      "EFI/Tiano recompression exists (firmwareRebuild.ts, tianoCodec.ts) but is not connected to the export yet.",
-      "Bottom-up section replacement, FFS checksum repair and full re-extraction verification exist only for same-size edits (firmwareRebuild.ts) and are not connected to the export yet.",
+    expect(assessment.blockers).toEqual([]);
+    expect(assessment.caveats).toEqual([
+      "An LZMA section is re-encoded, not copied: its stream will differ from the vendor's, and only the board's own decoder can confirm it accepts it.",
+      "An EFI/Tiano section is re-encoded, not copied: its stream will differ from the vendor's, and only the board's own decoder can confirm it accepts it.",
+      "An output is checked structurally and by reading it back; it has not been flashed, and signatures, ME and Boot Guard are outside what is checked.",
     ]);
   });
 
@@ -89,6 +90,7 @@ describe("assessFirmwareReconstruction", () => {
     const assessment = assessFirmwareReconstruction(graph);
 
     expect(assessment.traceComplete).toBe(false);
+    expect(assessment.writeEnabled).toBe(false);
     expect(assessment.blockers[0]).toMatch(/incomplete path/);
   });
 

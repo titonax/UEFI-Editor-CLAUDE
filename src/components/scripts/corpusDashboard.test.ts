@@ -316,9 +316,9 @@ describe("failureCodeBreakdown", () => {
 });
 
 describe("reconstructionBlockerBreakdown", () => {
-  const lzma = "LZMA recompression exists (firmwareRebuild.ts, a codec of LZMA-JS) but is not connected to the export yet.";
-  const tiano = "EFI/Tiano recompression exists (firmwareRebuild.ts, tianoCodec.ts) but is not connected to the export yet.";
-  const bottomUp = "Bottom-up section replacement, FFS checksum repair and full re-extraction verification exist only for same-size edits (firmwareRebuild.ts) and are not connected to the export yet.";
+  const lzma = "At least one artifact has an incomplete path to the source image.";
+  const tiano = "A hypothetical second blocker.";
+  const bottomUp = "A hypothetical third blocker.";
 
   it("counts, over the extracted images, how many share each blocker, most common first", () => {
     const breakdown = reconstructionBlockerBreakdown([

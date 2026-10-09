@@ -85,10 +85,14 @@ export interface FirmwareArtifactTrace {
 
 export interface FirmwareReconstructionAssessment {
   traceComplete: boolean;
-  writeEnabled: false;
+  // Whether an output can be attempted for this image: every artifact has a
+  // complete path back to it. The attempt itself may still be refused.
+  writeEnabled: boolean;
   traces: FirmwareArtifactTrace[];
   compressions: FirmwareSectionCompression[];
   blockers: string[];
+  // True of every output from this image, whatever the plan.
+  caveats: string[];
 }
 
 const artifactLabels: Record<FirmwareArtifactKind, string> = {
@@ -217,25 +221,29 @@ export function assessFirmwareReconstruction(
 ): FirmwareReconstructionAssessment {
   const traces = graph.artifacts.map((artifact) => traceArtifact(graph, artifact));
   const compressions = [...new Set(traces.flatMap((trace) => trace.compressions))];
+  const traceComplete = traces.length > 0 && traces.every((trace) => trace.complete);
   const blockers: string[] = [];
-  if (traces.length === 0 || traces.some((trace) => !trace.complete)) {
+  if (!traceComplete) {
     blockers.push("At least one artifact has an incomplete path to the source image.");
   }
+  // What stands between this image and an output is only a path that cannot
+  // be followed. Whether a given plan can be put back is decided by the check
+  // on that plan (fullImageExport.ts); these are what holds for every output.
+  const caveats: string[] = [];
   if (compressions.includes("lzma")) {
-    blockers.push("LZMA recompression exists (firmwareRebuild.ts, a codec of LZMA-JS) but is not connected to the export yet.");
+    caveats.push("An LZMA section is re-encoded, not copied: its stream will differ from the vendor's, and only the board's own decoder can confirm it accepts it.");
   }
   if (compressions.includes("standard")) {
-    blockers.push("EFI/Tiano recompression exists (firmwareRebuild.ts, tianoCodec.ts) but is not connected to the export yet.");
+    caveats.push("An EFI/Tiano section is re-encoded, not copied: its stream will differ from the vendor's, and only the board's own decoder can confirm it accepts it.");
   }
-  blockers.push(
-    "Bottom-up section replacement, FFS checksum repair and full re-extraction verification exist only for same-size edits (firmwareRebuild.ts) and are not connected to the export yet.",
-  );
+  caveats.push("An output is checked structurally and by reading it back; it has not been flashed, and signatures, ME and Boot Guard are outside what is checked.");
 
   return {
-    traceComplete: traces.length > 0 && traces.every((trace) => trace.complete),
-    writeEnabled: false,
+    traceComplete,
+    writeEnabled: traceComplete,
     traces,
     compressions,
     blockers,
+    caveats,
   };
 }

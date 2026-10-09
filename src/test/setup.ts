@@ -40,3 +40,32 @@ if (NodeBuffer && typeof crypto !== "undefined" && "subtle" in crypto) {
         : NodeBuffer.from(data),
     );
 }
+
+// jsdom's Blob (and File) cannot be read with arrayBuffer() or text(), which
+// the browser and Node both can; give it the same two methods through a
+// FileReader so the components that read a File can be tested.
+if (typeof FileReader !== "undefined" && !("arrayBuffer" in Blob.prototype)) {
+  const readAsArrayBuffer = (blob: Blob) =>
+    new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(reader.result as ArrayBuffer);
+      };
+      reader.onerror = () => {
+        reject(new Error("The blob could not be read."));
+      };
+      reader.readAsArrayBuffer(blob);
+    });
+  Object.defineProperty(Blob.prototype, "arrayBuffer", {
+    configurable: true,
+    value(this: Blob) {
+      return readAsArrayBuffer(this);
+    },
+  });
+  Object.defineProperty(Blob.prototype, "text", {
+    configurable: true,
+    async value(this: Blob) {
+      return new TextDecoder().decode(await readAsArrayBuffer(this));
+    },
+  });
+}

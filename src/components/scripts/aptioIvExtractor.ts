@@ -151,7 +151,7 @@ async function runFirmwareDecompress(
   return output.data;
 }
 
-async function firmwareDecompress(
+export async function firmwareDecompress(
   input: Uint8Array,
   mode: "lzma" | "standard",
 ) {
