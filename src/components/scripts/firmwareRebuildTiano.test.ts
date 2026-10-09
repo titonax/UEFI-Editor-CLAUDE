@@ -312,17 +312,14 @@ describe("rebuildFirmware refuses an EFI/Tiano section it cannot resize safely",
     expect(codesOf(result)).toEqual(["compressed-padding-change"]);
   });
 
-  it("creates erased padding in a volume that declares erased bytes as ones, and says so", async () => {
+  it("does not create padding even in a volume that declares erased bytes as ones: no real Tiano firmware has shown it is safe", async () => {
     const image = wrapInTiano(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), "efi", { tail: 0 });
     const graph = await graphOf(image);
-    const edit = replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500));
 
-    const rebuilt = unwrap(rebuildFirmware(graph, [edit]));
+    const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500))]);
 
-    expect(rebuilt.layoutChanges[0].createdPadding).toBe(true);
-    expect(rebuilt.image.length).toBe(image.length);
-    expect(verifyRebuiltFirmware(graph, [edit], rebuilt)).toEqual([]);
-    expect(await verifyByReextraction(graph, [edit], rebuilt.image, { decompress })).toEqual([]);
+    expect(codesOf(result)).toEqual(["compressed-padding-change"]);
+    if (!result.ok) expect(result.refusals[0].message).toMatch(/not accepted for EFI\/Tiano/);
   });
 
   it("refuses a section that is not the last one in its file", async () => {

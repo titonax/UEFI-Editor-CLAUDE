@@ -268,6 +268,33 @@ describe("reencodeLzma: searching presets when the stream must fit", () => {
     expect(result.stream.length).toBe(Math.min(...sizes));
   });
 
+  it("names the preset when a later one throws, instead of keeping the first stream", () => {
+    const codec: LzmaCodec = {
+      ...lzmaJsCodec,
+      encode: (bytes, preset) => {
+        if (preset === 7) throw new Error("boom");
+        return lzmaJsCodec.encode(bytes, preset);
+      },
+    };
+
+    const result = reencodeLzma(original, edited, codec, { maxBytes: 1 });
+
+    expect(result).toMatchObject({ ok: false, code: "lzma-codec" });
+    if (!result.ok) expect(result.message).toMatch(/preset 7.*boom/);
+  });
+
+  it("refuses a later preset's stream that has no header instead of crashing on it", () => {
+    const codec: LzmaCodec = {
+      ...lzmaJsCodec,
+      encode: (bytes, preset) => (preset === 7 ? new Uint8Array(3) : lzmaJsCodec.encode(bytes, preset)),
+    };
+
+    const result = reencodeLzma(original, edited, codec, { maxBytes: 1 });
+
+    expect(result).toMatchObject({ ok: false, code: "lzma-codec" });
+    if (!result.ok) expect(result.message).toMatch(/preset 7.*no LZMA header/);
+  });
+
   it("is deterministic, so a verifier asking with the same limit gets the same stream", () => {
     const codec = worseFirst([]);
     const size7 = lzmaJsCodec.encode(edited, 7).length;

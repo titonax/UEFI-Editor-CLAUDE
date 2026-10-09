@@ -184,7 +184,7 @@ function buildChangelog(request: FullImageRequest, rebuilt: RebuiltFirmware, sum
   lines.push("NOT tested: this image has not been flashed or booted. Passing these checks proves the structure, not that the board accepts it.");
   if (summary.sectionsWithCreatedPadding > 0) {
     lines.push(
-      `CREATED PADDING: in ${String(summary.sectionsWithCreatedPadding)} section(s) the source filled its FFS file exactly, and the re-encoded stream is shorter, so ${String(summary.createdPaddingBytes)} byte(s) of erased padding (0xFF, the polarity the volume declares) now follow it inside the same file. The firmware has not been shown to accept padding there.`,
+      `CREATED PADDING: in ${String(summary.sectionsWithCreatedPadding)} section(s) the source left less than a section header of room after the section in its FFS file, and the re-encoded stream is shorter, so ${String(summary.createdPaddingBytes)} byte(s) of erased padding (0xFF, the polarity the volume declares) now follow it inside the same file. The firmware has not been shown to accept padding there.`,
     );
   }
   lines.push("");
@@ -273,7 +273,7 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
     repairedFiles: rebuilt.value.repairedFiles.filter((file) => file.changed).length,
     recompressedSections: rebuilt.value.layoutChanges.length,
     sectionsWithCreatedPadding: rebuilt.value.layoutChanges.filter((change) => change.createdPadding).length,
-    createdPaddingBytes: rebuilt.value.layoutChanges.filter((change) => change.createdPadding).reduce((total, change) => total + change.paddingAfter, 0),
+    createdPaddingBytes: rebuilt.value.layoutChanges.filter((change) => change.createdPadding).reduce((total, change) => total + (change.paddingAfter - change.paddingBefore), 0),
   };
   return { ok: true, image: rebuilt.value.image, changelog: buildChangelog(request, rebuilt.value, summary), summary };
 }

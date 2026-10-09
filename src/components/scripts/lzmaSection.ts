@@ -148,7 +148,12 @@ export function reencodeLzma(
     try {
       stream = codec.encode(decoded, preset).slice();
     } catch (error) {
-      return codecFailure("encode", error);
+      return codecFailure("encode", error, preset);
+    }
+    // A stream with no header could win the "smallest" comparison and then
+    // break the header rewrite below: say which preset produced it.
+    if (!readLzmaHeader(stream)) {
+      return codecFailure("encode", new Error("it returned a stream with no LZMA header"), preset);
     }
     if (!best || stream.length < best.stream.length) best = { stream, preset };
     if (limit === undefined || stream.length <= limit || !mayTryOthers) break;
@@ -156,7 +161,7 @@ export function reencodeLzma(
   // Prefer the first that fits (the order is best search first); otherwise the
   // smallest, which the caller will find does not fit.
   const chosen = best;
-  if (!chosen) return codecFailure("encode", new Error("no preset was tried"));
+  if (!chosen) return codecFailure("encode", new Error("no preset was tried"), 0);
   const stream = chosen.stream;
   // The stream only uses distances inside the preset's window, so declaring the
   // original's (larger or equal) dictionary is valid and keeps the decoder's
@@ -166,19 +171,20 @@ export function reencodeLzma(
   try {
     readBack = codec.decode(stream);
   } catch (error) {
-    return codecFailure("decode", error);
+    return codecFailure("decode", error, chosen.preset);
   }
   if (!sameBytes(readBack, decoded)) {
     return {
       ok: false,
       code: "lzma-roundtrip",
-      message: "The re-encoded LZMA stream does not decode back to the data it was made from.",
+      message: `The re-encoded LZMA stream (preset ${String(chosen.preset)}) does not decode back to the data it was made from.`,
     };
   }
   return { ok: true, stream, preset: chosen.preset };
 }
 
-function codecFailure(step: "encode" | "decode", error: unknown): ReencodeResult {
+function codecFailure(step: "encode" | "decode", error: unknown, preset: number): ReencodeResult {
   const reason = error instanceof Error ? error.message : String(error);
-  return { ok: false, code: "lzma-codec", message: `The LZMA codec failed to ${step}: ${reason}` };
+  const at = preset > 0 ? ` at preset ${String(preset)}` : "";
+  return { ok: false, code: "lzma-codec", message: `The LZMA codec failed to ${step}${at}: ${reason}` };
 }

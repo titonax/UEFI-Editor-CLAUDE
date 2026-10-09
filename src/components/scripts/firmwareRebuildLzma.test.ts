@@ -250,7 +250,7 @@ describe("rebuildFirmware refuses an LZMA section it cannot resize safely", () =
     const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500))], { codecs });
 
     expect(codesOf(result)).toEqual(["compressed-padding-change"]);
-    if (!result.ok) expect(result.refusals[0].message).toMatch(/does not declare erased bytes as 0xFF/);
+    if (!result.ok) expect(result.refusals[0].message).toMatch(/erased bytes as 0xFF/);
   });
 
   it("refuses a stream whose properties this encoder cannot reproduce", async () => {
@@ -370,7 +370,7 @@ describe("rebuildFirmware creates padding the source did not have", () => {
 
     const problems = verifyRebuiltFirmware(unsure, [edit], rebuilt, { codecs });
 
-    expect(problems.join("\n")).toMatch(/created padding in a volume that does not declare erased bytes as 0xFF/);
+    expect(problems.join("\n")).toMatch(/no valid header declaring erased bytes as 0xFF/);
   });
 
   it("is caught by the verification when the rebuild's report hides the created padding", async () => {
@@ -381,6 +381,42 @@ describe("rebuildFirmware creates padding the source did not have", () => {
     expect(verifyRebuiltFirmware(graph, [edit], hiding, { codecs }).join("\n")).toMatch(/reported layout changes/);
   });
 
+  it("is caught by the verification when the report invents or hides the padding figures", async () => {
+    const { graph, edit } = await shrunk();
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+    const change = rebuilt.layoutChanges[0];
+
+    for (const forged of [{ paddingAfter: 7 }, { paddingBefore: 99 }, { packedBefore: 1 }, { packedAfter: change.packedAfter + 1 }]) {
+      const lying = { ...rebuilt, layoutChanges: [{ ...change, ...forged }] };
+
+      expect(verifyRebuiltFirmware(graph, [edit], lying, { codecs }).join("\n"), JSON.stringify(forged)).toMatch(/reported layout changes/);
+    }
+  });
+
+  it("counts only the bytes it created, and flags a source that had a few bytes but less than a header's room", async () => {
+    const image = wrapInLzma(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), { tail: 2 });
+    const graph = await graphOf(image);
+    const edit = replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500));
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+
+    const change = rebuilt.layoutChanges[0];
+    expect(change.paddingBefore).toBe(2);
+    expect(change.createdPadding).toBe(true);
+    expect(change.paddingAfter).toBeGreaterThan(change.paddingBefore);
+    expect(verifyRebuiltFirmware(graph, [edit], rebuilt, { codecs })).toEqual([]);
+  });
+
+  it("also requires the volume's declaration when the source had a few padding bytes, less than a header's room", async () => {
+    const image = wrapInLzma(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), { tail: 2, erasePolarityOnes: false });
+    const graph = await graphOf(image);
+
+    const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500))], { codecs });
+
+    expect(codesOf(result)).toEqual(["compressed-padding-change"]);
+    if (!result.ok) expect(result.refusals[0].message).toMatch(/erased bytes as 0xFF/);
+  });
+
   it("reads the polarity from the volume's attributes", () => {
     const declared = firmwareVolume([], 0x40, { erasePolarityOnes: true });
     const undeclared = firmwareVolume([], 0x40, { erasePolarityOnes: false });
@@ -388,6 +424,8 @@ describe("rebuildFirmware creates padding the source did not have", () => {
     expect(volumeErasesToOnes(declared, 0)).toBe(true);
     expect(volumeErasesToOnes(undeclared, 0)).toBe(false);
     expect(volumeErasesToOnes(new Uint8Array(0x20), 0)).toBe(false);
+    // Without a volume header at that place the bits mean nothing.
+    expect(volumeErasesToOnes(new Uint8Array(0x100).fill(0xff), 0x20)).toBe(false);
     expect(volumeErasesToOnes(declared, -4)).toBe(false);
   });
 });

@@ -229,7 +229,7 @@ export default function FullImageExportDialog({
             </Group>
             {success.summary.sectionsWithCreatedPadding > 0 && (
               <Alert color="yellow" icon={<IconAlertTriangle size={16} />} title="This image has padding the source did not have">
-                In {success.summary.sectionsWithCreatedPadding} section(s) the original filled its file exactly and the re-encoded stream is
+                In {success.summary.sectionsWithCreatedPadding} section(s) the original left less than a section header of room after the section in its file and the re-encoded stream is
                 shorter, so {success.summary.createdPaddingBytes} byte(s) of erased padding (0xFF, the polarity the volume declares) now
                 follow it inside the same file. The firmware has not been shown to accept padding there. Flash only with a hardware
                 programmer and a backup of the chip.

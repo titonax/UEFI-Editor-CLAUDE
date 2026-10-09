@@ -425,7 +425,7 @@ describe("checkFullImageOutput: padding the source did not have", () => {
     const result = await checkFullImageOutput(request, deps);
 
     expect(result).toMatchObject({ ok: false, stage: "rebuild" });
-    if (!result.ok) expect(result.messages[0]).toMatch(/does not declare erased bytes as 0xFF/);
+    if (!result.ok) expect(result.messages[0]).toMatch(/erased bytes as 0xFF/);
   });
 });
 
