@@ -20,6 +20,11 @@ export interface LzmaCodec {
   propsByte: number;
   // Dictionary size of each preset, as a power of two; index = preset - 1.
   presetDictionaryBits: readonly number[];
+  // Presets that search the same way and differ only in window size, best
+  // search first. A re-encode that does not fit tries one preset of each group
+  // (the largest one the original's dictionary allows). Absent, every preset is
+  // its own group, tried from the largest down.
+  presetGroups?: readonly (readonly number[])[];
   // The largest declared dictionary this codec's decoder can check a stream
   // for; a larger one is valid LZMA but could not be verified here.
   maxDictionarySize: number;
@@ -41,6 +46,18 @@ export type ReencodeResult =
   | { ok: false; code: ReencodeRefusalCode; message: string };
 
 const headerSize = 13;
+
+// Searching other presets costs one more encode each, so it is only done for
+// buffers small enough that this stays quick; a larger buffer gets the one
+// best preset.
+export const presetSearchCeiling = 8 * 1024 * 1024;
+
+export interface ReencodeOptions {
+  // The most bytes the stream may take. The first preset that fits is used;
+  // when none does, the smallest stream found is returned (and the caller
+  // refuses it for not fitting). Without a limit, the best preset is used.
+  maxBytes?: number;
+}
 
 export function readLzmaHeader(bytes: Uint8Array): LzmaStreamHeader | null {
   if (bytes.length < headerSize) return null;
@@ -70,6 +87,7 @@ export function reencodeLzma(
   originalStream: Uint8Array,
   decoded: Uint8Array,
   codec: LzmaCodec,
+  options: ReencodeOptions = {},
 ): ReencodeResult {
   const original = readLzmaHeader(originalStream);
   if (!original) {
@@ -106,24 +124,40 @@ export function reencodeLzma(
       message: `The original declares a ${String(original.dictionarySize)}-byte dictionary, larger than the ${String(codec.maxDictionarySize)} this codec's decoder can check.`,
     };
   }
-  // The largest preset whose dictionary the original's decoder already has.
-  let preset = 0;
-  for (const [index, bits] of codec.presetDictionaryBits.entries()) {
-    if (2 ** bits <= original.dictionarySize) preset = index + 1;
+  // The presets whose dictionary the original's decoder already has, grouped by
+  // how they search; the first group is the best search.
+  const allowed = (preset: number) => 2 ** codec.presetDictionaryBits[preset - 1] <= original.dictionarySize;
+  const groups = codec.presetGroups ?? [...codec.presetDictionaryBits.keys()].reverse().map((index) => [index + 1]);
+  const candidates: number[] = [];
+  for (const group of groups) {
+    const usable = group.filter(allowed);
+    if (usable.length > 0) candidates.push(Math.max(...usable));
   }
-  if (preset === 0) {
+  if (candidates.length === 0) {
     return {
       ok: false,
       code: "lzma-dictionary",
       message: `The original dictionary (${String(original.dictionarySize)} bytes) is smaller than any this encoder can use.`,
     };
   }
-  let stream: Uint8Array;
-  try {
-    stream = codec.encode(decoded, preset).slice();
-  } catch (error) {
-    return codecFailure("encode", error);
+  const limit = options.maxBytes;
+  const mayTryOthers = limit !== undefined && decoded.length <= presetSearchCeiling;
+  let best: { stream: Uint8Array; preset: number } | undefined;
+  for (const preset of candidates) {
+    let stream: Uint8Array;
+    try {
+      stream = codec.encode(decoded, preset).slice();
+    } catch (error) {
+      return codecFailure("encode", error);
+    }
+    if (!best || stream.length < best.stream.length) best = { stream, preset };
+    if (limit === undefined || stream.length <= limit || !mayTryOthers) break;
   }
+  // Prefer the first that fits (the order is best search first); otherwise the
+  // smallest, which the caller will find does not fit.
+  const chosen = best;
+  if (!chosen) return codecFailure("encode", new Error("no preset was tried"));
+  const stream = chosen.stream;
   // The stream only uses distances inside the preset's window, so declaring the
   // original's (larger or equal) dictionary is valid and keeps the decoder's
   // memory exactly as it was.
@@ -141,7 +175,7 @@ export function reencodeLzma(
       message: "The re-encoded LZMA stream does not decode back to the data it was made from.",
     };
   }
-  return { ok: true, stream, preset };
+  return { ok: true, stream, preset: chosen.preset };
 }
 
 function codecFailure(step: "encode" | "decode", error: unknown): ReencodeResult {

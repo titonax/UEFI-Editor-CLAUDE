@@ -373,6 +373,62 @@ describe("checkFullImageOutput: what it refuses and what it records", () => {
   });
 });
 
+describe("checkFullImageOutput: padding the source did not have", () => {
+  function noise(length: number, seed: number) {
+    let state = seed;
+    return Uint8Array.from({ length }, () => {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      return state >>> 16;
+    });
+  }
+  // An LZMA section that fills its file exactly (as real vendor sections do).
+  function fullFile(erasePolarityOnes: boolean) {
+    const inner = firmwareVolume(setupFiles({ ...payloads, hii: noise(2000, 3) }, checksummed));
+    const section = compressionSection(2, inner.length, lzmaJsCodec.encode(inner, 8));
+    return firmwareVolume([{ guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: sectionStream(section) }], 0x40, { erasePolarityOnes });
+  }
+
+  it("is reported in the summary and the changelog wherever it appears", async () => {
+    const image = fullFile(true);
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => (which === "hii" ? new Uint8Array(artifacts.hii.length) : null));
+
+    const result = await checkFullImageOutput(request, deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.summary.sectionsWithCreatedPadding).toBe(1);
+    expect(result.summary.createdPaddingBytes).toBeGreaterThanOrEqual(4);
+    expect(result.changelog).toContain("CREATED PADDING:");
+    expect(result.changelog).toContain("[CREATED PADDING]");
+    expect(result.changelog).toContain("has not been shown to accept padding there");
+  });
+
+  it("is not claimed when the section kept its file's padding", async () => {
+    const image = wrapped("lzma");
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => (which === "hii" ? flip(artifacts.hii, 100) : null));
+
+    const result = await checkFullImageOutput(request, deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.summary.sectionsWithCreatedPadding).toBe(0);
+    expect(result.changelog).not.toContain("CREATED PADDING");
+  });
+
+  it("is refused when the volume does not declare erased bytes as ones", async () => {
+    const image = fullFile(false);
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => (which === "hii" ? new Uint8Array(artifacts.hii.length) : null));
+
+    const result = await checkFullImageOutput(request, deps);
+
+    expect(result).toMatchObject({ ok: false, stage: "rebuild" });
+    if (!result.ok) expect(result.messages[0]).toMatch(/does not declare erased bytes as 0xFF/);
+  });
+});
+
 describe("planArtifactEdits: placement", () => {
   it("bridges a gap of exactly 16 unchanged bytes and not one of 17", async () => {
     const artifacts = await extractAptioIvBytes(wrapped("none"), noIfr, decompress);

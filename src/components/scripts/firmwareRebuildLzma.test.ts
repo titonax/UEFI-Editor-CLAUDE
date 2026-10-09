@@ -19,6 +19,7 @@ import {
   paddingAfterSection,
   paddingChangeAllowed,
   rebuildFirmware,
+  volumeErasesToOnes,
   verifyByReextraction,
   verifyRebuiltFirmware,
   type ArtifactEdit,
@@ -96,14 +97,18 @@ function codesOf(result: ReturnType<typeof rebuildFirmware>) {
 
 // A volume whose single file holds one LZMA section carrying `inner`, then
 // `tail` bytes of padding.
-function wrapInLzma(inner: Uint8Array, options: { wrapper?: Wrapper; tail?: number; attributes?: number } = {}) {
-  return firmwareVolume([
-    {
-      guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
-      attributes: options.attributes ?? checksummed,
-      body: concat(sectionStream(lzmaSection(inner, options.wrapper ?? "compression")), erasedTail(options.tail ?? 64)),
-    },
-  ]);
+function wrapInLzma(inner: Uint8Array, options: { wrapper?: Wrapper; tail?: number; attributes?: number; erasePolarityOnes?: boolean } = {}) {
+  return firmwareVolume(
+    [
+      {
+        guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+        attributes: options.attributes ?? checksummed,
+        body: concat(sectionStream(lzmaSection(inner, options.wrapper ?? "compression")), erasedTail(options.tail ?? 64)),
+      },
+    ],
+    0x40,
+    { erasePolarityOnes: options.erasePolarityOnes ?? true },
+  );
 }
 
 // Setup content that compresses visibly: runs of one byte.
@@ -238,13 +243,14 @@ describe("rebuildFirmware refuses an LZMA section it cannot resize safely", () =
     expect(codesOf(result)).toEqual(["compressed-does-not-fit"]);
   });
 
-  it("refuses to create padding where the source had none", async () => {
-    const image = wrapInLzma(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), { tail: 0 });
+  it("refuses to create padding where the source had none, in a volume that does not declare erased bytes as 0xFF", async () => {
+    const image = wrapInLzma(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), { tail: 0, erasePolarityOnes: false });
     const graph = await graphOf(image);
 
     const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500))], { codecs });
 
     expect(codesOf(result)).toEqual(["compressed-padding-change"]);
+    if (!result.ok) expect(result.refusals[0].message).toMatch(/does not declare erased bytes as 0xFF/);
   });
 
   it("refuses a stream whose properties this encoder cannot reproduce", async () => {
@@ -313,6 +319,114 @@ describe("an edit that changes nothing", () => {
 
     const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
 
+    expect(await verifyByReextraction(graph, [edit], rebuilt.image, { decompress: lzmaDecompress })).toEqual([]);
+  });
+});
+
+describe("rebuildFirmware creates padding the source did not have", () => {
+  async function shrunk(options: { erasePolarityOnes?: boolean; tail?: number } = {}) {
+    const image = wrapInLzma(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), { tail: options.tail ?? 0, ...options });
+    const graph = await graphOf(image);
+    const edit = replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500));
+    return { image, graph, edit };
+  }
+
+  it("leaves erased padding in the same file when the volume declares erased bytes as ones, and says so", async () => {
+    const { image, graph, edit } = await shrunk();
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+
+    const change = rebuilt.layoutChanges[0];
+    expect(change.createdPadding).toBe(true);
+    expect(change.paddingBefore).toBe(0);
+    expect(change.paddingAfter).toBeGreaterThanOrEqual(4);
+    const edge = graph.buffers[1].parent;
+    if (!edge?.ownerFile) throw new Error("no edge");
+    expect(rebuilt.image.length).toBe(image.length);
+    expect(rebuilt.image.slice(edge.payloadStart + change.packedAfter, edge.ownerFile.end).every((byte) => byte === 0xff)).toBe(true);
+    // The file keeps its size: nothing outside it moved.
+    expect(rebuilt.image.slice(edge.ownerFile.end)).toEqual(image.slice(edge.ownerFile.end));
+    expect(verifyRebuiltFirmware(graph, [edit], rebuilt, { codecs })).toEqual([]);
+    expect(await verifyByReextraction(graph, [edit], rebuilt.image, { decompress: lzmaDecompress })).toEqual([]);
+  });
+
+  it("does not call padding created where the source already had some", async () => {
+    const { graph, edit } = await shrunk({ tail: 400 });
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+
+    expect(rebuilt.layoutChanges[0].createdPadding).toBe(false);
+  });
+
+  it("is caught by the verification when the volume does not declare erased bytes as ones", async () => {
+    const { graph, edit } = await shrunk();
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+    const unsure = { ...graph, buffers: graph.buffers.map((node) => ({ ...node })) };
+    const edge = graph.buffers[1].parent;
+    if (!edge?.ownerFile) throw new Error("no edge");
+    const root = unsure.buffers[0];
+    root.bytes = root.bytes.slice();
+    new DataView(root.bytes.buffer).setUint32(edge.ownerFile.volumeStart + 0x2c, 0x4f6ff, true);
+
+    const problems = verifyRebuiltFirmware(unsure, [edit], rebuilt, { codecs });
+
+    expect(problems.join("\n")).toMatch(/created padding in a volume that does not declare erased bytes as 0xFF/);
+  });
+
+  it("is caught by the verification when the rebuild's report hides the created padding", async () => {
+    const { graph, edit } = await shrunk();
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+    const hiding = { ...rebuilt, layoutChanges: rebuilt.layoutChanges.map((change) => ({ ...change, createdPadding: false })) };
+
+    expect(verifyRebuiltFirmware(graph, [edit], hiding, { codecs }).join("\n")).toMatch(/reported layout changes/);
+  });
+
+  it("reads the polarity from the volume's attributes", () => {
+    const declared = firmwareVolume([], 0x40, { erasePolarityOnes: true });
+    const undeclared = firmwareVolume([], 0x40, { erasePolarityOnes: false });
+
+    expect(volumeErasesToOnes(declared, 0)).toBe(true);
+    expect(volumeErasesToOnes(undeclared, 0)).toBe(false);
+    expect(volumeErasesToOnes(new Uint8Array(0x20), 0)).toBe(false);
+    expect(volumeErasesToOnes(declared, -4)).toBe(false);
+  });
+});
+
+describe("rebuildFirmware when the best preset does not fit but another does", () => {
+  // The best-search group writes ten more bytes (trailing bytes decode fine),
+  // standing in for the real sections where it compresses a little worse than
+  // another group.
+  const worseFirst = {
+    ...lzmaJsCodec,
+    encode: (data: Uint8Array, preset: number) => {
+      const stream = lzmaJsCodec.encode(data, preset);
+      return preset === 8 ? Uint8Array.from([...stream, ...new Uint8Array(10)]) : stream;
+    },
+  };
+  const worseCodecs = { lzma: worseFirst };
+
+  async function exactlyFittingOtherPreset() {
+    const inner = innerVolume({ ...compressible, hii: randomBytes(2000, 9) });
+    const edited = (graph: FirmwareProvenanceGraph) => replaceEdit(graph, "setup-hii", 100, randomBytes(300, 4));
+    // First learn how long the second group's stream is for this edit, then
+    // give the section's file exactly that much room.
+    const probe = await graphOf(wrapInLzma(inner, { tail: 4096 }));
+    const probed = unwrap(rebuildFirmware(probe, [edited(probe)], { codecs: { lzma: lzmaJsCodec } }));
+    const target = probed.layoutChanges[0].packedAfter;
+    const original = lzmaJsCodec.encode(inner, 8).length;
+    const tail = target - original;
+    return { inner, tail, edited };
+  }
+
+  it("rebuilds with the preset that fits, and the verification derives the same stream", async () => {
+    const { inner, tail, edited } = await exactlyFittingOtherPreset();
+    expect(tail, "the edit must grow the stream for this scenario").toBeGreaterThanOrEqual(0);
+    const graph = await graphOf(wrapInLzma(inner, { tail }));
+    const edit = edited(graph);
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs: worseCodecs }));
+
+    expect(verifyRebuiltFirmware(graph, [edit], rebuilt, { codecs: worseCodecs })).toEqual([]);
     expect(await verifyByReextraction(graph, [edit], rebuilt.image, { decompress: lzmaDecompress })).toEqual([]);
   });
 });

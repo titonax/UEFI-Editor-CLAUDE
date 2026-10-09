@@ -80,14 +80,27 @@ the packed stream. For each LZMA section on the path, deepest first:
    file and everything after it in the file is erased padding (0xFF)**. The
    file keeps its size, so no file header moves; the section's size field is
    updated and the bytes after the new end are filled with 0xFF.
-3. The padding may change length only where the source already shows the
-   firmware tolerates it. It is measured from where the next section would
-   start (the next 4-byte boundary): if there was room for a section header (4
-   bytes or more) after the section, any non-negative padding is accepted; if
-   there was less, the padding must stay less than that. A result that does not
-   fit, or that would create padding where there was none, is refused with its
-   own code. The padding must be 0xFF; a volume that erases to 0x00 is refused
-   rather than handled.
+3. The padding is measured from where the next section would start (the next
+   4-byte boundary). If the source had room for a section header (4 bytes or
+   more) after the section, any non-negative padding is accepted. If it had
+   less, the padding may stay that short, **or** the section may end earlier and
+   leave erased padding where there was none, but only when the firmware volume
+   that holds the file declares that erased bytes read as ones
+   (`EFI_FVB2_ERASE_POLARITY`, bit `0x800` of the volume attributes at `+0x2C`).
+   The padding is then 0xFF inside the same FFS file; the file keeps its size.
+   Such a section is flagged `createdPadding`, and every report (the layout
+   change, the summary, the changelog and the dialog) says so. A result that
+   does not fit is refused with its own code; so is created padding in a volume
+   that does not declare 0xFF erasure (a volume that erases to 0x00 is refused
+   rather than handled).
+
+   Why this exists: in the eight real AMI images the check was run against, the
+   vendor's terminal LZMA section filled its FFS file exactly (no padding) and
+   every volume declared polarity 1. A re-encode is almost always a little
+   shorter than the vendor's, so refusing to create padding refused all of them.
+   GPT's fork accepts the same thing for its P53 source, per exact source. No
+   firmware has been shown to accept or reject that padding: only a flash test
+   would.
 4. The data checksum of the file is repaired, then the file's buffer is
    carried up to its parent the same way, so two nested LZMA levels work.
 
@@ -317,3 +330,28 @@ panel and the dialog show them.
   image that changes the bytes they cover may be rejected by the platform.
 - Root visibility edits, which change the Setup PE32 section.
 - Plans that change a file's length.
+
+## Fitting a re-encoded LZMA section
+
+LZMA-JS has four distinct search settings (presets 8-9, 5-7, 3-4 and 1-2 search
+identically and differ only in window size). On real sections the best one
+varies by about 1% from one to the next (for example 12,720 bytes with preset 5
+against 12,803 with preset 8 for one nested section). `reencodeLzma` therefore
+takes the room the section has in its file: it tries the best search first and,
+only if that does not fit and the buffer is at most 8 MiB, one preset of each
+other group (the largest the original's dictionary allows), keeping the first
+that fits, or the smallest when none does. The choice is deterministic given the
+original stream, the data and the room, and the verification asks with the same
+room, so its canonical re-encode is the stream the rebuild wrote. Bigger buffers
+get the best preset only: each extra encode of a 20 MB volume costs a minute or
+more.
+
+### What the real images showed (this repository's own run, Node, `xz` read-back)
+
+Eight AMI Aptio images with LZMA at every level of the Setup path were put
+through the check with a 4-byte probe edit in Setup, then in AMITSE and in
+SetupData. Before the padding rule and the preset search all eight were refused
+(the section "would leave N bytes of padding where there were 0"; two nested
+sections needed 7 and 100 bytes more than the vendor's). The results after are in
+the pull request that introduced them. None of these images has Tiano, so Tiano
+is still untested on real firmware.

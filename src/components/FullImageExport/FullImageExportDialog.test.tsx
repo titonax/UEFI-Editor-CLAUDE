@@ -108,6 +108,32 @@ describe("FullImageExportDialog", () => {
     expect(changelog).toContain("Unsuppressed");
   });
 
+  it("warns, before anything is downloaded, when the image has padding the source did not have", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    const withPadding = (request: FullImageRequest): ReturnType<typeof realCheck> => ({
+      result: checkFullImageOutput(request, { codecs: {}, decompress: noDecompress }).then((result) =>
+        result.ok ? { ...result, summary: { ...result.summary, sectionsWithCreatedPadding: 1, createdPaddingBytes: 21806 } } : result,
+      ),
+      cancel: vi.fn(),
+    });
+    renderDialog({ files, appliedData: data, startCheck: withPadding });
+
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+
+    expect(await screen.findByText("This image has padding the source did not have")).toBeInTheDocument();
+    expect(screen.getByText(/21806 byte\(s\) of erased padding/)).toBeInTheDocument();
+  });
+
+  it("does not warn about padding when none was created", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    renderDialog({ files, appliedData: data, startCheck: realCheck });
+
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    await screen.findByText("Checks passed");
+
+    expect(screen.queryByText("This image has padding the source did not have")).not.toBeInTheDocument();
+  });
+
   it("offers only the changelog on request", async () => {
     const { files, data } = await session({ unsuppress: true });
     renderDialog({ files, appliedData: data, startCheck: realCheck });

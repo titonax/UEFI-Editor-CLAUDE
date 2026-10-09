@@ -98,8 +98,10 @@ function fileWith(section: Uint8Array, tail = 64) {
   return { guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: concat(sectionStream(section), erasedTail(tail)) };
 }
 
-function wrapInTiano(inner: Uint8Array, variant: TianoVariant, options: { wrapper?: Wrapper; tail?: number } = {}) {
-  return firmwareVolume([fileWith(tianoSection(inner, variant, options.wrapper ?? "compression"), options.tail ?? 64)]);
+function wrapInTiano(inner: Uint8Array, variant: TianoVariant, options: { wrapper?: Wrapper; tail?: number; erasePolarityOnes?: boolean } = {}) {
+  return firmwareVolume([fileWith(tianoSection(inner, variant, options.wrapper ?? "compression"), options.tail ?? 64)], 0x40, {
+    erasePolarityOnes: options.erasePolarityOnes ?? true,
+  });
 }
 
 const compressible = { hii: new Uint8Array(2000).fill(0x41), amitse: patternBytes(64, 2), setupData: patternBytes(48, 3) };
@@ -302,12 +304,25 @@ describe("rebuildFirmware refuses an EFI/Tiano section it cannot resize safely",
     expect(codesOf(result)).toEqual(["compressed-does-not-fit"]);
   });
 
-  it("refuses to create padding where the source had none", async () => {
-    const graph = await graphOf(wrapInTiano(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), "efi", { tail: 0 }));
+  it("refuses to create padding where the source had none, in a volume that does not declare erased bytes as 0xFF", async () => {
+    const graph = await graphOf(wrapInTiano(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), "efi", { tail: 0, erasePolarityOnes: false }));
 
     const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500))]);
 
     expect(codesOf(result)).toEqual(["compressed-padding-change"]);
+  });
+
+  it("creates erased padding in a volume that declares erased bytes as ones, and says so", async () => {
+    const image = wrapInTiano(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), "efi", { tail: 0 });
+    const graph = await graphOf(image);
+    const edit = replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500));
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit]));
+
+    expect(rebuilt.layoutChanges[0].createdPadding).toBe(true);
+    expect(rebuilt.image.length).toBe(image.length);
+    expect(verifyRebuiltFirmware(graph, [edit], rebuilt)).toEqual([]);
+    expect(await verifyByReextraction(graph, [edit], rebuilt.image, { decompress })).toEqual([]);
   });
 
   it("refuses a section that is not the last one in its file", async () => {

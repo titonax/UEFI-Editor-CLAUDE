@@ -173,7 +173,13 @@ function fileBytes(file: FixtureFile) {
 
 // A firmware volume holding the files back to back on 8-byte boundaries, then
 // erased (0xFF) space. The header is 0x48 bytes with a valid 16-bit checksum.
-export function firmwareVolume(files: FixtureFile[], trailingFree = 0x40) {
+export interface VolumeOptions {
+  // Whether the header declares erased bytes as ones (EFI_FVB2_ERASE_POLARITY),
+  // as real AMI volumes do. Default true.
+  erasePolarityOnes?: boolean;
+}
+
+export function firmwareVolume(files: FixtureFile[], trailingFree = 0x40, options: VolumeOptions = {}) {
   const headerSize = 0x48;
   const placed = files.map(fileBytes);
   let cursor = headerSize;
@@ -188,6 +194,9 @@ export function firmwareVolume(files: FixtureFile[], trailingFree = 0x40) {
   const view = new DataView(bytes.buffer);
   view.setBigUint64(0x20, BigInt(volumeSize), true);
   bytes.set([0x5f, 0x46, 0x56, 0x48], 0x28);
+  // The attributes a real AMI volume carries (0x4FEFF), with or without the
+  // erase polarity bit (0x800).
+  view.setUint32(0x2c, options.erasePolarityOnes === false ? 0x4f6ff : 0x4feff, true);
   view.setUint16(0x30, headerSize, true);
   let headerSum = 0;
   for (let offset = 0; offset < headerSize; offset += 2) headerSum = (headerSum + view.getUint16(offset, true)) & 0xffff;

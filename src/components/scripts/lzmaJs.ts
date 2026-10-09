@@ -7,6 +7,12 @@ import type { LzmaCodec } from "./lzmaSection";
 // presets as the library defines them (2^bits), index = preset - 1.
 const presetDictionaryBits = [16, 20, 19, 20, 21, 22, 23, 24, 25] as const;
 
+// Presets 8-9, 5-7, 3-4 and 1-2 search identically (the library pairs a match
+// finder and a fast-byte count with each); they differ only in window size.
+// Best search first. Measured on real firmware, the best group varies from one
+// section to the next by around 1%.
+const presetGroups = [[8, 9], [5, 6, 7], [3, 4], [1, 2]] as const;
+
 // The library's decoder refuses a declared dictionary above this.
 const maxDictionarySize = 99_999_999;
 
@@ -25,6 +31,7 @@ function toBytes(values: ArrayLike<number>) {
 export const lzmaJsCodec: LzmaCodec = {
   propsByte: 0x5d,
   presetDictionaryBits,
+  presetGroups,
   maxDictionarySize,
   // No end-of-stream marker: the size in the header is the terminator, which is
   // how the firmware's own compressor writes it. The library keeps this as a
