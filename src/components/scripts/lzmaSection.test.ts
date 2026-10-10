@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as lzma from "lzma";
 import { lzmaJsCodec } from "./lzmaJs";
-import { readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
+import { presetSearchCeiling, readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
 import { referenceLzmaAvailable, referenceLzmaDecode } from "./referenceLzma";
 
 const hasXz = await referenceLzmaAvailable();
@@ -209,5 +209,131 @@ describe("lzmaJs in a browser bundle", () => {
 
     expect(result.errors).toEqual([]);
     expect(code).not.toMatch(/__dirname|require\(["']path["']\)/);
+  });
+});
+
+describe("reencodeLzma: searching presets when the stream must fit", () => {
+  const data = Uint8Array.from({ length: 5000 }, (_, index) => (index % 13 === 0 ? 0xaa : (index * 7) % 31));
+  const original = lzmaJsCodec.encode(data, 8);
+  const edited = data.map((byte, index) => (index === 100 ? byte ^ 0xff : byte));
+
+  // A codec in which the best-search group writes ten more bytes than the rest
+  // (trailing bytes after the data decode fine), standing in for the real
+  // case where one group happens to compress a given section worse.
+  function worseFirst(calls: number[]): LzmaCodec {
+    return {
+      ...lzmaJsCodec,
+      encode: (bytes, preset) => {
+        calls.push(preset);
+        const stream = lzmaJsCodec.encode(bytes, preset);
+        return preset === 8 ? Uint8Array.from([...stream, ...new Uint8Array(10)]) : stream;
+      },
+    };
+  }
+
+  it("uses the best group when there is no limit, or when it fits", () => {
+    const calls: number[] = [];
+    const codec = worseFirst(calls);
+
+    const free = reencodeLzma(original, edited, codec);
+    const fits = reencodeLzma(original, edited, codec, { maxBytes: 100_000 });
+
+    expect(free).toMatchObject({ ok: true, preset: 8 });
+    expect(fits).toMatchObject({ ok: true, preset: 8 });
+    expect(calls).toEqual([8, 8]);
+  });
+
+  it("tries one preset of each other group, best first, until one fits", () => {
+    const calls: number[] = [];
+    const codec = worseFirst(calls);
+    const size7 = lzmaJsCodec.encode(edited, 7).length;
+
+    const result = reencodeLzma(original, edited, codec, { maxBytes: size7 });
+
+    expect(result).toMatchObject({ ok: true, preset: 7 });
+    if (result.ok) expect(result.stream.length).toBeLessThanOrEqual(size7);
+    expect(calls).toEqual([8, 7]);
+  });
+
+  it("returns the smallest stream it found when none fits, for the caller to refuse", () => {
+    const calls: number[] = [];
+    const codec = worseFirst(calls);
+
+    const result = reencodeLzma(original, edited, codec, { maxBytes: 1 });
+
+    expect(calls).toEqual([8, 7, 4, 2]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const sizes = [8, 7, 4, 2].map((preset) => lzmaJsCodec.encode(edited, preset).length + (preset === 8 ? 10 : 0));
+    expect(result.stream.length).toBe(Math.min(...sizes));
+  });
+
+  it("names the preset when a later one throws, instead of keeping the first stream", () => {
+    const codec: LzmaCodec = {
+      ...lzmaJsCodec,
+      encode: (bytes, preset) => {
+        if (preset === 7) throw new Error("boom");
+        return lzmaJsCodec.encode(bytes, preset);
+      },
+    };
+
+    const result = reencodeLzma(original, edited, codec, { maxBytes: 1 });
+
+    expect(result).toMatchObject({ ok: false, code: "lzma-codec" });
+    if (!result.ok) expect(result.message).toMatch(/preset 7.*boom/);
+  });
+
+  it("refuses a later preset's stream that has no header instead of crashing on it", () => {
+    const codec: LzmaCodec = {
+      ...lzmaJsCodec,
+      encode: (bytes, preset) => (preset === 7 ? new Uint8Array(3) : lzmaJsCodec.encode(bytes, preset)),
+    };
+
+    const result = reencodeLzma(original, edited, codec, { maxBytes: 1 });
+
+    expect(result).toMatchObject({ ok: false, code: "lzma-codec" });
+    if (!result.ok) expect(result.message).toMatch(/preset 7.*no LZMA header/);
+  });
+
+  it("is deterministic, so a verifier asking with the same limit gets the same stream", () => {
+    const codec = worseFirst([]);
+    const size7 = lzmaJsCodec.encode(edited, 7).length;
+
+    const a = reencodeLzma(original, edited, codec, { maxBytes: size7 });
+    const b = reencodeLzma(original, edited, codec, { maxBytes: size7 });
+
+    expect(a.ok && b.ok && a.stream).toEqual(b.ok && a.ok && b.stream);
+  });
+
+  it("does not search beyond the ceiling, where each extra encode is slow", () => {
+    const calls: number[] = [];
+    const huge = new Uint8Array(presetSearchCeiling + 1);
+    // Only the header of the original is read, so a header will do.
+    const hugeOriginal = new Uint8Array(15);
+    hugeOriginal[0] = 0x5d;
+    new DataView(hugeOriginal.buffer).setUint32(1, 1 << 24, true);
+    new DataView(hugeOriginal.buffer).setBigUint64(5, BigInt(presetSearchCeiling + 1), true);
+    const counting: LzmaCodec = {
+      ...lzmaJsCodec,
+      encode: (bytes, preset) => {
+        calls.push(preset);
+        return lzmaJsCodec.encode(bytes.subarray(0, 0), preset);
+      },
+      decode: () => huge,
+    };
+
+    reencodeLzma(hugeOriginal, huge, counting, { maxBytes: 1 });
+
+    expect(calls).toEqual([8]);
+  });
+
+  it("only offers presets whose window the original's decoder already has", () => {
+    const calls: number[] = [];
+    const small = lzmaJsCodec.encode(data, 3); // a 2^19 dictionary
+    const codec: LzmaCodec = { ...lzmaJsCodec, encode: (bytes, preset) => (calls.push(preset), lzmaJsCodec.encode(bytes, preset)) };
+
+    reencodeLzma(small, edited, codec, { maxBytes: 1 });
+
+    expect(calls.every((preset) => 2 ** lzmaJsCodec.presetDictionaryBits[preset - 1] <= 1 << 19)).toBe(true);
   });
 });

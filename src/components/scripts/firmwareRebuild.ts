@@ -113,6 +113,10 @@ export interface SectionLayoutChange {
   // Bytes of erased padding between the section and the end of its file.
   paddingBefore: number;
   paddingAfter: number;
+  // The source left less than a section header of room after the section in its
+  // file and the rebuilt one leaves erased padding after it: the firmware has not
+  // been shown to accept that, so every report says so.
+  createdPadding: boolean;
 }
 
 export interface RebuiltFirmware {
@@ -153,13 +157,19 @@ function allErased(bytes: Uint8Array, start: number, end: number) {
 interface StreamFormat {
   kind: "lzma" | "standard";
   label: string;
+  // Whether a stream shorter than the source's may leave erased padding where
+  // the source had none. That rests on evidence from real firmware, and has it
+  // for LZMA only.
+  mayCreatePadding: boolean;
   recompressionCode: "lzma-recompression" | "tiano-recompression";
   // The stream for `decoded` in place of `originalStream` (which decodes to
   // `originalDecoded`), or why there is none.
+  // `room` is the most bytes the stream may take in its file.
   reencode(
     originalStream: Uint8Array,
     originalDecoded: Uint8Array,
     decoded: Uint8Array,
+    room: number,
   ): { ok: true; stream: Uint8Array } | { ok: false; message: string };
   // What is wrong with `stream` as the replacement, reading it independently.
   streamProblems(
@@ -167,6 +177,7 @@ interface StreamFormat {
     originalDecoded: Uint8Array,
     stream: Uint8Array,
     decoded: Uint8Array,
+    room: number,
   ): string[];
 }
 
@@ -174,9 +185,11 @@ function lzmaFormat(codec: LzmaCodec): StreamFormat {
   return {
     kind: "lzma",
     label: "LZMA",
+    mayCreatePadding: true,
     recompressionCode: "lzma-recompression",
-    reencode: (originalStream, _originalDecoded, decoded) => reencodeLzma(originalStream, decoded, codec),
-    streamProblems: (originalStream, _originalDecoded, stream, decoded) => {
+    reencode: (originalStream, _originalDecoded, decoded, room) =>
+      reencodeLzma(originalStream, decoded, codec, { maxBytes: room }),
+    streamProblems: (originalStream, _originalDecoded, stream, decoded, room) => {
       const at = "The stream";
       const problems: string[] = [];
       const before = readLzmaHeader(originalStream);
@@ -199,7 +212,7 @@ function lzmaFormat(codec: LzmaCodec): StreamFormat {
       }
       // Bytes the decoder never reads (after the end of the data) would pass
       // the checks above, so the stream must be exactly what the encoder writes.
-      const canonical = reencodeLzma(originalStream, decoded, codec);
+      const canonical = reencodeLzma(originalStream, decoded, codec, { maxBytes: room });
       if (!canonical.ok) {
         problems.push(`${at} cannot be re-derived from its buffer: ${canonical.message}`);
       } else if (!sameBytes(stream, canonical.stream)) {
@@ -214,6 +227,7 @@ function tianoFormat(codec: TianoCodec): StreamFormat {
   return {
     kind: "standard",
     label: "EFI/Tiano",
+    mayCreatePadding: false,
     recompressionCode: "tiano-recompression",
     reencode: (originalStream, originalDecoded, decoded) => reencodeTiano(originalStream, originalDecoded, decoded, codec),
     streamProblems: (originalStream, originalDecoded, stream, decoded) =>
@@ -388,6 +402,65 @@ export function paddingChangeAllowed(before: number, after: number) {
   return before >= sectionHeaderBytes || after < sectionHeaderBytes;
 }
 
+// Whether the firmware volume at `volumeStart` declares that erased bytes read
+// as ones (EFI_FVB2_ERASE_POLARITY, bit 0x800 of the volume attributes), the
+// only evidence this rebuild accepts that 0xFF is what padding in it looks like.
+export function volumeErasesToOnes(bytes: Uint8Array, volumeStart: number) {
+  if (volumeStart < 0 || volumeStart + 0x30 > bytes.length) return false;
+  // Only a real volume header ("_FVH" at +0x28) says anything about erasure.
+  if (bytes[volumeStart + 0x28] !== 0x5f || bytes[volumeStart + 0x29] !== 0x46 || bytes[volumeStart + 0x2a] !== 0x56 || bytes[volumeStart + 0x2b] !== 0x48) {
+    return false;
+  }
+  const attributes = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(volumeStart + 0x2c, true);
+  return (attributes & 0x800) !== 0;
+}
+
+// Padding that the source did not have, but that a shorter stream leaves.
+export function createsPadding(before: number, after: number) {
+  return !paddingChangeAllowed(before, after);
+}
+
+type PaddingVerdict = { ok: true; createdPadding: boolean } | { ok: false; reason: string };
+
+// Whether the padding a rebuilt section leaves is acceptable. Padding the
+// source already had room for (a section header or more) is shown to be
+// tolerated and needs nothing. Any padding appearing where the source had less
+// than that is "created": it needs a format with evidence for it and a volume
+// header that declares erased bytes as ones, and it is reported as created.
+function paddingVerdict(
+  edge: FirmwareEncapsulationEdge,
+  fileEnd: number,
+  newEnd: number,
+  volumeBytes: Uint8Array,
+  volumeStart: number,
+  format: StreamFormat,
+): PaddingVerdict {
+  const alignedBefore = paddingAfterSection(edge.sectionEnd, fileEnd);
+  const alignedAfter = paddingAfterSection(newEnd, fileEnd);
+  const rawBefore = fileEnd - edge.sectionEnd;
+  const rawAfter = fileEnd - newEnd;
+  const created = alignedBefore < sectionHeaderBytes && rawAfter > rawBefore;
+  if (!created) {
+    if (!paddingChangeAllowed(alignedBefore, alignedAfter)) {
+      return { ok: false, reason: "its padding would change in a way the source does not show is tolerated" };
+    }
+    return { ok: true, createdPadding: false };
+  }
+  if (!format.mayCreatePadding) {
+    return {
+      ok: false,
+      reason: `it would leave ${String(rawAfter)} bytes of padding where there were ${String(rawBefore)}, and creating padding is not accepted for ${format.label} sections (no real ${format.label} firmware has shown it is safe)`,
+    };
+  }
+  if (!volumeErasesToOnes(volumeBytes, volumeStart)) {
+    return {
+      ok: false,
+      reason: `it would leave ${String(rawAfter)} bytes of padding where there were ${String(rawBefore)}, and its firmware volume has no valid header declaring erased bytes as 0xFF, so nothing shows what that padding should be or that the firmware accepts it`,
+    };
+  }
+  return { ok: true, createdPadding: true };
+}
+
 interface ValidEdit {
   edit: ArtifactEdit;
   bufferId: number;
@@ -422,12 +495,12 @@ function propagateCompressed(
       },
     };
   }
-  const reencoded = format.reencode(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd), childOriginal, childCopy);
+  const room = owner.end - edge.payloadStart;
+  const reencoded = format.reencode(parentOriginal.subarray(edge.payloadStart, edge.payloadEnd), childOriginal, childCopy, room);
   if (!reencoded.ok) {
     return { ok: false, refusal: { code: format.recompressionCode, message: `${at}: ${reencoded.message}` } };
   }
   const stream = reencoded.stream;
-  const room = owner.end - edge.payloadStart;
   if (stream.length > room) {
     return {
       ok: false,
@@ -439,17 +512,14 @@ function propagateCompressed(
   }
   const paddingBefore = owner.end - edge.sectionEnd;
   const paddingAfter = room - stream.length;
-  const alignedBefore = paddingAfterSection(edge.sectionEnd, owner.end);
-  const alignedAfter = paddingAfterSection(edge.payloadStart + stream.length, owner.end);
-  if (!paddingChangeAllowed(alignedBefore, alignedAfter)) {
+  const padding = paddingVerdict(edge, owner.end, edge.payloadStart + stream.length, parentOriginal, owner.volumeStart, format);
+  if (!padding.ok) {
     return {
       ok: false,
-      refusal: {
-        code: "compressed-padding-change",
-        message: `${at} would leave ${String(alignedAfter)} bytes of padding where there were ${String(alignedBefore)}, which would create padding the firmware has not shown it tolerates.`,
-      },
+      refusal: { code: "compressed-padding-change", message: `${at}: ${padding.reason}.` },
     };
   }
+  const createdPadding = padding.createdPadding;
   const size = edge.payloadStart - edge.sectionStart + stream.length;
   if (edge.sectionHeaderSize === 4 && size >= 0xffffff) {
     return { ok: false, refusal: { code: "section-too-large", message: `${at} would not fit a 4-byte section header.` } };
@@ -467,6 +537,7 @@ function propagateCompressed(
       packedAfter: stream.length,
       paddingBefore,
       paddingAfter,
+      createdPadding,
     },
   };
 }
@@ -664,24 +735,24 @@ function verifyCompressedLink(
   childCopy: Uint8Array,
   childOriginal: Uint8Array,
   format: StreamFormat | undefined,
-): { problems: string[]; packedAfter: number | null } {
+): { problems: string[]; packedAfter: number | null; layout: string } {
   const label = format?.label ?? (edge.compression === "lzma" ? "LZMA" : "EFI/Tiano");
   const at = `The ${label} section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)}`;
   const owner = edge.ownerFile;
-  if (!owner) return { problems: [`${at} is not inside an FFS file.`], packedAfter: null };
+  if (!owner) return { problems: [`${at} is not inside an FFS file.`], packedAfter: null, layout: "" };
   // Nothing changed below this section: it must be the source's own bytes.
   if (
     sameBytes(childCopy, childOriginal) &&
     sameBytes(parentCopy.subarray(edge.sectionStart, owner.end), parentOriginal.subarray(edge.sectionStart, owner.end))
   ) {
-    return { problems: [], packedAfter: null };
+    return { problems: [], packedAfter: null, layout: "" };
   }
-  if (!format) return { problems: [`${at} cannot be checked without a ${label} codec.`], packedAfter: null };
+  if (!format) return { problems: [`${at} cannot be checked without a ${label} codec.`], packedAfter: null, layout: "" };
   const problems: string[] = [];
   const size = readSectionSize(parentCopy, edge);
   const end = edge.sectionStart + size;
   if (end < edge.payloadStart || end > owner.end) {
-    return { problems: [`${at} declares a size that does not fit inside its file.`], packedAfter: null };
+    return { problems: [`${at} declares a size that does not fit inside its file.`], packedAfter: null, layout: "" };
   }
   if (!allErased(parentOriginal, edge.sectionEnd, owner.end)) {
     problems.push(`${at} was not followed by erased padding in the source.`);
@@ -689,19 +760,27 @@ function verifyCompressedLink(
   if (!allErased(parentCopy, end, owner.end)) {
     problems.push(`${at} is not followed by erased padding in the rebuilt image.`);
   }
-  if (!paddingChangeAllowed(paddingAfterSection(edge.sectionEnd, owner.end), paddingAfterSection(end, owner.end))) {
-    problems.push(`${at} changed the length of its padding in a way the source does not show is tolerated.`);
-  }
+  const padding = paddingVerdict(edge, owner.end, end, parentOriginal, owner.volumeStart, format);
+  if (!padding.ok) problems.push(`${at}: ${padding.reason}.`);
   const stream = parentCopy.slice(edge.payloadStart, end);
   for (const problem of format.streamProblems(
     parentOriginal.subarray(edge.payloadStart, edge.payloadEnd),
     childOriginal,
     stream,
     childCopy,
+    owner.end - edge.payloadStart,
   )) {
     problems.push(`${at}: ${problem}`);
   }
-  return { problems, packedAfter: stream.length };
+  // What a layout report must say, read from the bytes.
+  const layout = [
+    edge.payloadEnd - edge.payloadStart,
+    stream.length,
+    owner.end - edge.sectionEnd,
+    owner.end - end,
+    padding.ok && padding.createdPadding,
+  ].join(":");
+  return { problems, packedAfter: stream.length, layout };
 }
 
 // Checks a rebuilt image against the source it was built from, without
@@ -738,7 +817,7 @@ export function verifyRebuiltFirmware(
   };
   const expectedFiles = new Map<string, FirmwareFileReference>();
   const links = new Map<number, FirmwareEncapsulationEdge>();
-  const actualLayouts = new Map<string, number>();
+  const actualLayouts = new Map<string, string>();
   const reported = new Set<string>();
   for (const [position, edit] of edits.entries()) {
     const artifact = graph.artifacts[edit.artifactIndex] as (typeof graph.artifacts)[number] | undefined;
@@ -790,7 +869,9 @@ export function verifyRebuiltFirmware(
       }
       const link = verifyCompressedLink(edge, parentCopy, parentOriginal.bytes, childCopy, childOriginal.bytes, formatOf(edge, codecs));
       problems.push(...link.problems);
-      if (link.packedAfter !== null) actualLayouts.set(`${String(edge.parentBufferId)}:${String(edge.sectionStart)}`, link.packedAfter);
+      if (link.packedAfter !== null) {
+        actualLayouts.set(`${String(edge.parentBufferId)}:${String(edge.sectionStart)}`, link.layout);
+      }
     }
   }
 
@@ -847,11 +928,14 @@ export function verifyRebuiltFirmware(
     problems.push("The reported changed ranges are not the ranges in which the image differs from the source.");
   }
   const reportedLayouts = new Map(
-    rebuilt.layoutChanges.map((change) => [`${String(change.parentBufferId)}:${String(change.sectionStart)}`, change.packedAfter]),
+    rebuilt.layoutChanges.map((change) => [
+      `${String(change.parentBufferId)}:${String(change.sectionStart)}`,
+      [change.packedBefore, change.packedAfter, change.paddingBefore, change.paddingAfter, change.createdPadding].join(":"),
+    ]),
   );
   if (
     reportedLayouts.size !== actualLayouts.size ||
-    [...actualLayouts].some(([key, packed]) => reportedLayouts.get(key) !== packed)
+    [...actualLayouts].some(([key, layout]) => reportedLayouts.get(key) !== layout)
   ) {
     problems.push("The reported layout changes of compressed sections are not the ones in the rebuilt image.");
   }

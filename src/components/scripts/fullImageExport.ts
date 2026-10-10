@@ -49,6 +49,11 @@ export interface FullImageSummary {
   changedRanges: number;
   repairedFiles: number;
   recompressedSections: number;
+  // Sections whose file the source filled exactly and that now end before it,
+  // and the erased bytes created after them: padding the firmware has not been
+  // shown to accept.
+  sectionsWithCreatedPadding: number;
+  createdPaddingBytes: number;
 }
 
 export type FullImageResult =
@@ -177,6 +182,11 @@ function buildChangelog(request: FullImageRequest, rebuilt: RebuiltFirmware, sum
   lines.push("  - every changed byte explained by an edit, a repaired checksum or a rebuilt section;");
   lines.push("  - the rebuilt image read back with the project's own decoders: every artifact is the source's with exactly these edits.");
   lines.push("NOT tested: this image has not been flashed or booted. Passing these checks proves the structure, not that the board accepts it.");
+  if (summary.sectionsWithCreatedPadding > 0) {
+    lines.push(
+      `CREATED PADDING: in ${String(summary.sectionsWithCreatedPadding)} section(s) the source left less than a section header of room after the section in its FFS file, and the re-encoded stream is shorter, so ${String(summary.createdPaddingBytes)} byte(s) of erased padding (0xFF, the polarity the volume declares) now follow it inside the same file. The firmware has not been shown to accept padding there.`,
+    );
+  }
   lines.push("");
   for (const change of request.changes) {
     lines.push(`========== ${change.fileName} ==========`, "", change.changeLog.trimEnd(), "", "");
@@ -193,7 +203,7 @@ function buildChangelog(request: FullImageRequest, rebuilt: RebuiltFirmware, sum
   for (const change of rebuilt.layoutChanges) {
     const format = change.format === "lzma" ? "LZMA" : "EFI/Tiano";
     lines.push(
-      `${format} section re-encoded at ${hexOffset(change.sectionStart)} of decoded buffer ${String(change.parentBufferId)}: ${String(change.packedBefore)} -> ${String(change.packedAfter)} bytes, erased padding after it ${String(change.paddingBefore)} -> ${String(change.paddingAfter)} bytes (the file keeps its size)`,
+      `${format} section re-encoded at ${hexOffset(change.sectionStart)} of decoded buffer ${String(change.parentBufferId)}: ${String(change.packedBefore)} -> ${String(change.packedAfter)} bytes, erased padding after it ${String(change.paddingBefore)} -> ${String(change.paddingAfter)} bytes (the file keeps its size)${change.createdPadding ? " [CREATED PADDING]" : ""}`,
     );
   }
   lines.push("");
@@ -262,6 +272,8 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
     changedRanges: rebuilt.value.changedRanges.length,
     repairedFiles: rebuilt.value.repairedFiles.filter((file) => file.changed).length,
     recompressedSections: rebuilt.value.layoutChanges.length,
+    sectionsWithCreatedPadding: rebuilt.value.layoutChanges.filter((change) => change.createdPadding).length,
+    createdPaddingBytes: rebuilt.value.layoutChanges.filter((change) => change.createdPadding).reduce((total, change) => total + (change.paddingAfter - change.paddingBefore), 0),
   };
   return { ok: true, image: rebuilt.value.image, changelog: buildChangelog(request, rebuilt.value, summary), summary };
 }

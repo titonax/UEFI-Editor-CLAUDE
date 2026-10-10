@@ -227,11 +227,20 @@ export default function FullImageExportDialog({
                 not flashed
               </Badge>
             </Group>
+            {success.summary.sectionsWithCreatedPadding > 0 && (
+              <Alert color="yellow" icon={<IconAlertTriangle size={16} />} title="This image has padding the source did not have">
+                In {success.summary.sectionsWithCreatedPadding} section(s) the original left less than a section header of room after the section in its file and the re-encoded stream is
+                shorter, so {success.summary.createdPaddingBytes} byte(s) of erased padding (0xFF, the polarity the volume declares) now
+                follow it inside the same file. The firmware has not been shown to accept padding there. Flash only with a hardware
+                programmer and a backup of the chip.
+              </Alert>
+            )}
             <Table withColumnBorders>
               <Table.Tbody>
                 <SummaryRow label="Changed bytes" value={`${String(success.summary.changedBytes)} in ${String(success.summary.changedRanges)} range(s)`} />
                 <SummaryRow label="FFS checksums repaired" value={success.summary.repairedFiles} />
                 <SummaryRow label="Compressed sections re-encoded" value={success.summary.recompressedSections} />
+                <SummaryRow label="Erased padding created" value={`${String(success.summary.createdPaddingBytes)} byte(s) in ${String(success.summary.sectionsWithCreatedPadding)} section(s)`} />
                 <SummaryRow label="Size" value={`${String(success.summary.imageBytes)} bytes (unchanged)`} />
                 <SummaryRow label="Source SHA-256" value={<Code>{success.summary.sourceSha256}</Code>} />
                 <SummaryRow label="Output SHA-256" value={<Code>{success.summary.outputSha256}</Code>} />

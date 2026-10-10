@@ -236,6 +236,9 @@ export function assessFirmwareReconstruction(
   if (compressions.includes("standard")) {
     caveats.push("An EFI/Tiano section is re-encoded, not copied: its stream will differ from the vendor's, and only the board's own decoder can confirm it accepts it.");
   }
+  if (compressions.length > 0) {
+    caveats.push("A re-encoded section that comes out shorter than the vendor's leaves erased padding after it in its file; vendor sections often fill their file exactly, and the firmware has not been shown to accept that padding.");
+  }
   caveats.push("An output is checked structurally and by reading it back; it has not been flashed, and signatures, ME and Boot Guard are outside what is checked.");
 
   return {

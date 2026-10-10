@@ -80,14 +80,35 @@ the packed stream. For each LZMA section on the path, deepest first:
    file and everything after it in the file is erased padding (0xFF)**. The
    file keeps its size, so no file header moves; the section's size field is
    updated and the bytes after the new end are filled with 0xFF.
-3. The padding may change length only where the source already shows the
-   firmware tolerates it. It is measured from where the next section would
-   start (the next 4-byte boundary): if there was room for a section header (4
-   bytes or more) after the section, any non-negative padding is accepted; if
-   there was less, the padding must stay less than that. A result that does not
-   fit, or that would create padding where there was none, is refused with its
-   own code. The padding must be 0xFF; a volume that erases to 0x00 is refused
-   rather than handled.
+3. The padding is measured from where the next section would start (the next
+   4-byte boundary). If the source had room for a section header (4 bytes or
+   more) after the section, any non-negative padding is accepted. If it had
+   less, the padding may stay that short, **or** the section may end earlier and
+   leave erased padding where there was none, but only when the firmware volume
+   that holds the file declares that erased bytes read as ones
+   (`EFI_FVB2_ERASE_POLARITY`, bit `0x800` of the volume attributes at `+0x2C`).
+   The padding is then 0xFF inside the same FFS file; the file keeps its size.
+   Such a section is flagged `createdPadding`, and every report (the layout
+   change, the summary, the changelog and the dialog) says so. A result that
+   does not fit is refused with its own code; so is created padding in a volume
+   that does not declare 0xFF erasure (a volume that erases to 0x00 is refused
+   rather than handled).
+
+   Why this exists: in the eight real AMI images the check was run against, the
+   vendor's terminal LZMA section filled its FFS file exactly (no padding) and
+   every volume declared polarity 1. A re-encode is almost always a little
+   shorter than the vendor's, so refusing to create padding refused all of them.
+   GPT's fork does the same for its sources (`docs/ami/compressed-output-acceptance.md`
+   and `docs/phoenix/p53-mirrored-lzma-output-acceptance.md` in
+   `titonax/uefi-editor-gpt`: the newly released bytes of a terminal section are
+   filled with the volume's erase polarity), per exact source. No firmware has
+   been shown to accept or reject that padding: only a flash test would.
+
+   This is **LZMA only**: the evidence is eight LZMA images, and no real EFI/Tiano
+   firmware has been run, so a Tiano section that would leave created padding is
+   refused (`mayCreatePadding` in `firmwareRebuild.ts`). Padding also counts as
+   created when the source left less than a section header's room but not zero
+   (for example 2 bytes); the same two conditions then apply.
 4. The data checksum of the file is repaired, then the file's buffer is
    carried up to its parent the same way, so two nested LZMA levels work.
 
@@ -128,7 +149,10 @@ in a file with no spare tail. That is a refusal, never a truncated stream.
   it is not byte-identical to what the vendor's tool wrote, and nobody here has
   run it on a real board. Only a flash test settles that.
 - That the padding rule matches how a given firmware parses a file's tail. It
-  rests on the source already containing such padding.
+  was formerly justified by the source already containing such padding; it now
+  also rests on the volume's declared erase polarity (stage 2, item 3), which
+  proves the fill byte and not that the firmware parser tolerates trailing
+  padding.
 - LZMA-JS fixes the properties and chooses its own dictionary, so an image built
   with other properties is refused, and so is one declaring a dictionary above
   what its decoder can check (about 100 MB).
@@ -180,7 +204,8 @@ this repository (`tianoCodec.ts`) because no maintained JavaScript one exists,
 and is used unless `codecs.tiano` supplies another. The size and padding rules
 are exactly those of stage 2: the section may change size only if it is the last
 one in its FFS file and the bytes after it are erased padding, the file keeps its
-size, and padding may change length only where the source shows it is tolerated.
+size, and padding may change length only where the source shows it is tolerated;
+creating padding where it had none is not accepted for EFI/Tiano.
 The refusal codes for those rules are shared (`compressed-does-not-fit`,
 `compressed-padding-change`, `section-not-terminal`).
 
@@ -317,3 +342,54 @@ panel and the dialog show them.
   image that changes the bytes they cover may be rejected by the platform.
 - Root visibility edits, which change the Setup PE32 section.
 - Plans that change a file's length.
+
+## Fitting a re-encoded LZMA section
+
+LZMA-JS has four distinct search settings (presets 8-9, 5-7, 3-4 and 1-2 search
+identically and differ only in window size). On real sections the best one
+varies by about 1% from one to the next (for example 12,720 bytes with preset 5
+against 12,803 with preset 8 for one nested section). `reencodeLzma` therefore
+takes the room the section has in its file: it tries the best search first and,
+only if that does not fit and the buffer is at most 8 MiB, one preset of each
+other group (the largest the original's dictionary allows), keeping the first
+that fits, or the smallest when none does. The choice is deterministic given the
+original stream, the data and the room, and the verification asks with the same
+room, so its canonical re-encode is the stream the rebuild wrote. Bigger buffers
+get the best preset only: each extra encode of a 20 MB volume costs a minute or
+more.
+
+### What the real images showed
+
+Eight AMI Aptio images (SHA-256 prefixes below) were put through
+`checkFullImageOutput` in Node with a 4-byte probe edit in Setup, in AMITSE and
+in SetupData, reading back with `xz` (LZMA) and the project's C decoder. The
+paths are LZMA (Setup directly inside the outer LZMA, AMITSE and SetupData in a
+second LZMA inside it, except the first image where they sit in an uncompressed
+nested volume). The images were not committed and no case was recorded.
+
+Before the padding rule and the preset search: **0 of 24** probes passed. Every
+terminal LZMA section filled its FFS file exactly and the re-encode was a little
+shorter, and two nested sections needed 7 and 100 bytes more than the vendor's.
+
+After: **22 of 24** pass, each with an image the same size as the source and a
+read-back equal to the source plus the probe. Created padding was 5-23 KB per
+section. The two refused (`f4403ae442f4`, AMITSE and SetupData) needed 123 and
+45 bytes more than their file has room for after trying every search group.
+One check took between 95 s and 389 s in Node with four running in parallel
+(LZMA-JS encoding dominates), which is close to the check's 10-minute limit for
+the largest image.
+
+| Image (SHA-256 prefix) | Setup | AMITSE | SetupData |
+| --- | --- | --- | --- |
+| `f4403ae442f4` | pass | refused, 123 B over | refused, 45 B over |
+| `a50f46dbdf54` | pass | pass | pass |
+| `f48b929b6273` | pass | pass | pass |
+| `037b5593383e` | pass | pass | pass |
+| `fcd0a7d9f429` | pass | pass | pass |
+| `250567633bfe` | pass | pass | pass |
+| `82163cf6cbe8` | pass | pass | pass |
+| `37aba730190a` | pass | pass | pass |
+
+None of these images has an EFI/Tiano section on the Setup path, so Tiano is
+untested on real firmware, and a probe edit is not a real plan: the figures show
+that the machinery works on real layouts, not what a real plan would cost.

@@ -98,8 +98,10 @@ function fileWith(section: Uint8Array, tail = 64) {
   return { guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: concat(sectionStream(section), erasedTail(tail)) };
 }
 
-function wrapInTiano(inner: Uint8Array, variant: TianoVariant, options: { wrapper?: Wrapper; tail?: number } = {}) {
-  return firmwareVolume([fileWith(tianoSection(inner, variant, options.wrapper ?? "compression"), options.tail ?? 64)]);
+function wrapInTiano(inner: Uint8Array, variant: TianoVariant, options: { wrapper?: Wrapper; tail?: number; erasePolarityOnes?: boolean } = {}) {
+  return firmwareVolume([fileWith(tianoSection(inner, variant, options.wrapper ?? "compression"), options.tail ?? 64)], 0x40, {
+    erasePolarityOnes: options.erasePolarityOnes ?? true,
+  });
 }
 
 const compressible = { hii: new Uint8Array(2000).fill(0x41), amitse: patternBytes(64, 2), setupData: patternBytes(48, 3) };
@@ -302,12 +304,22 @@ describe("rebuildFirmware refuses an EFI/Tiano section it cannot resize safely",
     expect(codesOf(result)).toEqual(["compressed-does-not-fit"]);
   });
 
-  it("refuses to create padding where the source had none", async () => {
-    const graph = await graphOf(wrapInTiano(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), "efi", { tail: 0 }));
+  it("refuses to create padding where the source had none, in a volume that does not declare erased bytes as 0xFF", async () => {
+    const graph = await graphOf(wrapInTiano(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), "efi", { tail: 0, erasePolarityOnes: false }));
 
     const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500))]);
 
     expect(codesOf(result)).toEqual(["compressed-padding-change"]);
+  });
+
+  it("does not create padding even in a volume that declares erased bytes as ones: no real Tiano firmware has shown it is safe", async () => {
+    const image = wrapInTiano(innerVolume({ ...compressible, hii: randomBytes(2000, 9) }), "efi", { tail: 0 });
+    const graph = await graphOf(image);
+
+    const result = rebuildFirmware(graph, [replaceEdit(graph, "setup-hii", 100, new Uint8Array(1500))]);
+
+    expect(codesOf(result)).toEqual(["compressed-padding-change"]);
+    if (!result.ok) expect(result.refusals[0].message).toMatch(/not accepted for EFI\/Tiano/);
   });
 
   it("refuses a section that is not the last one in its file", async () => {
