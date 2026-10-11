@@ -98,6 +98,16 @@ describe("Footer", () => {
     expect(loose.getAttribute("title")).toMatch(/Firmware image/);
   });
 
+  it("keeps the firmware image available with a root visibility plan, and the loose files closed to it", async () => {
+    const { withSource, data } = await fromImage();
+    render(<Harness files={withSource} data={{ ...data, rootVisibilityEdits: [{ kind: "set-root-visibility", rootIndex: 0, formId: "0x1", bufferId: 0, bufferOffset: 0x40, expected: 1, replacement: 0, description: "Hide root" }] }} />);
+    fireEvent.click(screen.getByRole("button", { name: "stage a change" }));
+    fireEvent.click(screen.getByRole("button", { name: "apply the queue" }));
+
+    expect(screen.getByRole("button", { name: /Firmware image/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /UEFI files/ })).toBeDisabled();
+  });
+
   it("has no firmware image button for the manual four-file mode", async () => {
     const { files, data } = await fromImage();
     render(<Harness files={files} data={data} />);

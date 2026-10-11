@@ -192,16 +192,9 @@ export default function Footer({
                 variant="default"
                 leftSection={<IconShieldCheck />}
                 // Always the applied plan, like the button above. A pending
-                // root visibility plan lives in the Setup PE32 section, which
-                // the rebuild does not handle.
-                disabled={(appliedData.rootVisibilityEdits?.length ?? 0) > 0 || !queueApplied}
-                title={
-                  !queueApplied
-                    ? "Apply the change queue before checking the firmware output"
-                    : (appliedData.rootVisibilityEdits?.length ?? 0) > 0
-                      ? "Root visibility changes cannot be put back into the image yet"
-                      : undefined
-                }
+                // root visibility plan is carried by this path too.
+                disabled={!queueApplied}
+                title={!queueApplied ? "Apply the change queue before checking the firmware output" : undefined}
                 onClick={() => {
                   setImageOpened(true);
                 }}

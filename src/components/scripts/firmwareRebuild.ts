@@ -1,4 +1,4 @@
-import { extractAptioIvBytes, type FirmwareDecompressor } from "./aptioIvExtractor";
+import { extractAptioIvBytes, type AptioIvArtifacts, type FirmwareDecompressor } from "./aptioIvExtractor";
 import {
   ffsFileChecksumValid,
   ffsHeaderChecksumValid,
@@ -47,6 +47,97 @@ export interface ArtifactEdit {
   // The bytes the caller believes are there. A mismatch refuses the rebuild.
   expected: Uint8Array;
   replacement: Uint8Array;
+}
+
+// Bytes of one decoded buffer by position, for changes that live outside every
+// artifact: the Setup PE32's root registration vector, say. `file` is the FFS
+// file of that buffer whose body holds the bytes, so its data checksum is
+// repaired; the offset is inside the buffer, not an artifact.
+export interface BufferEdit {
+  bufferId: number;
+  offset: number;
+  expected: Uint8Array;
+  replacement: Uint8Array;
+  file: FirmwareFileReference;
+  // What the edit is, for messages.
+  label: string;
+}
+
+export type RebuildEdit = ArtifactEdit | BufferEdit;
+
+export function isBufferEdit(edit: RebuildEdit): edit is BufferEdit {
+  return "bufferId" in edit;
+}
+
+// Where an edit lands, whichever kind it is.
+interface EditSite {
+  label: string;
+  bufferId: number;
+  // Where `offset` counts from in the buffer, and the span the edit must stay in.
+  base: number;
+  spanEnd: number;
+  sourceFile: FirmwareFileReference;
+  // Whether the buffer has an unbroken path back to the source image.
+  connected: boolean;
+}
+
+// Whether the edit stays where it is allowed to: an artifact edit inside the
+// artifact's payload; a buffer edit in the buffer of its FFS file inside that
+// file's body (the file repaired), and in a buffer decoded from a section
+// inside that buffer (wholly the section's output; the file must then be one
+// the path back to the image passes through, which `pathOf` checks).
+function editInsideBounds(edit: RebuildEdit, site: EditSite) {
+  if (!Number.isInteger(edit.offset) || edit.offset < 0) return false;
+  const bounded = isBufferEdit(edit) && edit.file.bufferId === edit.bufferId;
+  if (bounded && !(Number.isInteger(edit.file.bodyStart) && Number.isInteger(edit.file.end))) return false;
+  const lowest = bounded ? edit.file.bodyStart : site.base;
+  const highest = bounded ? edit.file.end : site.spanEnd;
+  const start = site.base + edit.offset;
+  return start >= lowest && start + edit.expected.length <= highest;
+}
+
+// The file a buffer edit names has to be the file of an artifact the extractor
+// found in that very buffer: the checksum to repair is the one the extractor's
+// own trace says depends on those bytes, not whichever file the caller names.
+function fileOfBufferArtifact(graph: FirmwareProvenanceGraph, edit: BufferEdit) {
+  return graph.artifacts.some((artifact) => artifact.bufferId === edit.bufferId && fileKey(artifact.sourceFile) === fileKey(edit.file));
+}
+
+function connectedToRoot(nodes: Map<number, FirmwareBufferNode>, rootId: number, id: number) {
+  let current = nodes.get(id);
+  for (let hops = 0; current && hops <= nodes.size; hops++) {
+    if (current.id === rootId) return true;
+    current = current.parent ? nodes.get(current.parent.parentBufferId) : undefined;
+  }
+  return false;
+}
+
+function siteOf(
+  graph: FirmwareProvenanceGraph,
+  nodes: Map<number, FirmwareBufferNode>,
+  traces: ReturnType<typeof assessFirmwareReconstruction>["traces"] | undefined,
+  edit: RebuildEdit,
+): EditSite | undefined {
+  if (isBufferEdit(edit)) {
+    return {
+      label: edit.label,
+      bufferId: edit.bufferId,
+      base: 0,
+      spanEnd: nodes.get(edit.bufferId)?.bytes.length ?? 0,
+      sourceFile: edit.file,
+      connected: connectedToRoot(nodes, graph.rootBufferId, edit.bufferId),
+    };
+  }
+  const artifact = graph.artifacts[edit.artifactIndex] as (typeof graph.artifacts)[number] | undefined;
+  if (!artifact) return undefined;
+  return {
+    label: `${artifact.kind} payload`,
+    bufferId: artifact.bufferId,
+    base: artifact.payloadStart,
+    spanEnd: artifact.payloadEnd,
+    sourceFile: artifact.sourceFile,
+    connected: traces ? traces[edit.artifactIndex].complete : true,
+  };
 }
 
 export type RebuildRefusalCode =
@@ -323,7 +414,7 @@ interface ArtifactPath {
 function pathOf(
   nodes: Map<number, FirmwareBufferNode>,
   rootId: number,
-  artifact: FirmwareArtifactLocation,
+  artifact: Pick<FirmwareArtifactLocation, "bufferId" | "sourceFile"> & { kind: string },
   codecs: RebuildCodecs,
 ): ArtifactPath {
   const path: ArtifactPath = { links: [], files: [], refusals: [] };
@@ -476,7 +567,7 @@ function paddingVerdict(
 }
 
 interface ValidEdit {
-  edit: ArtifactEdit;
+  edit: RebuildEdit;
   bufferId: number;
   bufferStart: number;
 }
@@ -558,7 +649,7 @@ function propagateCompressed(
 
 export function rebuildFirmware(
   graph: FirmwareProvenanceGraph,
-  edits: ArtifactEdit[],
+  edits: RebuildEdit[],
   options: RebuildOptions = {},
 ): RebuildResult {
   // The rebuild and its own structural check below encode the same buffers; the
@@ -586,31 +677,39 @@ export function rebuildFirmware(
   const valid: ValidEdit[] = [];
   for (const [position, edit] of edits.entries()) {
     const label = `Edit ${String(position + 1)}`;
-    const artifact = graph.artifacts[edit.artifactIndex] as (typeof graph.artifacts)[number] | undefined;
-    if (!artifact) {
-      refuse("artifact-missing", `${label} names artifact ${String(edit.artifactIndex)}, which this image does not have.`);
+    const site = siteOf(graph, nodes, traces, edit);
+    if (!site) {
+      refuse("artifact-missing", `${label} names artifact ${String((edit as ArtifactEdit).artifactIndex)}, which this image does not have.`);
       continue;
     }
-    const length = artifact.payloadEnd - artifact.payloadStart;
     if (edit.replacement.length !== edit.expected.length) {
       refuse("size-change", `${label} would change the length of the data; the rebuild cannot resize a section.`);
       continue;
     }
-    if (!Number.isInteger(edit.offset) || edit.offset < 0 || edit.offset + edit.expected.length > length) {
-      refuse("edit-out-of-range", `${label} reaches outside the ${artifact.kind} payload.`);
+    const bufferStart = site.base + edit.offset;
+    if (isBufferEdit(edit) && !fileOfBufferArtifact(graph, edit)) {
+      refuse("source-file-elsewhere", `${label}: the FFS file it names is not the file of any artifact the extractor found in buffer ${String(edit.bufferId)}.`);
       continue;
     }
-    const node = nodes.get(artifact.bufferId);
-    if (!node || !traces[edit.artifactIndex].complete) {
-      refuse("incomplete-path", `${label}: the ${artifact.kind} artifact has no complete path back to the source image.`);
+    // An artifact edit stays inside the artifact's payload. A buffer edit in the
+    // buffer of its FFS file stays inside that file's body, which is the file
+    // repaired; in a buffer decoded from a section it stays inside that buffer
+    // (wholly the section's output), and the file must be one the path back to
+    // the image passes through (checked with the path below).
+    if (!editInsideBounds(edit, site)) {
+      refuse("edit-out-of-range", `${label} reaches outside the ${site.label}.`);
       continue;
     }
-    const bufferStart = artifact.payloadStart + edit.offset;
+    const node = nodes.get(site.bufferId);
+    if (!node || !site.connected) {
+      refuse("incomplete-path", `${label}: the ${site.label} has no complete path back to the source image.`);
+      continue;
+    }
     if (!sameBytes(node.bytes.subarray(bufferStart, bufferStart + edit.expected.length), edit.expected)) {
-      refuse("precondition-mismatch", `${label}: the ${artifact.kind} bytes at ${hex(edit.offset)} are not the bytes the edit expects.`);
+      refuse("precondition-mismatch", `${label}: the ${site.label} bytes at ${hex(edit.offset)} are not the bytes the edit expects.`);
       continue;
     }
-    valid.push({ edit, bufferId: artifact.bufferId, bufferStart });
+    valid.push({ edit, bufferId: site.bufferId, bufferStart });
   }
 
   const byBuffer = new Map<number, ValidEdit[]>();
@@ -633,7 +732,9 @@ export function rebuildFirmware(
   const affected = new Set<number>([graph.rootBufferId]);
   const reported = new Set<string>();
   for (const item of valid) {
-    const path = pathOf(nodes, graph.rootBufferId, graph.artifacts[item.edit.artifactIndex], codecs);
+    const site = siteOf(graph, nodes, traces, item.edit);
+    if (!site) continue;
+    const path = pathOf(nodes, graph.rootBufferId, { bufferId: site.bufferId, sourceFile: site.sourceFile, kind: site.label }, codecs);
     for (const problem of path.refusals) {
       if (reported.has(problem.message)) continue;
       reported.add(problem.message);
@@ -820,7 +921,7 @@ function verifyCompressedLink(
 // complete SPI image, nothing outside the BIOS region.
 export function verifyRebuiltFirmware(
   graph: FirmwareProvenanceGraph,
-  edits: ArtifactEdit[],
+  edits: RebuildEdit[],
   rebuilt: RebuiltFirmware,
   options: RebuildOptions = {},
 ): string[] {
@@ -848,19 +949,31 @@ export function verifyRebuiltFirmware(
   const actualLayouts = new Map<string, string>();
   const reported = new Set<string>();
   for (const [position, edit] of edits.entries()) {
-    const artifact = graph.artifacts[edit.artifactIndex] as (typeof graph.artifacts)[number] | undefined;
-    if (!artifact) continue;
-    const start = artifact.payloadStart + edit.offset;
-    const copy = copyOf(artifact.bufferId);
-    if (!copy) {
-      problems.push(`Buffer ${String(artifact.bufferId)} is missing from the rebuilt image.`);
+    const site = siteOf(graph, nodes, undefined, edit);
+    if (!site) continue;
+    const start = site.base + edit.offset;
+    if (!editInsideBounds(edit, site)) {
+      problems.push(`Edit ${String(position + 1)} reaches outside the ${site.label}.`);
       continue;
     }
-    allow(artifact.bufferId, start, start + edit.replacement.length);
-    if (!sameBytes(copy.subarray(start, start + edit.replacement.length), edit.replacement)) {
-      problems.push(`The replacement of edit ${String(position + 1)} is not in place at ${hex(start)} of buffer ${String(artifact.bufferId)}.`);
+    if (isBufferEdit(edit) && !fileOfBufferArtifact(graph, edit)) {
+      problems.push(`Edit ${String(position + 1)} names an FFS file that is not the file of any artifact in buffer ${String(edit.bufferId)}.`);
+      continue;
     }
-    const path = pathOf(nodes, graph.rootBufferId, artifact, codecs);
+    const copy = copyOf(site.bufferId);
+    if (!copy) {
+      problems.push(`Buffer ${String(site.bufferId)} is missing from the rebuilt image.`);
+      continue;
+    }
+    allow(site.bufferId, start, start + edit.replacement.length);
+    if (!sameBytes(copy.subarray(start, start + edit.replacement.length), edit.replacement)) {
+      problems.push(`The replacement of edit ${String(position + 1)} is not in place at ${hex(start)} of buffer ${String(site.bufferId)}.`);
+    }
+    if (!site.connected) {
+      problems.push(`The ${site.label} of edit ${String(position + 1)} has no path back to the source image.`);
+      continue;
+    }
+    const path = pathOf(nodes, graph.rootBufferId, { bufferId: site.bufferId, sourceFile: site.sourceFile, kind: site.label }, codecs);
     for (const problem of path.refusals) {
       if (!reported.has(problem.message)) {
         reported.add(problem.message);
@@ -987,6 +1100,10 @@ const artifactPayloadOf: Record<FirmwareArtifactKind, "hii" | "amitse" | "setupD
 
 export interface ReextractionOptions {
   artifactSetId?: string;
+  // Extra checks on what the read-back found, by a caller who knows what else
+  // the edits were meant to change (for example a fresh code analysis of the
+  // root registration vector). Each string is a problem.
+  inspect?: (extracted: AptioIvArtifacts) => string[];
   // The decompressor used to read the rebuilt image back. In the app this is
   // the project's WebAssembly decoder, which shares no code with the encoder;
   // without one, any compressed section on the way makes the check fail.
@@ -999,7 +1116,7 @@ export interface ReextractionOptions {
 // not share the rebuild's own bookkeeping.
 export async function verifyByReextraction(
   graph: FirmwareProvenanceGraph,
-  edits: ArtifactEdit[],
+  edits: RebuildEdit[],
   image: Uint8Array,
   options: ReextractionOptions = {},
 ): Promise<string[]> {
@@ -1021,7 +1138,15 @@ export async function verifyByReextraction(
     if (!node) continue;
     const expected = node.bytes.slice(artifact.payloadStart, artifact.payloadEnd);
     for (const edit of edits) {
-      if (edit.artifactIndex === index) expected.set(edit.replacement, edit.offset);
+      if (isBufferEdit(edit)) {
+        // A buffer edit that lands inside this artifact's payload is part of it.
+        const at = edit.offset - artifact.payloadStart;
+        if (edit.bufferId === artifact.bufferId && at >= 0 && at + edit.replacement.length <= expected.length) {
+          expected.set(edit.replacement, at);
+        }
+      } else if (edit.artifactIndex === index) {
+        expected.set(edit.replacement, edit.offset);
+      }
     }
     const actual = extracted[artifactPayloadOf[artifact.kind]];
     if (!actual) {
@@ -1037,6 +1162,50 @@ export async function verifyByReextraction(
         found.sourceFile.fileStart !== artifact.sourceFile.fileStart)
     ) {
       problems.push(`The ${artifact.kind} artifact moved when the rebuilt image was read back.`);
+    }
+  }
+  problems.push(...bufferEditProblems(graph, edits, extracted));
+  if (options.inspect) problems.push(...options.inspect(extracted));
+  return problems;
+}
+
+// The way into a buffer from the source image, by the sections that hold it:
+// stable across a rebuild, unlike buffer ids, which are numbered as the
+// extractor meets them.
+export function bufferLineage(graph: FirmwareProvenanceGraph, id: number): string | null {
+  return lineageOf(new Map(graph.buffers.map((node) => [node.id, node])), graph.rootBufferId, id);
+}
+
+function lineageOf(nodes: Map<number, FirmwareBufferNode>, rootId: number, id: number): string | null {
+  const steps: string[] = [];
+  let current = nodes.get(id);
+  for (let hops = 0; current && hops <= nodes.size; hops++) {
+    if (current.id === rootId) return steps.reverse().join(">");
+    const edge = current.parent;
+    if (!edge) return null;
+    steps.push(`${edge.compression}/${String(edge.sectionType)}/${String(edge.sectionStart)}/${String(edge.payloadStart)}`);
+    current = nodes.get(edge.parentBufferId);
+  }
+  return null;
+}
+
+// Each buffer edit must be found, by the same way into its buffer, in what the
+// extractor reads out of the rebuilt image.
+function bufferEditProblems(graph: FirmwareProvenanceGraph, edits: RebuildEdit[], extracted: AptioIvArtifacts): string[] {
+  const problems: string[] = [];
+  const before = new Map(graph.buffers.map((node) => [node.id, node]));
+  const after = new Map(extracted.provenance.buffers.map((node) => [node.id, node]));
+  for (const edit of edits) {
+    if (!isBufferEdit(edit)) continue;
+    const lineage = lineageOf(before, graph.rootBufferId, edit.bufferId);
+    const found =
+      lineage === null
+        ? undefined
+        : extracted.provenance.buffers.find((node) => lineageOf(after, extracted.provenance.rootBufferId, node.id) === lineage);
+    if (!found) {
+      problems.push(`The buffer of "${edit.label}" was not found when the rebuilt image was read back.`);
+    } else if (!sameBytes(found.bytes.subarray(edit.offset, edit.offset + edit.replacement.length), edit.replacement)) {
+      problems.push(`"${edit.label}" reads back differently from the requested edit.`);
     }
   }
   return problems;

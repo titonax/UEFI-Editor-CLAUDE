@@ -5,7 +5,7 @@ import React from "react";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 import { startFullImageCheck as startCheckInWorker, type FullImageCheckHandle } from "../scripts/fullImageCheckClient";
 import {
-  changesFromPlan,
+  fullImagePlanFromData,
   modifiedImageName,
   type FullImageRequest,
   type FullImageResult,
@@ -84,7 +84,7 @@ export default function FullImageExportDialog({
     const fingerprint = planFingerprint;
     let request: FullImageRequest;
     try {
-      const changes = changesFromPlan(appliedData, files);
+      const { changes, rootChanges, rootReport } = fullImagePlanFromData(appliedData, files);
       const context = source.artifacts.artifactSets.find((one) => one.id === source.artifacts.selectedArtifactSetId);
       if (!context) throw new Error("The selected firmware context is not among the contexts this image holds.");
       request = {
@@ -93,6 +93,7 @@ export default function FullImageExportDialog({
         artifactSetId: source.artifacts.selectedArtifactSetId,
         sourceName: source.fileName,
         changes,
+        ...(rootReport ? { rootChanges, rootReport } : {}),
       };
     } catch (error) {
       setState({ phase: "refused", fingerprint, message: error instanceof Error ? error.message : String(error) });
@@ -234,6 +235,13 @@ export default function FullImageExportDialog({
                 not flashed
               </Badge>
             </Group>
+            {success.summary.rootBytesChanged > 0 && (
+              <Alert color="yellow" icon={<IconAlertTriangle size={16} />} title="Root visibility is evidence, not an observed effect">
+                {success.summary.rootBytesChanged} byte(s) of the Setup module's root registration vector were changed. The vector was found by code
+                analysis and the rebuilt image repeats that analysis, but what a running Setup does with the new values has not been observed. Flash
+                only with a hardware programmer and a backup of the chip.
+              </Alert>
+            )}
             {success.summary.sectionsWithCreatedPadding > 0 && (
               <Alert color="yellow" icon={<IconAlertTriangle size={16} />} title="This image has padding the source did not have">
                 In {success.summary.sectionsWithCreatedPadding} section(s) the original left less than a section header of room after the section in its file and the re-encoded stream is
@@ -246,6 +254,9 @@ export default function FullImageExportDialog({
               <Table.Tbody>
                 <SummaryRow label="Changed bytes" value={`${String(success.summary.changedBytes)} in ${String(success.summary.changedRanges)} range(s)`} />
                 <SummaryRow label="FFS checksums repaired" value={success.summary.repairedFiles} />
+                {success.summary.rootBytesChanged > 0 && (
+                  <SummaryRow label="Root visibility bytes changed (Setup PE32)" value={success.summary.rootBytesChanged} />
+                )}
                 <SummaryRow label="Compressed sections re-encoded" value={success.summary.recompressedSections} />
                 <SummaryRow label="Erased padding created" value={`${String(success.summary.createdPaddingBytes)} byte(s) in ${String(success.summary.sectionsWithCreatedPadding)} section(s)`} />
                 <SummaryRow label="Size" value={`${String(success.summary.imageBytes)} bytes (unchanged)`} />

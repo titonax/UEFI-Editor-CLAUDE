@@ -155,8 +155,10 @@ export default function RootVisibilityAnalysis({
         <Text size="xs" c="dimmed">
           Original evidence remains immutable. Buttons record a reversible desired state
           in the pending change set. A root visibility change lives in the Setup
-          module's PE32 section, which the full-image output cannot rebuild yet, so it
-          cannot be written. The
+          module's PE32 section: it is written only by the complete firmware image
+          output (the extracted UEFI files cannot carry it), which re-analyses the
+          rebuilt image before offering it. Its effect on a running Setup has not
+          been observed. The
           original BIOS contains {String(originalVisible)} visible roots.
         </Text>
       </Stack>

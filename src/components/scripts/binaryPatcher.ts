@@ -439,12 +439,17 @@ export interface ModifiedFiles {
   setupdataBinChangeLog: string;
 }
 
-export function computeModifiedFiles(data: Data, files: PopulatedFiles): ModifiedFiles {
-  // A root byte lives in the Setup PE32 inside the image, not in any of
-  // the four extracted files, so a pending plan can't be honored here and
-  // silently dropping it would export something other than what the user
-  // asked for.
-  if ((data.rootVisibilityEdits?.length ?? 0) > 0) {
+export interface ModifiedFilesOptions {
+  // A root byte lives in the Setup PE32 inside the image, not in any of the
+  // four extracted files, so exporting those files cannot honor a pending root
+  // visibility plan, and silently dropping it would export something other than
+  // what the user asked for: by default it is refused. The complete-image
+  // export puts those bytes back itself and asks for the plan to be left to it.
+  rootVisibility?: "refuse" | "leave-to-caller";
+}
+
+export function computeModifiedFiles(data: Data, files: PopulatedFiles, options: ModifiedFilesOptions = {}): ModifiedFiles {
+  if ((data.rootVisibilityEdits?.length ?? 0) > 0 && options.rootVisibility !== "leave-to-caller") {
     throw new Error(
       "Root visibility changes require the verified full-image reconstruction path and cannot be exported as extracted UEFI files.",
     );
