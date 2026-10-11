@@ -81,6 +81,28 @@ interface EditSite {
   connected: boolean;
 }
 
+// Whether the edit stays where it is allowed to: an artifact edit inside the
+// artifact's payload; a buffer edit in the buffer of its FFS file inside that
+// file's body (the file repaired), and in a buffer decoded from a section
+// inside that buffer (wholly the section's output; the file must then be one
+// the path back to the image passes through, which `pathOf` checks).
+function editInsideBounds(edit: RebuildEdit, site: EditSite) {
+  if (!Number.isInteger(edit.offset) || edit.offset < 0) return false;
+  const bounded = isBufferEdit(edit) && edit.file.bufferId === edit.bufferId;
+  if (bounded && !(Number.isInteger(edit.file.bodyStart) && Number.isInteger(edit.file.end))) return false;
+  const lowest = bounded ? edit.file.bodyStart : site.base;
+  const highest = bounded ? edit.file.end : site.spanEnd;
+  const start = site.base + edit.offset;
+  return start >= lowest && start + edit.expected.length <= highest;
+}
+
+// The file a buffer edit names has to be the file of an artifact the extractor
+// found in that very buffer: the checksum to repair is the one the extractor's
+// own trace says depends on those bytes, not whichever file the caller names.
+function fileOfBufferArtifact(graph: FirmwareProvenanceGraph, edit: BufferEdit) {
+  return graph.artifacts.some((artifact) => artifact.bufferId === edit.bufferId && fileKey(artifact.sourceFile) === fileKey(edit.file));
+}
+
 function connectedToRoot(nodes: Map<number, FirmwareBufferNode>, rootId: number, id: number) {
   let current = nodes.get(id);
   for (let hops = 0; current && hops <= nodes.size; hops++) {
@@ -665,17 +687,17 @@ export function rebuildFirmware(
       continue;
     }
     const bufferStart = site.base + edit.offset;
-    const inBuffer = isBufferEdit(edit);
-    // An artifact edit stays inside the artifact's payload; a buffer edit stays
-    // inside the body of the FFS file it names, which is the file repaired.
-    const lowest = inBuffer ? edit.file.bodyStart : site.base;
-    const highest = inBuffer ? edit.file.end : site.spanEnd;
-    if (!Number.isInteger(edit.offset) || edit.offset < 0 || bufferStart < lowest || bufferStart + edit.expected.length > highest) {
-      refuse("edit-out-of-range", `${label} reaches outside the ${site.label}.`);
+    if (isBufferEdit(edit) && !fileOfBufferArtifact(graph, edit)) {
+      refuse("source-file-elsewhere", `${label}: the FFS file it names is not the file of any artifact the extractor found in buffer ${String(edit.bufferId)}.`);
       continue;
     }
-    if (inBuffer && edit.file.bufferId !== edit.bufferId) {
-      refuse("source-file-elsewhere", `${label}: the FFS file it names is not in buffer ${String(edit.bufferId)}.`);
+    // An artifact edit stays inside the artifact's payload. A buffer edit in the
+    // buffer of its FFS file stays inside that file's body, which is the file
+    // repaired; in a buffer decoded from a section it stays inside that buffer
+    // (wholly the section's output), and the file must be one the path back to
+    // the image passes through (checked with the path below).
+    if (!editInsideBounds(edit, site)) {
+      refuse("edit-out-of-range", `${label} reaches outside the ${site.label}.`);
       continue;
     }
     const node = nodes.get(site.bufferId);
@@ -930,6 +952,14 @@ export function verifyRebuiltFirmware(
     const site = siteOf(graph, nodes, undefined, edit);
     if (!site) continue;
     const start = site.base + edit.offset;
+    if (!editInsideBounds(edit, site)) {
+      problems.push(`Edit ${String(position + 1)} reaches outside the ${site.label}.`);
+      continue;
+    }
+    if (isBufferEdit(edit) && !fileOfBufferArtifact(graph, edit)) {
+      problems.push(`Edit ${String(position + 1)} names an FFS file that is not the file of any artifact in buffer ${String(edit.bufferId)}.`);
+      continue;
+    }
     const copy = copyOf(site.bufferId);
     if (!copy) {
       problems.push(`Buffer ${String(site.bufferId)} is missing from the rebuilt image.`);
@@ -1142,6 +1172,10 @@ export async function verifyByReextraction(
 // The way into a buffer from the source image, by the sections that hold it:
 // stable across a rebuild, unlike buffer ids, which are numbered as the
 // extractor meets them.
+export function bufferLineage(graph: FirmwareProvenanceGraph, id: number): string | null {
+  return lineageOf(new Map(graph.buffers.map((node) => [node.id, node])), graph.rootBufferId, id);
+}
+
 function lineageOf(nodes: Map<number, FirmwareBufferNode>, rootId: number, id: number): string | null {
   const steps: string[] = [];
   let current = nodes.get(id);

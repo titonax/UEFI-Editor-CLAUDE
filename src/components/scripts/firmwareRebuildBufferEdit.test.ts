@@ -47,6 +47,15 @@ function lzmaWrapped(values: number[]) {
   return firmwareVolume([{ guid: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", attributes: checksummed, body: concat(sectionStream(section), erasedTail(300)) }]);
 }
 
+// The Setup file itself holds the compressed section, with the HII and PE32
+// sections inside it: the vector's buffer is the decoded one, and the file that
+// owns the bytes is in the outer buffer.
+function setupFileCompressed(values: number[]) {
+  const inner = sectionStream(freeformSection(HII_GUID, patternBytes(900, 5)), pe32Section(buildPe(values)));
+  const body = sectionStream(compressionSection(2, inner.length, lzmaJsCodec.encode(inner, 8)));
+  return firmwareVolume([{ guid: SETUP_GUID, attributes: checksummed, body: concat(body, erasedTail(300)) }]);
+}
+
 async function opened(image: Uint8Array) {
   const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
   const report = inspectAmiRootVisibility(roots, artifacts.provenance);
@@ -171,7 +180,7 @@ describe("rebuildFirmware refuses a buffer edit it cannot place", () => {
     const open = await opened(setupVolume([1, 1, 1]));
     const missing = { ...rootEdit(open, 0, 0), bufferId: 99, file: { ...open.file, bufferId: 99 } };
 
-    expect(codesOf(rebuildFirmware(open.graph, [missing], { codecs }))).toEqual(["incomplete-path"]);
+    expect(codesOf(rebuildFirmware(open.graph, [missing], { codecs }))).toEqual(["source-file-elsewhere"]);
   });
 
   it("refuses a change of length", async () => {
@@ -251,5 +260,89 @@ describe("the verification of a buffer edit", () => {
     const problems = await verifyByReextraction(open.graph, [edit], rebuilt.image, { decompress, inspect: () => ["the caller does not like it"] });
 
     expect(problems).toEqual(["the caller does not like it"]);
+  });
+});
+
+describe("a Setup file that holds its own compressed section", () => {
+  it("flips the byte below the section, re-encodes it and repairs the outer file", async () => {
+    const image = setupFileCompressed([1, 1, 1]);
+    const open = await opened(image);
+    expect(open.file.bufferId).not.toBe(open.vector.bufferId);
+    const edit = rootEdit(open, 1, 0);
+
+    const rebuilt = unwrap(rebuildFirmware(open.graph, [edit], { codecs }));
+
+    expect(rebuilt.image.length).toBe(image.length);
+    expect(rebuilt.layoutChanges).toHaveLength(1);
+    expect(verifyRebuiltFirmware(open.graph, [edit], rebuilt, { codecs })).toEqual([]);
+    const problems = await verifyByReextraction(open.graph, [edit], rebuilt.image, { decompress });
+    expect(problems).toEqual([]);
+    const again = await extractAptioIvBytes(rebuilt.image, noIfr, decompress);
+    expect(vectorOf(again)).toEqual([1, 0, 1]);
+    // Everything that changed is inside the outer file, whose checksum was repaired.
+    const changed = Array.from(rebuilt.image, (byte, index) => (byte === image[index] ? -1 : index)).filter((index) => index >= 0);
+    expect(changed.every((index) => index >= open.file.fileStart && index < open.file.end)).toBe(true);
+    expect(changed).toContain(open.file.fileStart + 17);
+  });
+
+  it("refuses without an LZMA codec", async () => {
+    const open = await opened(setupFileCompressed([1, 1, 1]));
+    expect(codesOf(rebuildFirmware(open.graph, [rootEdit(open, 0, 0)], { codecs: {} }))).toContain("compressed-section");
+  });
+
+  it("refuses an offset beyond the decoded buffer", async () => {
+    const open = await opened(setupFileCompressed([1, 1, 1]));
+    const node = open.graph.buffers.find((buffer) => buffer.id === open.vector.bufferId);
+    if (!node) throw new Error("no buffer");
+    const outside = { ...rootEdit(open, 0, 0), offset: node.bytes.length };
+    expect(codesOf(rebuildFirmware(open.graph, [outside], { codecs }))).toEqual(["edit-out-of-range"]);
+  });
+});
+
+describe("what the file of a buffer edit must be", () => {
+  it("is the file of an artifact the extractor found in that buffer", async () => {
+    const open = await opened(setupVolume([1, 1, 1]));
+    const other = { ...rootEdit(open, 0, 0), file: { ...open.file, fileStart: open.file.fileStart + 8 } };
+    expect(codesOf(rebuildFirmware(open.graph, [other], { codecs }))).toEqual(["source-file-elsewhere"]);
+    expect(verifyRebuiltFirmware(open.graph, [other], unwrap(rebuildFirmware(open.graph, [rootEdit(open, 0, 0)], { codecs })), { codecs }).join(" ")).toMatch(/not the file of any artifact/);
+  });
+
+  it("is verified to stay inside that file's body, not only by the rebuild", async () => {
+    const open = await opened(setupVolume([1, 1, 1]));
+    const rebuilt = unwrap(rebuildFirmware(open.graph, [rootEdit(open, 0, 0)], { codecs }));
+    const outside = { ...rootEdit(open, 0, 0), offset: 2, expected: Uint8Array.of(open.graph.buffers[0].bytes[2]), replacement: Uint8Array.of(0) };
+    expect(verifyRebuiltFirmware(open.graph, [outside], rebuilt, { codecs }).join(" ")).toMatch(/reaches outside/);
+  });
+});
+
+describe("a buffer edit next to other edits", () => {
+  it("refuses a buffer edit inside the span of an artifact edit", async () => {
+    const open = await opened(setupVolume([1, 1, 1]));
+    const peIndex = open.graph.artifacts.findIndex((artifact) => artifact.kind === "setup-hii");
+    const hii = open.graph.artifacts[peIndex];
+    const node = open.graph.buffers.find((buffer) => buffer.id === hii.bufferId);
+    if (!node) throw new Error("no buffer");
+    const at = open.report.entries[0].bufferOffset - hii.payloadStart;
+    const expected = node.bytes.slice(hii.payloadStart + at, hii.payloadStart + at + 1);
+    const over: ArtifactEdit = { artifactIndex: peIndex, offset: at, expected, replacement: Uint8Array.of(0) };
+    const result = rebuildFirmware(open.graph, [over, rootEdit(open, 0, 0)], { codecs });
+    // Either the artifact edit is out of its payload, or the two overlap; never accepted.
+    expect(result.ok).toBe(false);
+  });
+
+  it("repairs the checksum of an LZMA-wrapped file once for an HII edit and a root edit", async () => {
+    const open = await opened(lzmaWrapped([1, 1, 1]));
+    const hiiIndex = open.graph.artifacts.findIndex((artifact) => artifact.kind === "setup-hii");
+    const hii = open.graph.artifacts[hiiIndex];
+    const node = open.graph.buffers.find((buffer) => buffer.id === hii.bufferId);
+    if (!node) throw new Error("no buffer");
+    const expected = node.bytes.slice(hii.payloadStart + 10, hii.payloadStart + 14);
+    const edits = [{ artifactIndex: hiiIndex, offset: 10, expected, replacement: expected.map((byte) => byte ^ 0xff) }, rootEdit(open, 2, 0)];
+
+    const rebuilt = unwrap(rebuildFirmware(open.graph, edits, { codecs }));
+
+    expect(rebuilt.layoutChanges).toHaveLength(1);
+    expect(rebuilt.repairedFiles.filter((file) => file.changed)).toHaveLength(2);
+    expect(verifyRebuiltFirmware(open.graph, edits, rebuilt, { codecs })).toEqual([]);
   });
 });

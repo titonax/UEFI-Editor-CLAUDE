@@ -12,7 +12,7 @@ import {
   pe32Section,
   sectionStream,
 } from "./firmwareImageFixtures";
-import { changesFromPlan, checkFullImageOutput, rootChangesFromPlan, type FullImageRequest, type RootByteChange } from "./fullImageExport";
+import { changesFromPlan, checkFullImageOutput, fullImagePlanFromData, rootChangesFromPlan, type FullImageRequest, type RootByteChange } from "./fullImageExport";
 import { parseData } from "./ifrParser";
 import { lzmaJsCodec } from "./lzmaJs";
 import { buildPopulatedFilesFromArtifacts } from "./populatedFilesFromArtifacts";
@@ -73,8 +73,11 @@ describe("root visibility in the complete image", () => {
     expect(rootChanges[0]).toMatchObject({ expected: 1, replacement: 0, offset: open.report.entries[1].bufferOffset });
     // The per-file export still refuses it; the full-image path does not.
     expect(() => computeModifiedFiles(open.data, open.files)).toThrow(/full-image reconstruction/);
+    // Asking only for the files cannot drop the root plan; the full-image plan carries both.
+    expect(() => changesFromPlan(open.data, open.files)).toThrow(/full-image reconstruction/);
     // (the data here belongs to another fixture, so the planner may refuse for its own reasons)
-    expect(() => changesFromPlan(open.data, open.files)).not.toThrow(/full-image reconstruction/);
+    expect(() => fullImagePlanFromData(open.data, open.files)).not.toThrow(/full-image reconstruction/);
+    expect(rootChangesFromPlan(open.data, open.files).rootChanges).toHaveLength(1);
   });
 
   it("refuses a plan that does not match the vector detected in this firmware", async () => {
@@ -135,6 +138,52 @@ describe("root visibility in the complete image", () => {
 
     expect(result).toMatchObject({ ok: false, stage: "read-back" });
     if (!result.ok) expect(result.messages.join(" ")).toMatch(/moved/);
+  });
+});
+
+describe("the plan-stage checks of the root changes", () => {
+  async function base() {
+    const open = await opened();
+    const change = rootChangesFromPlanFor(open);
+    return { open, change };
+  }
+  const messagesOf = (result: Awaited<ReturnType<typeof checkFullImageOutput>>) => (result.ok ? [] : result.messages);
+
+  it("refuses a byte that is not an entry of the detected vector", async () => {
+    const { open, change } = await base();
+    const result = await checkFullImageOutput(requestOf(open, [{ ...change, offset: change.offset + 23 }]), deps);
+    expect(result).toMatchObject({ ok: false, stage: "plan" });
+    expect(messagesOf(result).join(" ")).toMatch(/not a byte of the detected root registration vector/);
+  });
+
+  it("refuses a change in another buffer, with a wrong expected value, or to a non-Boolean", async () => {
+    const { open, change } = await base();
+    for (const bad of [{ ...change, bufferId: change.bufferId + 1 }, { ...change, expected: 0 as const, replacement: 1 as const }, { ...change, replacement: 2 as unknown as 0 }]) {
+      const result = await checkFullImageOutput(requestOf(open, [bad]), deps);
+      expect(result).toMatchObject({ ok: false, stage: "plan" });
+    }
+  });
+
+  it("refuses a change that changes nothing instead of dropping it", async () => {
+    const { open, change } = await base();
+    const result = await checkFullImageOutput(requestOf(open, [{ ...change, replacement: 1 }]), deps);
+    expect(result).toMatchObject({ ok: false, stage: "plan" });
+    expect(messagesOf(result).join(" ")).toMatch(/other Boolean/);
+  });
+
+  it("refuses two changes to the same byte", async () => {
+    const { open, change } = await base();
+    const result = await checkFullImageOutput(requestOf(open, [change, change]), deps);
+    expect(messagesOf(result).join(" ")).toMatch(/same byte/);
+  });
+
+  it("refuses to hide the last visible root", async () => {
+    const open = await opened([1, 0, 0]);
+    open.data.rootVisibilityEdits = [editOf(open, 0)];
+    const { rootChanges } = rootChangesFromPlan(open.data, open.files);
+    const result = await checkFullImageOutput(requestOf(open, rootChanges), deps);
+    expect(result).toMatchObject({ ok: false, stage: "plan" });
+    expect(messagesOf(result).join(" ")).toMatch(/hides every root/);
   });
 });
 

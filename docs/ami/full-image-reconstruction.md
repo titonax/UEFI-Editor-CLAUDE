@@ -365,8 +365,18 @@ Setup FFS file whose data checksum depends on it) next to the `ArtifactEdit`s:
 - the changelog lists each byte (buffer, offset, before and after) and says the
   effect on a running Setup has not been observed.
 
-An edit that changes nothing is dropped, and a plan whose only content is
-identical bytes is refused as empty.
+- the plan stage refuses a root change that is not one byte of the detected
+  vector (same buffer, an entry's offset, the value the detection saw turned
+  into the other Boolean), two changes to the same byte, a no-op change, and a
+  plan that hides every root: the read-back analysis only recognises a vector
+  with a visible root, so it could not confirm that plan;
+- the byte may sit in the buffer of its FFS file (bounded by the file's body) or
+  in a buffer decoded from a compressed section inside that file (bounded by the
+  buffer, with the outer file repaired through the section's path). The file a
+  buffer edit names must be the file of an artifact the extractor found in that
+  buffer;
+- the read-back also requires the vector to be found again in the same buffer,
+  reached the same way through the sections.
 
 ## Fitting a re-encoded LZMA section
 

@@ -9,6 +9,7 @@ import {
   reportProgress,
   verifyByReextraction,
   type ArtifactEdit,
+  bufferLineage,
   type BufferEdit,
   type RebuildCodecs,
   type RebuildEdit,
@@ -172,12 +173,27 @@ export function planArtifactEdits(graph: FirmwareProvenanceGraph, changes: Artif
 
 // What the applied plan does to each extracted file, ready for the check.
 // Throws what the per-file export throws, so both paths refuse the same plans
-// for the same reasons; the root visibility plan is the exception, which only
-// this path can carry out (see rootChangesFromPlan).
+// for the same reasons, including a pending root visibility plan, which is not
+// in any of these files: `fullImagePlanFromData` is what carries it.
 export function changesFromPlan(data: Data, files: PopulatedFiles): ArtifactChange[] {
+  return fileChanges(data, files, "refuse");
+}
+
+// Everything the complete-image check needs from the applied plan: the changes
+// to the extracted files and the root visibility bytes, always together, so a
+// root plan can't be dropped by a caller that only asked for the files.
+export function fullImagePlanFromData(
+  data: Data,
+  files: PopulatedFiles,
+): { changes: ArtifactChange[]; rootChanges: RootByteChange[]; rootReport?: AmiRootVisibilityReport } {
+  const { rootChanges, rootReport } = rootChangesFromPlan(data, files);
+  return { changes: fileChanges(data, files, "leave-to-caller"), rootChanges, ...(rootReport ? { rootReport } : {}) };
+}
+
+function fileChanges(data: Data, files: PopulatedFiles, rootVisibility: "refuse" | "leave-to-caller"): ArtifactChange[] {
   const source = files.firmwareSource;
   if (!source) throw new Error("These files did not come from a complete firmware image.");
-  const modified = computeModifiedFiles(data, files, { rootVisibility: "leave-to-caller" });
+  const modified = computeModifiedFiles(data, files, { rootVisibility });
   const changes: ArtifactChange[] = [];
   const add = (
     kind: FirmwareArtifactKind,
@@ -230,7 +246,7 @@ export function rootChangesFromPlan(
 // A fresh code analysis of the rebuilt image must find the same vector, in the
 // same place, holding exactly what the plan asked for: the read-back that does
 // not trust the rebuild's own bookkeeping.
-function rootVectorInspector(report: AmiRootVisibilityReport, changes: RootByteChange[]) {
+function rootVectorInspector(graph: FirmwareProvenanceGraph, report: AmiRootVisibilityReport, changes: RootByteChange[]) {
   return (extracted: AptioIvArtifacts): string[] => {
     if (!report.vector) return ["The plan has no root registration vector to check."];
     const menu: Menu = report.entries.map((entry) => ({
@@ -245,6 +261,12 @@ function rootVectorInspector(report: AmiRootVisibilityReport, changes: RootByteC
       return [`A fresh code analysis of the rebuilt image no longer finds the root registration vector (${fresh.reason}).`];
     }
     const problems: string[] = [];
+    // The vector found again must be in the very buffer the edit was made in,
+    // reached the same way through the sections of the image.
+    const edited = bufferLineage(graph, report.vector.bufferId);
+    if (edited === null || bufferLineage(extracted.provenance, fresh.vector.bufferId) !== edited) {
+      problems.push("The root registration vector was found in a different buffer of the rebuilt image than the one that was edited.");
+    }
     if (fresh.vector.offset !== report.vector.offset) {
       problems.push(`The root registration vector moved from ${hexOffset(report.vector.offset)} to ${hexOffset(fresh.vector.offset)}.`);
     }
@@ -259,6 +281,11 @@ function rootVectorInspector(report: AmiRootVisibilityReport, changes: RootByteC
 
 function hexOffset(value: number) {
   return `0x${value.toString(16).toUpperCase()}`;
+}
+
+// The type says 0 | 1; a request that crossed the worker boundary is checked.
+function isBoolean(value: number) {
+  return value === 0 || value === 1;
 }
 
 function hexByte(value: number) {
@@ -334,14 +361,37 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
         change.original.length !== change.modified.length ||
         change.original.some((byte, index) => byte !== change.modified[index]),
     ),
-    rootChanges: (given.rootChanges ?? []).filter((change) => change.expected !== change.replacement),
   };
   const rootChanges = request.rootChanges ?? [];
   if (request.changes.length === 0 && rootChanges.length === 0) {
     return { ok: false, stage: "plan", messages: ["The applied plan changes nothing in Setup, AMITSE, SetupData or the root visibility, so there is nothing to put into the image."] };
   }
-  if (rootChanges.length > 0 && !request.rootReport) {
-    return { ok: false, stage: "plan", messages: ["A root visibility change was given without the detection it comes from, so the rebuilt image could not be checked against it."] };
+  if (rootChanges.length > 0) {
+    // Each root change must be one byte of the vector the detection found, from
+    // what that detection saw to the other Boolean: the read-back compares
+    // against that detection, so a change outside it would go unexamined.
+    const report = request.rootReport;
+    if (!report?.vector) {
+      return { ok: false, stage: "plan", messages: ["A root visibility change was given without the detection it comes from, so the rebuilt image could not be checked against it."] };
+    }
+    const vectorBufferId = report.vector.bufferId;
+    const problems = rootChanges.flatMap((change) => {
+      const entry = report.entries.find((one) => one.bufferOffset === change.offset);
+      if (change.bufferId !== vectorBufferId || !entry) {
+        return [`"${change.description}" is not a byte of the detected root registration vector.`];
+      }
+      if (change.expected !== entry.value || !isBoolean(change.replacement) || change.replacement === change.expected) {
+        return [`"${change.description}" does not turn the detected value ${String(entry.value)} into the other Boolean.`];
+      }
+      return [];
+    });
+    if (new Set(rootChanges.map((change) => change.offset)).size !== rootChanges.length) problems.push("Two root visibility changes name the same byte.");
+    // The code analysis that reads the rebuilt image back only recognises a
+    // vector with a visible root, so a plan that hides every root could not be
+    // confirmed (and would leave Setup without a top-level page).
+    const resulting = report.entries.map((entry) => rootChanges.find((change) => change.offset === entry.bufferOffset)?.replacement ?? entry.value);
+    if (!resulting.includes(1)) problems.push("The plan hides every root FormSet; the rebuilt image could not be read back to confirm it, and Setup would have no top-level page.");
+    if (problems.length > 0) return { ok: false, stage: "plan", messages: problems };
   }
   if (typeof crypto === "undefined" || !("subtle" in crypto)) {
     // The record of the output needs SHA-256, which the browser only offers on
@@ -380,7 +430,7 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
   const readBack = await verifyByReextraction(request.graph, edits, rebuilt.value.image, {
     artifactSetId: request.artifactSetId,
     decompress: deps.decompress,
-    ...(request.rootReport && rootChanges.length > 0 ? { inspect: rootVectorInspector(request.rootReport, rootChanges) } : {}),
+    ...(request.rootReport && rootChanges.length > 0 ? { inspect: rootVectorInspector(request.graph, request.rootReport, rootChanges) } : {}),
   });
   if (readBack.length > 0) return { ok: false, stage: "read-back", messages: readBack };
 

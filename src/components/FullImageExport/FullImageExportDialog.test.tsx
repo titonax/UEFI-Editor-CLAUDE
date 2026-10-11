@@ -5,7 +5,10 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import FullImageExportDialog from "./FullImageExportDialog";
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 import { extractAptioIvBytes, type FirmwareDecompressor } from "../scripts/aptioIvExtractor";
-import { firmwareVolume, setupFiles } from "../scripts/firmwareImageFixtures";
+import { inspectAmiRootVisibility } from "../scripts/amiRootVisibility";
+import { toggleAmiRootVisibility } from "../scripts/amiRootVisibilityEditing";
+import { HII_GUID, SETUP_GUID, firmwareVolume, freeformSection, patternBytes, pe32Section, sectionStream, setupFiles } from "../scripts/firmwareImageFixtures";
+import { buildPe, rootMenu } from "../scripts/rootVectorFixtures";
 import { checkFullImageOutput, modifiedImageName, type FullImageRequest, type FullImageResult } from "../scripts/fullImageExport";
 import { parseData } from "../scripts/ifrParser";
 import type { Data } from "../scripts/types";
@@ -312,6 +315,37 @@ describe("FullImageExportDialog", () => {
     await waitFor(() => {
       expect(screen.getByText(/do not have a detected vector/)).toBeInTheDocument();
     });
+  });
+
+  it("carries a root visibility plan into the check and says its effect is unobserved", async () => {
+    const fixture = await buildFixtureFiles();
+    const body = sectionStream(freeformSection(HII_GUID, patternBytes(900, 5)), pe32Section(buildPe([1, 1, 1])));
+    const image = firmwareVolume([{ guid: SETUP_GUID, attributes: 0x40, body }]);
+    const artifacts = await extractAptioIvBytes(image, noIfr, noDecompress);
+    const files: PopulatedFiles = { ...fixture, firmwareSource: { fileName: "board.rom", artifacts, generation: "unresolved" } };
+    const data: Data = await parseData(fixture);
+    data.rootVisibility = inspectAmiRootVisibility(rootMenu(3), artifacts.provenance);
+    data.rootVisibilityEdits = toggleAmiRootVisibility(data, 1);
+    const requests: FullImageRequest[] = [];
+    renderDialog({
+      files,
+      appliedData: data,
+      startCheck: (request) => {
+        requests.push(request);
+        return realCheck(request);
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Checks passed")).toBeInTheDocument();
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].rootChanges).toHaveLength(1);
+    expect(requests[0].rootReport).toBe(data.rootVisibility);
+    expect(screen.getByText("Root visibility is evidence, not an observed effect")).toBeInTheDocument();
+    expect(screen.getByText("Root visibility bytes changed (Setup PE32)")).toBeInTheDocument();
   });
 
   it("renders nothing for files that did not come from a complete image", async () => {
