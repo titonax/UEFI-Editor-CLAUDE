@@ -354,7 +354,9 @@ only if that does not fit and the buffer is at most 8 MiB, one preset of each
 other group (the largest the original's dictionary allows), keeping the first
 that fits, or the smallest when none does. The choice is deterministic given the
 original stream, the data and the room, and the verification asks with the same
-room, so its canonical re-encode is the stream the rebuild wrote. Bigger buffers
+room, so its canonical re-encode is the stream the rebuild wrote (by construction:
+the rebuild's own check now reads it from a cache of what it encoded; a caller who
+verifies with fresh codecs gets a real re-encode). Bigger buffers
 get the best preset only: each extra encode of a 20 MB volume costs a minute or
 more.
 
@@ -393,3 +395,24 @@ the largest image.
 None of these images has an EFI/Tiano section on the Setup path, so Tiano is
 untested on real firmware, and a probe edit is not a real plan: the figures show
 that the machinery works on real layouts, not what a real plan would cost.
+
+## How long the check takes
+
+On the eight real images above, one check (Setup probe, Node, four running in
+parallel) took 57-178 s before and **33-102 s** after, about 42% less, with the
+same output byte for byte. The time is dominated by LZMA-JS encoding, which the
+rebuild and its own structural check used to do twice per section.
+
+The rebuild now remembers what each codec encoded (by buffer object and preset or
+variant: `memoizeLzmaEncode`, `memoizeTianoEncode`), so its internal check does
+not encode again. What this gives up, stated plainly: that internal check no
+longer re-derives the canonical stream from scratch, so an encoder that answered
+differently the second time would no longer be noticed there. It still decodes
+every stream afresh and compares the result with the buffer it must carry, and
+the read-back with the project's own decoders is unchanged. A caller who wants the
+fully independent check calls `verifyRebuiltFirmware` with its own codecs, which
+encodes again.
+
+While it runs, the worker posts a note for each step (planning, each section it
+re-encodes with its size, the structural check, the read-back, the hashes) and the
+dialog shows the latest one, so a check of several minutes does not look hung.

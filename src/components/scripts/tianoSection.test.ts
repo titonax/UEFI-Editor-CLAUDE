@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { builtInTianoCodec, reencodeTiano, tianoStreamProblems, type TianoCodec } from "./tianoSection";
+import { builtInTianoCodec, memoizeTianoEncode, reencodeTiano, tianoStreamProblems, type TianoCodec } from "./tianoSection";
 import { referenceTianoAvailable, referenceTianoDecode } from "./referenceTiano";
 import { TianoDecodeError, decodeTiano, encodeTiano, type TianoVariant } from "./tianoCodec";
 
@@ -237,5 +237,25 @@ describe("hostile headers and codec failures", () => {
     const result = reencodeTiano(original, data, edited, buggy);
 
     expect(result).toMatchObject({ ok: false, code: "tiano-codec" });
+  });
+});
+
+describe("memoizeTianoEncode", () => {
+  it("encodes a buffer once per variant, per buffer, and always decodes afresh", () => {
+    let encodes = 0;
+    let decodes = 0;
+    const codec = memoizeTianoEncode({
+      encode: (bytes, variant) => (encodes++, encodeTiano(bytes, variant)),
+      decode: (stream, variant) => (decodes++, decodeTiano(stream, variant)),
+    });
+
+    const first = codec.encode(data, "efi");
+    expect(codec.encode(data, "efi")).toBe(first);
+    codec.encode(data, "tiano");
+    codec.encode(data.slice(), "efi");
+    codec.decode(first, "efi");
+    codec.decode(first, "efi");
+
+    expect([encodes, decodes]).toEqual([3, 2]);
   });
 });

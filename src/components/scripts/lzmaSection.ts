@@ -188,3 +188,28 @@ function codecFailure(step: "encode" | "decode", error: unknown, preset: number)
   const at = preset > 0 ? ` at preset ${String(preset)}` : "";
   return { ok: false, code: "lzma-codec", message: `The LZMA codec failed to ${step}${at}: ${reason}` };
 }
+
+// The same codec, remembering what `encode` returned for a buffer and preset.
+// A rebuild and its own structural check encode the same buffers; this makes
+// the second ask free. Keyed by the buffer object, so a different buffer never
+// shares a result, and only `encode` is remembered: reading the stream back
+// (`decode`) is always done afresh.
+export function memoizeLzmaEncode(codec: LzmaCodec): LzmaCodec {
+  const remembered = new WeakMap<Uint8Array, Map<number, Uint8Array>>();
+  return {
+    ...codec,
+    encode(data, preset) {
+      let byPreset = remembered.get(data);
+      if (!byPreset) {
+        byPreset = new Map();
+        remembered.set(data, byPreset);
+      }
+      let stream = byPreset.get(preset);
+      if (!stream) {
+        stream = codec.encode(data, preset);
+        byPreset.set(preset, stream);
+      }
+      return stream;
+    },
+  };
+}

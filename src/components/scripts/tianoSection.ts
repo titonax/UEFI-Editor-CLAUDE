@@ -219,3 +219,25 @@ export function tianoStreamProblems(
   }
   return problems;
 }
+
+// The same codec, remembering what `encode` returned for a buffer and variant
+// (see memoizeLzmaEncode). `decode` is never remembered.
+export function memoizeTianoEncode(codec: TianoCodec): TianoCodec {
+  const remembered = new WeakMap<Uint8Array, Map<TianoVariant, Uint8Array>>();
+  return {
+    ...codec,
+    encode(data, variant) {
+      let byVariant = remembered.get(data);
+      if (!byVariant) {
+        byVariant = new Map();
+        remembered.set(data, byVariant);
+      }
+      let stream = byVariant.get(variant);
+      if (!stream) {
+        stream = codec.encode(data, variant);
+        byVariant.set(variant, stream);
+      }
+      return stream;
+    },
+  };
+}

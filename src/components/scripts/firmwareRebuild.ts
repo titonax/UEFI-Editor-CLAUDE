@@ -15,8 +15,8 @@ import {
   type FirmwareFileReference,
   type FirmwareProvenanceGraph,
 } from "./firmwareProvenance";
-import { readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
-import { builtInTianoCodec, reencodeTiano, tianoStreamProblems, type TianoCodec } from "./tianoSection";
+import { memoizeLzmaEncode, readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
+import { builtInTianoCodec, memoizeTianoEncode, reencodeTiano, tianoStreamProblems, type TianoCodec } from "./tianoSection";
 
 // Full-image reconstruction (stages 1 to 3): same-size edits to a decoded
 // artifact, carried back up to the source image. The edited bytes are written
@@ -85,8 +85,22 @@ export interface RebuildCodecs {
   tiano?: TianoCodec;
 }
 
+// A progress report must not be able to decide the outcome silently: if the
+// caller's callback throws, the rebuild stops and says so.
+export function reportProgress(onProgress: ((message: string) => void) | undefined, message: string) {
+  if (!onProgress) return;
+  try {
+    onProgress(message);
+  } catch (error) {
+    throw new Error(`The progress report failed (${message}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export interface RebuildOptions {
   codecs?: RebuildCodecs;
+  // Told, in words, what a long step is about to do (rebuildFirmware is
+  // synchronous, so this is the only way a caller can show progress).
+  onProgress?: (message: string) => void;
 }
 
 export interface ByteRange {
@@ -547,7 +561,16 @@ export function rebuildFirmware(
   edits: ArtifactEdit[],
   options: RebuildOptions = {},
 ): RebuildResult {
-  const codecs = options.codecs ?? {};
+  // The rebuild and its own structural check below encode the same buffers; the
+  // codecs remember what they encoded so the second ask costs nothing. The
+  // check still decodes every stream afresh, and callers who want it fully
+  // independent call verifyRebuiltFirmware with their own codecs.
+  const given = options.codecs ?? {};
+  const codecs: RebuildCodecs = {
+    ...given,
+    ...(given.lzma ? { lzma: memoizeLzmaEncode(given.lzma) } : {}),
+    tiano: memoizeTianoEncode(given.tiano ?? builtInTianoCodec),
+  };
   const refusals: RebuildRefusal[] = [];
   const refuse = (code: RebuildRefusalCode, message: string) => refusals.push({ code, message });
   const nodes = new Map(graph.buffers.map((node) => [node.id, node]));
@@ -690,6 +713,10 @@ export function rebuildFirmware(
     if (edge.compression !== "none") {
       const format = formatOf(edge, codecs);
       if (!format) continue; // refused above by checkEdge
+      reportProgress(
+        options.onProgress,
+        `Re-encoding the ${format.label} section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)} (${String(copy.length)} bytes of data)`,
+      );
       const propagated = propagateCompressed(edge, node.bytes, copy, parentOriginal.bytes, parentCopy, format);
       if (propagated.ok) layoutChanges.push(propagated.change);
       else refusals.push(propagated.refusal);
@@ -721,7 +748,8 @@ export function rebuildFirmware(
     repairedFiles,
     layoutChanges,
   };
-  const problems = verifyRebuiltFirmware(graph, edits, value, options);
+  reportProgress(options.onProgress, "Checking the rebuilt image against the source");
+  const problems = verifyRebuiltFirmware(graph, edits, value, { ...options, codecs });
   if (problems.length > 0) {
     return { ok: false, refusals: problems.map((message) => ({ code: "verification-failed", message })) };
   }

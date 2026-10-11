@@ -23,7 +23,7 @@ const stageTitle: Record<FullImageStage, string> = {
 
 type CheckState =
   | { phase: "idle" }
-  | { phase: "running" }
+  | { phase: "running"; progress: string }
   | { phase: "refused"; fingerprint: string | null; message: string }
   | { phase: "done"; fingerprint: string | null; result: FullImageResult };
 
@@ -36,7 +36,7 @@ interface FullImageExportDialogProps {
   // Identifies the applied plan, so a result for an older plan is not offered.
   planFingerprint: string | null;
   // Injectable for tests; the app runs the check in a worker.
-  startCheck?: (request: FullImageRequest) => FullImageCheckHandle;
+  startCheck?: (request: FullImageRequest, onProgress?: (message: string) => void) => FullImageCheckHandle;
 }
 
 function SummaryRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -58,6 +58,8 @@ export default function FullImageExportDialog({
 }: FullImageExportDialogProps) {
   const [state, setState] = React.useState<CheckState>({ phase: "idle" });
   const handle = React.useRef<FullImageCheckHandle | null>(null);
+  // Which run the dialog is showing; a note from an earlier run is ignored.
+  const currentRun = React.useRef(0);
   const source = files.firmwareSource;
 
   React.useEffect(
@@ -96,10 +98,14 @@ export default function FullImageExportDialog({
       setState({ phase: "refused", fingerprint, message: error instanceof Error ? error.message : String(error) });
       return;
     }
-    setState({ phase: "running" });
+    setState({ phase: "running", progress: "Starting" });
+    const thisRun = ++currentRun.current;
     let started: FullImageCheckHandle;
     try {
-      started = startCheck(request);
+      started = startCheck(request, (progress) => {
+        if (currentRun.current !== thisRun) return;
+        setState((current) => (current.phase === "running" ? { phase: "running", progress } : current));
+      });
     } catch (error) {
       setState({ phase: "refused", fingerprint, message: error instanceof Error ? error.message : String(error) });
       return;
@@ -122,6 +128,7 @@ export default function FullImageExportDialog({
   const cancel = () => {
     const running = handle.current;
     handle.current = null;
+    currentRun.current++;
     running?.cancel();
     setState({ phase: "idle" });
   };
@@ -187,7 +194,7 @@ export default function FullImageExportDialog({
           )}
           {state.phase === "running" && (
             <Text size="sm" c="dimmed">
-              Rebuilding and reading the image back. This can take minutes on a large image; closing this window cancels it.
+              {state.progress}… This can take minutes on a large image; closing this window cancels it.
             </Text>
           )}
         </Group>

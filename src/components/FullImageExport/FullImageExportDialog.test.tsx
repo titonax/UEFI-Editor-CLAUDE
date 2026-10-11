@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MantineProvider } from "@mantine/core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import FullImageExportDialog from "./FullImageExportDialog";
@@ -132,6 +132,46 @@ describe("FullImageExportDialog", () => {
     await screen.findByText("Checks passed");
 
     expect(screen.queryByText("This image has padding the source did not have")).not.toBeInTheDocument();
+  });
+
+  it("shows what the check is doing while it runs", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    let report: ((message: string) => void) | undefined;
+    const startCheck = (_request: FullImageRequest, onProgress?: (message: string) => void) => {
+      report = onProgress;
+      return { result: new Promise<FullImageResult>(() => undefined), cancel: vi.fn() };
+    };
+    renderDialog({ files, appliedData: data, startCheck });
+
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    await screen.findByRole("button", { name: /Cancel check/ });
+    act(() => {
+      report?.("Re-encoding the LZMA section at 0x40 of buffer 0 (1200 bytes of data)");
+    });
+
+    expect(screen.getByText(/Re-encoding the LZMA section at 0x40/)).toBeInTheDocument();
+  });
+
+  it("does not let a note from a cancelled run speak for the next one", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    const reports: ((message: string) => void)[] = [];
+    const startCheck = (_request: FullImageRequest, onProgress?: (message: string) => void) => {
+      if (onProgress) reports.push(onProgress);
+      return { result: new Promise<FullImageResult>(() => undefined), cancel: vi.fn() };
+    };
+    renderDialog({ files, appliedData: data, startCheck });
+
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Cancel check/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    await screen.findByRole("button", { name: /Cancel check/ });
+    act(() => {
+      reports[1]("run two note");
+      reports[0]("RUN-ONE late note");
+    });
+
+    expect(screen.queryByText(/RUN-ONE late note/)).not.toBeInTheDocument();
+    expect(screen.getByText(/run two note/)).toBeInTheDocument();
   });
 
   it("offers only the changelog on request", async () => {
