@@ -465,3 +465,24 @@ encodes again.
 While it runs, the worker posts a note for each step (planning, each section it
 re-encodes with its size, the structural check, the read-back, the hashes) and the
 dialog shows the latest one, so a check of several minutes does not look hung.
+
+## Pending
+
+Open items, in the order they came up. None is blocked by code.
+
+- **A real image whose Setup is in an EFI/Tiano section.** Stage 3 is validated
+  against the project's C decoder and synthetic images only. All 34 images in
+  the local sample set decode through LZMA or have no Setup module; none asks
+  for EFI/Tiano. Needed: a real AMI image (Aptio IV, roughly 2012-2014) whose
+  Setup section is Tiano-compressed. With it: rebuild with an edit, read it
+  back with the C decoder, and record how many pass.
+- **A root visibility change on a real image, end to end.** Of 8 extractable AMI
+  images only one shows a detected vector in a probe, and its LZMA section has
+  no room (see "How often a section fits"). Needed: an image where the vector
+  is detected and the Setup section has spare room.
+- **Corpus cases for the local sample set.** The corpus runner needs
+  `ifrextractor.wasm`, which only the browser build has; the cases come from
+  running the images through the deployed runner and its "Add case" button.
+- **Room for a section with none.** The case that still refuses needs the next
+  free space in the volume, which moves a file boundary and is outside the
+  rebuild.
