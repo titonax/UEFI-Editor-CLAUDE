@@ -1,17 +1,27 @@
 import type { PopulatedFiles } from "../FileUploads/fileModel";
 import type { FirmwareDecompressor } from "./aptioIvExtractor";
 import { computeModifiedFiles } from "./binaryPatcher";
+import type { AptioIvArtifacts } from "./aptioIvExtractor";
+import { inspectAmiRootVisibility } from "./amiRootVisibility";
+import { assertAmiRootVisibilityEditsMatch } from "./amiRootVisibilityEditing";
 import {
   rebuildFirmware,
   reportProgress,
   verifyByReextraction,
   type ArtifactEdit,
+  type BufferEdit,
   type RebuildCodecs,
+  type RebuildEdit,
   type RebuiltFirmware,
 } from "./firmwareRebuild";
-import type { FirmwareArtifactKind, FirmwareArtifactSetSummary, FirmwareProvenanceGraph } from "./firmwareProvenance";
+import type {
+  FirmwareArtifactKind,
+  FirmwareArtifactSetSummary,
+  FirmwareFileReference,
+  FirmwareProvenanceGraph,
+} from "./firmwareProvenance";
 import { sha256Hex } from "./hashing";
-import type { Data } from "./types";
+import type { AmiRootVisibilityReport, Data, Menu } from "./types";
 
 // Full-image output (stage 4): the plan the editor applies to the extracted
 // Setup / AMITSE / SetupData files, carried back into the complete firmware
@@ -29,6 +39,19 @@ export interface ArtifactChange {
   changeLog: string;
 }
 
+// One byte of the Setup root registration vector (one Boolean per HII FormSet,
+// read by the Setup PE32) to flip. It lives in a decoded buffer, outside every
+// extracted file.
+export interface RootByteChange {
+  description: string;
+  bufferId: number;
+  offset: number;
+  expected: 0 | 1;
+  replacement: 0 | 1;
+  // The Setup FFS file that holds the byte, whose data checksum depends on it.
+  file: FirmwareFileReference;
+}
+
 export interface FullImageRequest {
   graph: FirmwareProvenanceGraph;
   artifactSetId: string;
@@ -38,6 +61,10 @@ export interface FullImageRequest {
   // The uploaded file's name, for the changelog and the downloaded name.
   sourceName: string;
   changes: ArtifactChange[];
+  // Root visibility bytes to flip, and the detection they came from (needed to
+  // repeat the code analysis on the rebuilt image).
+  rootChanges?: RootByteChange[];
+  rootReport?: AmiRootVisibilityReport;
 }
 
 export type FullImageStage = "plan" | "rebuild" | "read-back" | "report";
@@ -50,6 +77,7 @@ export interface FullImageSummary {
   changedRanges: number;
   repairedFiles: number;
   recompressedSections: number;
+  rootBytesChanged: number;
   // Sections whose file the source filled exactly and that now end before it,
   // and the erased bytes created after them: padding the firmware has not been
   // shown to accept.
@@ -143,12 +171,13 @@ export function planArtifactEdits(graph: FirmwareProvenanceGraph, changes: Artif
 }
 
 // What the applied plan does to each extracted file, ready for the check.
-// Throws what the per-file export throws (for example a pending root
-// visibility plan), so both paths refuse the same plans for the same reasons.
+// Throws what the per-file export throws, so both paths refuse the same plans
+// for the same reasons; the root visibility plan is the exception, which only
+// this path can carry out (see rootChangesFromPlan).
 export function changesFromPlan(data: Data, files: PopulatedFiles): ArtifactChange[] {
   const source = files.firmwareSource;
   if (!source) throw new Error("These files did not come from a complete firmware image.");
-  const modified = computeModifiedFiles(data, files);
+  const modified = computeModifiedFiles(data, files, { rootVisibility: "leave-to-caller" });
   const changes: ArtifactChange[] = [];
   const add = (
     kind: FirmwareArtifactKind,
@@ -168,8 +197,72 @@ export function changesFromPlan(data: Data, files: PopulatedFiles): ArtifactChan
   return changes;
 }
 
+// The root visibility plan as bytes of the Setup PE32 to flip. Refuses a plan
+// that does not match the vector detected in the firmware that is open now, or
+// whose vector is not in the buffer of the Setup file.
+export function rootChangesFromPlan(
+  data: Data,
+  files: PopulatedFiles,
+): { rootChanges: RootByteChange[]; rootReport?: AmiRootVisibilityReport } {
+  const edits = data.rootVisibilityEdits ?? [];
+  if (edits.length === 0) return { rootChanges: [] };
+  const source = files.firmwareSource;
+  if (!source) throw new Error("These files did not come from a complete firmware image.");
+  assertAmiRootVisibilityEditsMatch(edits, data.rootVisibility);
+  const report = data.rootVisibility;
+  const setup = source.artifacts.provenance.artifacts.find((artifact) => artifact.kind === "setup-hii");
+  if (!report?.vector || setup?.bufferId !== report.vector.bufferId) {
+    throw new Error("The root registration vector is not in the buffer of the Setup file, so its owning file cannot be repaired.");
+  }
+  return {
+    rootReport: report,
+    rootChanges: edits.map((edit) => ({
+      description: edit.description,
+      bufferId: edit.bufferId,
+      offset: edit.bufferOffset,
+      expected: edit.expected,
+      replacement: edit.replacement,
+      file: setup.sourceFile,
+    })),
+  };
+}
+
+// A fresh code analysis of the rebuilt image must find the same vector, in the
+// same place, holding exactly what the plan asked for: the read-back that does
+// not trust the rebuild's own bookkeeping.
+function rootVectorInspector(report: AmiRootVisibilityReport, changes: RootByteChange[]) {
+  return (extracted: AptioIvArtifacts): string[] => {
+    if (!report.vector) return ["The plan has no root registration vector to check."];
+    const menu: Menu = report.entries.map((entry) => ({
+      name: entry.name,
+      formId: entry.formId,
+      offset: null,
+      source: "formset" as const,
+      ...(entry.formSetGuid ? { formSetGuid: entry.formSetGuid } : {}),
+    }));
+    const fresh = inspectAmiRootVisibility(menu, extracted.provenance);
+    if (fresh.status !== "detected" || !fresh.vector) {
+      return [`A fresh code analysis of the rebuilt image no longer finds the root registration vector (${fresh.reason}).`];
+    }
+    const problems: string[] = [];
+    if (fresh.vector.offset !== report.vector.offset) {
+      problems.push(`The root registration vector moved from ${hexOffset(report.vector.offset)} to ${hexOffset(fresh.vector.offset)}.`);
+    }
+    const wanted = report.entries.map((entry) => changes.find((change) => change.offset === entry.bufferOffset)?.replacement ?? entry.value);
+    const actual = fresh.entries.map((entry) => entry.value);
+    if (actual.length !== wanted.length || actual.some((value, index) => value !== wanted[index])) {
+      problems.push(`The root registration vector reads ${actual.join("")} in the rebuilt image; the plan asked for ${wanted.join("")}.`);
+    }
+    return problems;
+  };
+}
+
 function hexOffset(value: number) {
   return `0x${value.toString(16).toUpperCase()}`;
+}
+
+function hexByte(value: number) {
+  return value.toString(16).toUpperCase().padStart(2, "0");
 }
 
 function buildChangelog(request: FullImageRequest, rebuilt: RebuiltFirmware, summary: FullImageSummary) {
@@ -194,6 +287,20 @@ function buildChangelog(request: FullImageRequest, rebuilt: RebuiltFirmware, sum
   lines.push("");
   for (const change of request.changes) {
     lines.push(`========== ${change.fileName} ==========`, "", change.changeLog.trimEnd(), "", "");
+  }
+  const rootChanges = request.rootChanges ?? [];
+  if (rootChanges.length > 0) {
+    lines.push("========== Setup root visibility (bytes of the Setup PE32) ==========", "");
+    for (const change of rootChanges) {
+      lines.push(
+        `${change.description} | decoded buffer ${String(change.bufferId)}, offset ${hexOffset(change.offset)}: ${hexByte(change.expected)} -> ${hexByte(change.replacement)}`,
+      );
+    }
+    lines.push(
+      "Evidence: the Setup code consumes one Boolean byte per HII FormSet (found by code analysis, repeated on the rebuilt image); a zero drops the page from the live Setup. The effect on a running Setup has not been observed.",
+      "",
+      "",
+    );
   }
   lines.push("========== Image-level changes ==========", "");
   lines.push(`Changed bytes: ${String(summary.changedBytes)} in ${String(summary.changedRanges)} range(s)`);
@@ -227,9 +334,14 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
         change.original.length !== change.modified.length ||
         change.original.some((byte, index) => byte !== change.modified[index]),
     ),
+    rootChanges: (given.rootChanges ?? []).filter((change) => change.expected !== change.replacement),
   };
-  if (request.changes.length === 0) {
-    return { ok: false, stage: "plan", messages: ["The applied plan changes nothing in Setup, AMITSE or SetupData, so there is nothing to put into the image."] };
+  const rootChanges = request.rootChanges ?? [];
+  if (request.changes.length === 0 && rootChanges.length === 0) {
+    return { ok: false, stage: "plan", messages: ["The applied plan changes nothing in Setup, AMITSE, SetupData or the root visibility, so there is nothing to put into the image."] };
+  }
+  if (rootChanges.length > 0 && !request.rootReport) {
+    return { ok: false, stage: "plan", messages: ["A root visibility change was given without the detection it comes from, so the rebuilt image could not be checked against it."] };
   }
   if (typeof crypto === "undefined" || !("subtle" in crypto)) {
     // The record of the output needs SHA-256, which the browser only offers on
@@ -239,12 +351,21 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
   reportProgress(deps.onProgress, "Planning the edits");
   const plan = planArtifactEdits(request.graph, request.changes);
   if (!plan.ok) return { ok: false, stage: "plan", messages: [plan.message] };
-  if (plan.edits.length === 0) {
+  const bufferEdits: BufferEdit[] = rootChanges.map((change) => ({
+    bufferId: change.bufferId,
+    offset: change.offset,
+    expected: Uint8Array.of(change.expected),
+    replacement: Uint8Array.of(change.replacement),
+    file: change.file,
+    label: change.description,
+  }));
+  const edits: RebuildEdit[] = [...plan.edits, ...bufferEdits];
+  if (edits.length === 0) {
     return { ok: false, stage: "plan", messages: ["The applied plan leaves every byte of Setup, AMITSE and SetupData as it was, so there is nothing to put into the image."] };
   }
 
   reportProgress(deps.onProgress, "Rebuilding the image (re-encoding compressed sections takes the longest)");
-  const rebuilt = rebuildFirmware(request.graph, plan.edits, {
+  const rebuilt = rebuildFirmware(request.graph, edits, {
     codecs: deps.codecs,
     ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
   });
@@ -256,9 +377,10 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
   // independent half is the read-back below.
 
   reportProgress(deps.onProgress, "Reading the rebuilt image back with the independent decoders");
-  const readBack = await verifyByReextraction(request.graph, plan.edits, rebuilt.value.image, {
+  const readBack = await verifyByReextraction(request.graph, edits, rebuilt.value.image, {
     artifactSetId: request.artifactSetId,
     decompress: deps.decompress,
+    ...(request.rootReport && rootChanges.length > 0 ? { inspect: rootVectorInspector(request.rootReport, rootChanges) } : {}),
   });
   if (readBack.length > 0) return { ok: false, stage: "read-back", messages: readBack };
 
@@ -283,6 +405,7 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
     changedRanges: rebuilt.value.changedRanges.length,
     repairedFiles: rebuilt.value.repairedFiles.filter((file) => file.changed).length,
     recompressedSections: rebuilt.value.layoutChanges.length,
+    rootBytesChanged: rootChanges.length,
     sectionsWithCreatedPadding: rebuilt.value.layoutChanges.filter((change) => change.createdPadding).length,
     createdPaddingBytes: rebuilt.value.layoutChanges.filter((change) => change.createdPadding).reduce((total, change) => total + (change.paddingAfter - change.paddingBefore), 0),
   };

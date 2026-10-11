@@ -7,6 +7,7 @@ import { startFullImageCheck as startCheckInWorker, type FullImageCheckHandle } 
 import {
   changesFromPlan,
   modifiedImageName,
+  rootChangesFromPlan,
   type FullImageRequest,
   type FullImageResult,
   type FullImageStage,
@@ -85,6 +86,7 @@ export default function FullImageExportDialog({
     let request: FullImageRequest;
     try {
       const changes = changesFromPlan(appliedData, files);
+      const { rootChanges, rootReport } = rootChangesFromPlan(appliedData, files);
       const context = source.artifacts.artifactSets.find((one) => one.id === source.artifacts.selectedArtifactSetId);
       if (!context) throw new Error("The selected firmware context is not among the contexts this image holds.");
       request = {
@@ -93,6 +95,7 @@ export default function FullImageExportDialog({
         artifactSetId: source.artifacts.selectedArtifactSetId,
         sourceName: source.fileName,
         changes,
+        ...(rootReport ? { rootChanges, rootReport } : {}),
       };
     } catch (error) {
       setState({ phase: "refused", fingerprint, message: error instanceof Error ? error.message : String(error) });
@@ -246,6 +249,9 @@ export default function FullImageExportDialog({
               <Table.Tbody>
                 <SummaryRow label="Changed bytes" value={`${String(success.summary.changedBytes)} in ${String(success.summary.changedRanges)} range(s)`} />
                 <SummaryRow label="FFS checksums repaired" value={success.summary.repairedFiles} />
+                {success.summary.rootBytesChanged > 0 && (
+                  <SummaryRow label="Root visibility bytes changed (Setup PE32)" value={success.summary.rootBytesChanged} />
+                )}
                 <SummaryRow label="Compressed sections re-encoded" value={success.summary.recompressedSections} />
                 <SummaryRow label="Erased padding created" value={`${String(success.summary.createdPaddingBytes)} byte(s) in ${String(success.summary.sectionsWithCreatedPadding)} section(s)`} />
                 <SummaryRow label="Size" value={`${String(success.summary.imageBytes)} bytes (unchanged)`} />

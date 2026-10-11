@@ -340,8 +340,33 @@ panel and the dialog show them.
 - Anything signed or measured over the image: vendor capsule signatures, Intel
   ME / Boot Guard manifests and similar are outside what is checked, and an
   image that changes the bytes they cover may be rejected by the platform.
-- Root visibility edits, which change the Setup PE32 section.
+- That a root visibility change does what the vector's evidence says. The byte
+  is written and read back, and a fresh code analysis of the rebuilt image finds
+  the same vector holding the planned values, but the effect on a running Setup
+  has not been observed on a board.
 - Plans that change a file's length.
+
+### Root visibility in the image
+
+The root registration vector (one Boolean byte per HII FormSet, read by the
+Setup PE32) lives in a decoded buffer, outside every extracted file, so the
+per-file export refuses a plan that carries it. The full-image path carries it
+as a `BufferEdit` (buffer, offset, the expected byte, the replacement, and the
+Setup FFS file whose data checksum depends on it) next to the `ArtifactEdit`s:
+
+- the plan must still match the vector detected in the opened firmware
+  (`assertAmiRootVisibilityEditsMatch`), and the vector must sit in the buffer
+  of the Setup file;
+- the rebuild checks the expected byte, keeps the edit inside that file's body,
+  refuses overlaps and size changes, propagates it up through any compressed
+  section and repairs the file's checksum;
+- the read-back runs the code analysis again on the re-extracted image and
+  requires the same vector offset holding exactly the planned values;
+- the changelog lists each byte (buffer, offset, before and after) and says the
+  effect on a running Setup has not been observed.
+
+An edit that changes nothing is dropped, and a plan whose only content is
+identical bytes is refused as empty.
 
 ## Fitting a re-encoded LZMA section
 

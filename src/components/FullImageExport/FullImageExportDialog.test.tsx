@@ -300,7 +300,7 @@ describe("FullImageExportDialog", () => {
     expect(screen.getByText(/changes nothing/)).toBeInTheDocument();
   });
 
-  it("refuses a pending root visibility plan, as the per-file export does", async () => {
+  it("refuses a root visibility plan with no detected vector in the opened firmware", async () => {
     const { files, data } = await session({ unsuppress: true });
     data.rootVisibilityEdits = [
       { kind: "set-root-visibility", rootIndex: 0, formId: "0x1", bufferId: 0, bufferOffset: 0x40, expected: 0, replacement: 1, description: "Show root" },
@@ -310,7 +310,7 @@ describe("FullImageExportDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
 
     await waitFor(() => {
-      expect(screen.getByText(/verified full-image reconstruction path/)).toBeInTheDocument();
+      expect(screen.getByText(/do not have a detected vector/)).toBeInTheDocument();
     });
   });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { extractAptioIvBytes, type AptioIvArtifacts, type FirmwareDecompressor } from "./aptioIvExtractor";
 import { downloadModifiedFiles, computeModifiedFiles } from "./binaryPatcher";
-import { changesFromPlan, checkFullImageOutput, planArtifactEdits, type ArtifactChange, type FullImageRequest } from "./fullImageExport";
+import { changesFromPlan, checkFullImageOutput, planArtifactEdits, rootChangesFromPlan, type ArtifactChange, type FullImageRequest } from "./fullImageExport";
 import {
   compressionSection,
   concat,
@@ -259,7 +259,7 @@ describe("changesFromPlan", () => {
     expect(() => changesFromPlan(data, files)).toThrow(/complete firmware image/);
   });
 
-  it("refuses a pending root visibility plan, as the per-file export does", async () => {
+  it("refuses a root visibility plan with no detected vector in the opened firmware", async () => {
     const fixture = await buildFixtureFiles();
     const image = wrapped("none");
     const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
@@ -269,7 +269,7 @@ describe("changesFromPlan", () => {
       { kind: "set-root-visibility", rootIndex: 0, formId: "0x1", bufferId: 0, bufferOffset: 0x40, expected: 0, replacement: 1, description: "Show root" },
     ];
 
-    expect(() => changesFromPlan(data, files)).toThrow(/verified full-image reconstruction path/);
+    expect(() => rootChangesFromPlan(data, files)).toThrow(/detected vector/);
   });
 });
 
