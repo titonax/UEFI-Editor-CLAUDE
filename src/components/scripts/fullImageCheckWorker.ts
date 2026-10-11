@@ -5,13 +5,16 @@ import { lzmaJsCodec } from "./lzmaJs";
 // The check encodes sections and reads the whole image back; both are
 // synchronous and can take a long time on a large image, so it runs here, off
 // the main thread, where a timeout or a cancel can end it.
-export type FullImageCheckWorkerResult = FullImageResult | { crashed: string };
+export type FullImageCheckWorkerResult = FullImageResult | { crashed: string } | { progress: string };
 
 onmessage = async (e: MessageEvent<FullImageRequest>) => {
   try {
     const result = await checkFullImageOutput(e.data, {
       codecs: { lzma: lzmaJsCodec },
       decompress: firmwareDecompress,
+      onProgress: (progress) => {
+        postMessage({ progress } satisfies FullImageCheckWorkerResult);
+      },
     });
     postMessage(result satisfies FullImageCheckWorkerResult);
   } catch (error) {

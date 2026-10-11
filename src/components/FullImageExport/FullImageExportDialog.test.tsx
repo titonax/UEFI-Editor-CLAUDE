@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MantineProvider } from "@mantine/core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import FullImageExportDialog from "./FullImageExportDialog";
@@ -132,6 +132,24 @@ describe("FullImageExportDialog", () => {
     await screen.findByText("Checks passed");
 
     expect(screen.queryByText("This image has padding the source did not have")).not.toBeInTheDocument();
+  });
+
+  it("shows what the check is doing while it runs", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    let report: ((message: string) => void) | undefined;
+    const startCheck = (_request: FullImageRequest, onProgress?: (message: string) => void) => {
+      report = onProgress;
+      return { result: new Promise<FullImageResult>(() => undefined), cancel: vi.fn() };
+    };
+    renderDialog({ files, appliedData: data, startCheck });
+
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    await screen.findByRole("button", { name: /Cancel check/ });
+    act(() => {
+      report?.("Re-encoding the LZMA section at 0x40 of buffer 0 (1200 bytes of data)");
+    });
+
+    expect(screen.getByText(/Re-encoding the LZMA section at 0x40/)).toBeInTheDocument();
   });
 
   it("offers only the changelog on request", async () => {

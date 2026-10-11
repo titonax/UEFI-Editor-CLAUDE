@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as lzma from "lzma";
 import { lzmaJsCodec } from "./lzmaJs";
-import { presetSearchCeiling, readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
+import { memoizeLzmaEncode, presetSearchCeiling, readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
 import { referenceLzmaAvailable, referenceLzmaDecode } from "./referenceLzma";
 
 const hasXz = await referenceLzmaAvailable();
@@ -335,5 +335,46 @@ describe("reencodeLzma: searching presets when the stream must fit", () => {
     reencodeLzma(small, edited, codec, { maxBytes: 1 });
 
     expect(calls.every((preset) => 2 ** lzmaJsCodec.presetDictionaryBits[preset - 1] <= 1 << 19)).toBe(true);
+  });
+});
+
+describe("memoizeLzmaEncode", () => {
+  function counting() {
+    const calls: [Uint8Array, number][] = [];
+    const codec: LzmaCodec = { ...lzmaJsCodec, encode: (bytes, preset) => (calls.push([bytes, preset]), lzmaJsCodec.encode(bytes, preset)) };
+    return { calls, codec: memoizeLzmaEncode(codec) };
+  }
+  const data = Uint8Array.from({ length: 3000 }, (_, index) => (index * 5) % 29);
+
+  it("encodes a buffer once per preset and hands back the same stream", () => {
+    const { calls, codec } = counting();
+
+    const first = codec.encode(data, 8);
+    const again = codec.encode(data, 8);
+    const other = codec.encode(data, 5);
+
+    expect(calls.map(([, preset]) => preset)).toEqual([8, 5]);
+    expect(again).toBe(first);
+    expect(other).not.toBe(first);
+  });
+
+  it("never shares a result between two buffers, even with equal content", () => {
+    const { calls, codec } = counting();
+
+    codec.encode(data, 8);
+    codec.encode(data.slice(), 8);
+
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not remember decoding, which stays an independent look at the stream", () => {
+    let decodes = 0;
+    const codec = memoizeLzmaEncode({ ...lzmaJsCodec, decode: (stream) => (decodes++, lzmaJsCodec.decode(stream)) });
+    const stream = codec.encode(data, 8);
+
+    codec.decode(stream);
+    codec.decode(stream);
+
+    expect(decodes).toBe(2);
   });
 });

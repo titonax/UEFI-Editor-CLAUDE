@@ -75,6 +75,9 @@ export interface FullImageDeps {
   // The decompressor the READ-BACK uses. In the app it is the project's
   // WebAssembly decoder, which shares no code with the encoders.
   decompress: FirmwareDecompressor;
+  // Told, in words, which step is running; a check takes minutes on a big
+  // image and would otherwise look hung.
+  onProgress?: (message: string) => void;
 }
 
 // Gaps of up to this many bytes between two differing runs are bridged into one edit: the
@@ -232,13 +235,18 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
     // https or localhost; better to say so before the long work than after.
     return { ok: false, stage: "plan", messages: ["This page cannot compute SHA-256 (Web Crypto needs https or localhost), and the changelog must carry the image's hashes."] };
   }
+  deps.onProgress?.("Planning the edits");
   const plan = planArtifactEdits(request.graph, request.changes);
   if (!plan.ok) return { ok: false, stage: "plan", messages: [plan.message] };
   if (plan.edits.length === 0) {
     return { ok: false, stage: "plan", messages: ["The applied plan leaves every byte of Setup, AMITSE and SetupData as it was, so there is nothing to put into the image."] };
   }
 
-  const rebuilt = rebuildFirmware(request.graph, plan.edits, { codecs: deps.codecs });
+  deps.onProgress?.("Rebuilding the image (re-encoding compressed sections takes the longest)");
+  const rebuilt = rebuildFirmware(request.graph, plan.edits, {
+    codecs: deps.codecs,
+    ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
+  });
   if (!rebuilt.ok) {
     return { ok: false, stage: "rebuild", messages: rebuilt.refusals.map((refusal) => refusal.message) };
   }
@@ -246,6 +254,7 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
   // result and refuses (verification-failed) if it finds anything; the
   // independent half is the read-back below.
 
+  deps.onProgress?.("Reading the rebuilt image back with the independent decoders");
   const readBack = await verifyByReextraction(request.graph, plan.edits, rebuilt.value.image, {
     artifactSetId: request.artifactSetId,
     decompress: deps.decompress,
@@ -254,6 +263,7 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
 
   const root = request.graph.buffers.find((buffer) => buffer.id === request.graph.rootBufferId);
   if (!root) return { ok: false, stage: "report", messages: ["The provenance graph has no source image to describe."] };
+  deps.onProgress?.("Recording the hashes");
   let sourceSha256: string;
   let outputSha256: string;
   try {

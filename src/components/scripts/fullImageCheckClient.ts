@@ -15,9 +15,13 @@ function isCrash(data: unknown): data is { crashed: string } {
   return typeof data === "object" && data !== null && "crashed" in data;
 }
 
+function isProgress(data: unknown): data is { progress: string } {
+  return typeof data === "object" && data !== null && "progress" in data && typeof (data as { progress: unknown }).progress === "string";
+}
+
 // Never throws: a worker that cannot even be started is a rejected `result`,
 // so the caller has one place to learn why nothing was checked.
-export function startFullImageCheck(request: FullImageRequest): FullImageCheckHandle {
+export function startFullImageCheck(request: FullImageRequest, onProgress?: (message: string) => void): FullImageCheckHandle {
   let worker: Worker;
   try {
     worker = new Worker(new URL("./fullImageCheckWorker.ts", import.meta.url), { type: "module" });
@@ -41,11 +45,16 @@ export function startFullImageCheck(request: FullImageRequest): FullImageCheckHa
       reject(new Error(`The check timed out after ${String(FULL_IMAGE_CHECK_TIMEOUT_MS / 60_000)} minutes. This image may be too large to check in the browser.`));
     }, FULL_IMAGE_CHECK_TIMEOUT_MS);
     worker.onmessage = (event: MessageEvent<FullImageCheckWorkerResult>) => {
-      finish();
       const data: unknown = event.data;
+      // A progress note is not an answer: the check is still running.
+      if (isProgress(data)) {
+        onProgress?.(data.progress);
+        return;
+      }
+      finish();
       if (typeof data !== "object" || data === null) reject(new Error("The check worker's answer could not be read."));
       else if (isCrash(data)) reject(new Error(data.crashed));
-      else resolve(event.data as FullImageResult);
+      else resolve(data as FullImageResult);
     };
     worker.onmessageerror = () => {
       finish();

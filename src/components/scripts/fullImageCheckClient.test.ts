@@ -55,6 +55,31 @@ describe("startFullImageCheck", () => {
     expect(worker().terminated).toBe(1);
   });
 
+  it("forwards progress notes without settling, and stops listening once it has answered", async () => {
+    install();
+    const notes: string[] = [];
+    const handle = startFullImageCheck(request, (note) => notes.push(note));
+
+    worker().onmessage?.({ data: { progress: "Rebuilding" } });
+    worker().onmessage?.({ data: { progress: "Reading back" } });
+    expect(worker().terminated).toBe(0);
+    worker().onmessage?.({ data: okResult });
+
+    await expect(handle.result).resolves.toEqual(okResult);
+    expect(notes).toEqual(["Rebuilding", "Reading back"]);
+    expect(worker().terminated).toBe(1);
+  });
+
+  it("ignores progress when nobody asked for it", async () => {
+    install();
+    const handle = startFullImageCheck(request);
+
+    worker().onmessage?.({ data: { progress: "Rebuilding" } });
+    worker().onmessage?.({ data: okResult });
+
+    await expect(handle.result).resolves.toEqual(okResult);
+  });
+
   it("rejects with the worker's own message when it crashed", async () => {
     install();
     const handle = startFullImageCheck(request);

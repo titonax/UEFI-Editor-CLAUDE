@@ -469,6 +469,66 @@ describe("rebuildFirmware when the best preset does not fit but another does", (
   });
 });
 
+describe("rebuildFirmware does not encode twice what it just encoded", () => {
+  function counting() {
+    let encodes = 0;
+    let decodes = 0;
+    const codec = {
+      ...lzmaJsCodec,
+      encode: (data: Uint8Array, preset: number) => (encodes++, lzmaJsCodec.encode(data, preset)),
+      decode: (stream: Uint8Array) => (decodes++, lzmaJsCodec.decode(stream)),
+    };
+    return { codec, count: () => ({ encodes, decodes }) };
+  }
+
+  it("encodes each section once through the rebuild and its own check, but a caller's verification stays independent", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume(), { tail: 400 }));
+    const edit = flipEdit(graph, "setup-hii", 100, 8);
+    const { codec, count } = counting();
+
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs: { lzma: codec } }));
+
+    expect(count().encodes).toBe(1);
+    const decodesAfterRebuild = count().decodes;
+    expect(verifyRebuiltFirmware(graph, [edit], rebuilt, { codecs: { lzma: codec } })).toEqual([]);
+    expect(count().encodes).toBe(2);
+    expect(count().decodes).toBeGreaterThan(decodesAfterRebuild);
+  });
+
+  it("encodes each level once with two nested LZMA levels", async () => {
+    const outer = wrapInLzma(wrapInLzma(innerVolume(), { tail: 64 }), { tail: 64 });
+    const graph = await graphOf(outer);
+    const { codec, count } = counting();
+
+    unwrap(rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100, 8)], { codecs: { lzma: codec } }));
+
+    expect(count().encodes).toBe(2);
+  });
+
+  it("still catches a stream that was damaged after it was encoded", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume(), { tail: 400 }));
+    const edit = flipEdit(graph, "setup-hii", 100, 8);
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+    const edge = graph.buffers[1].parent;
+    if (!edge) throw new Error("no edge");
+    const damaged = { ...rebuilt, image: rebuilt.image.slice(), buffers: new Map(rebuilt.buffers) };
+    damaged.image[edge.payloadStart + 30] ^= 0x04;
+    damaged.buffers.set(0, damaged.image);
+
+    expect(verifyRebuiltFirmware(graph, [edit], damaged, { codecs }).length).toBeGreaterThan(0);
+  });
+
+  it("says which section it is about to re-encode", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume(), { tail: 400 }));
+    const messages: string[] = [];
+
+    unwrap(rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100, 8)], { codecs, onProgress: (message) => messages.push(message) }));
+
+    expect(messages[0]).toMatch(/Re-encoding the LZMA section at 0x[0-9A-F]+ of buffer 0 \(\d+ bytes of data\)/);
+    expect(messages[messages.length - 1]).toMatch(/Checking the rebuilt image/);
+  });
+});
+
 describe("padding rules", () => {
   it("accepts any padding where the source showed room for a section header, and keeps it small where it did not", () => {
     expect(paddingChangeAllowed(0, 3)).toBe(true);

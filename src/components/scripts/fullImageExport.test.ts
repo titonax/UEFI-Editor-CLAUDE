@@ -175,25 +175,26 @@ describe("checkFullImageOutput", () => {
     if (!result.ok) expect(["read-back", "rebuild"]).toContain(result.stage);
   });
 
-  it("does not offer an image whose structural verification fails, even if it reads back", async () => {
+  it("does not offer an image whose structural verification fails, even if the read-back would pass", async () => {
     const image = wrapped("lzma");
     const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
     const { request } = await requestFor(image, (which) => (which === "hii" ? flip(artifacts.hii, 100) : null));
-    // The encoder answers differently the second time it is asked (the
-    // verification's own canonical re-encode): the stream still reads back.
-    let calls = 0;
-    const unstable = {
+    // The codec reads its stream back correctly the first time it is asked (the
+    // encoder's own round trip) and wrongly afterwards (the structural check's
+    // fresh decode); the read-back below uses its own, independent decoder.
+    let decodes = 0;
+    const flaky = {
       ...lzmaJsCodec,
-      encode: (data: Uint8Array, preset: number) => {
-        const stream = lzmaJsCodec.encode(data, preset);
-        return ++calls % 2 === 0 ? Uint8Array.from([...stream, 0]) : stream;
+      decode: (stream: Uint8Array) => {
+        const bytes = lzmaJsCodec.decode(stream);
+        return ++decodes === 1 ? bytes : bytes.map((byte, index) => (index === 10 ? byte ^ 1 : byte));
       },
     };
 
-    const result = await checkFullImageOutput(request, { ...deps, codecs: { lzma: unstable } });
+    const result = await checkFullImageOutput(request, { ...deps, codecs: { lzma: flaky } });
 
     expect(result).toMatchObject({ ok: false, stage: "rebuild" });
-    if (!result.ok) expect(result.messages.join("\n")).toMatch(/canonical re-encoding/);
+    if (!result.ok) expect(result.messages.join("\n")).toMatch(/does not decode to the buffer it is meant to carry/);
   });
 
   it("does not offer anything when the read-back cannot decompress", async () => {
@@ -370,6 +371,23 @@ describe("checkFullImageOutput: what it refuses and what it records", () => {
     expect(result.changelog).toContain("First line\nSecond line");
     expect(result.changelog).toMatch(/… \d+ more range\(s\)/);
     expect(result.summary.changedRanges).toBeGreaterThan(64);
+  });
+});
+
+describe("checkFullImageOutput: progress", () => {
+  it("reports each step in order, so a long check is not silent", async () => {
+    const image = wrapped("lzma");
+    const artifacts = await extractAptioIvBytes(image, noIfr, decompress);
+    const { request } = await requestFor(image, (which) => (which === "hii" ? flip(artifacts.hii, 100) : null));
+    const messages: string[] = [];
+
+    const result = await checkFullImageOutput(request, { ...deps, onProgress: (message) => messages.push(message) });
+
+    expect(result.ok).toBe(true);
+    const order = ["Planning", "Rebuilding", "Re-encoding the LZMA section", "Checking the rebuilt", "Reading the rebuilt image back", "Recording"];
+    const positions = order.map((start) => messages.findIndex((message) => message.startsWith(start)));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
   });
 });
 
