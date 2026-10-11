@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import * as lzma from "lzma";
-import * as packageEngine from "lzma/src/lzma_worker.js";
 import { lzmaJsCodec } from "./lzmaJs";
 import { memoizeLzmaEncode, presetSearchCeiling, readLzmaHeader, reencodeLzma, type LzmaCodec } from "./lzmaSection";
 import { referenceLzmaAvailable, referenceLzmaDecode } from "./referenceLzma";
@@ -36,23 +35,6 @@ describe("readLzmaHeader", () => {
     const bad = originalStream(decoded).slice();
     bad[0] = 0xe1;
     expect(readLzmaHeader(bad)).toBeNull();
-  });
-});
-
-describe("the vendored LZMA-JS engine", () => {
-  it("writes exactly what the package's own engine writes, for every preset", () => {
-    const engine = packageEngine.LZMA_WORKER ?? packageEngine.default?.LZMA_WORKER;
-    if (!engine) throw new Error("the package engine did not load");
-    const data = Uint8Array.from({ length: 4000 }, (_, index) => (index % 11 === 0 ? 0x5a : (index * 13) % 37));
-    for (let preset = 1; preset <= 9; preset++) {
-      const previous = engine.disableEndMark;
-      engine.disableEndMark = true;
-      try {
-        expect(Uint8Array.from(lzmaJsCodec.encode(data, preset))).toEqual(Uint8Array.from(engine.compress(data, preset), (value) => value & 0xff));
-      } finally {
-        engine.disableEndMark = previous;
-      }
-    }
   });
 });
 
@@ -230,9 +212,6 @@ describe("lzmaJs in a browser bundle", () => {
   });
 });
 
-// The same codec without the fast-byte variants, so these tests count presets.
-const presetsOnly: LzmaCodec = { ...lzmaJsCodec, fastByteVariants: [] };
-
 describe("reencodeLzma: searching presets when the stream must fit", () => {
   const data = Uint8Array.from({ length: 5000 }, (_, index) => (index % 13 === 0 ? 0xaa : (index * 7) % 31));
   const original = lzmaJsCodec.encode(data, 8);
@@ -243,7 +222,7 @@ describe("reencodeLzma: searching presets when the stream must fit", () => {
   // case where one group happens to compress a given section worse.
   function worseFirst(calls: number[]): LzmaCodec {
     return {
-      ...presetsOnly,
+      ...lzmaJsCodec,
       encode: (bytes, preset) => {
         calls.push(preset);
         const stream = lzmaJsCodec.encode(bytes, preset);
@@ -291,7 +270,7 @@ describe("reencodeLzma: searching presets when the stream must fit", () => {
 
   it("names the preset when a later one throws, instead of keeping the first stream", () => {
     const codec: LzmaCodec = {
-      ...presetsOnly,
+      ...lzmaJsCodec,
       encode: (bytes, preset) => {
         if (preset === 7) throw new Error("boom");
         return lzmaJsCodec.encode(bytes, preset);
@@ -306,7 +285,7 @@ describe("reencodeLzma: searching presets when the stream must fit", () => {
 
   it("refuses a later preset's stream that has no header instead of crashing on it", () => {
     const codec: LzmaCodec = {
-      ...presetsOnly,
+      ...lzmaJsCodec,
       encode: (bytes, preset) => (preset === 7 ? new Uint8Array(3) : lzmaJsCodec.encode(bytes, preset)),
     };
 
@@ -335,7 +314,7 @@ describe("reencodeLzma: searching presets when the stream must fit", () => {
     new DataView(hugeOriginal.buffer).setUint32(1, 1 << 24, true);
     new DataView(hugeOriginal.buffer).setBigUint64(5, BigInt(presetSearchCeiling + 1), true);
     const counting: LzmaCodec = {
-      ...presetsOnly,
+      ...lzmaJsCodec,
       encode: (bytes, preset) => {
         calls.push(preset);
         return lzmaJsCodec.encode(bytes.subarray(0, 0), preset);
@@ -351,106 +330,11 @@ describe("reencodeLzma: searching presets when the stream must fit", () => {
   it("only offers presets whose window the original's decoder already has", () => {
     const calls: number[] = [];
     const small = lzmaJsCodec.encode(data, 3); // a 2^19 dictionary
-    const codec: LzmaCodec = { ...presetsOnly, encode: (bytes, preset) => (calls.push(preset), lzmaJsCodec.encode(bytes, preset)) };
+    const codec: LzmaCodec = { ...lzmaJsCodec, encode: (bytes, preset) => (calls.push(preset), lzmaJsCodec.encode(bytes, preset)) };
 
     reencodeLzma(small, edited, codec, { maxBytes: 1 });
 
     expect(calls.every((preset) => 2 ** lzmaJsCodec.presetDictionaryBits[preset - 1] <= 1 << 19)).toBe(true);
-  });
-});
-
-describe("reencodeLzma: searching fast-byte variants when no preset fits", () => {
-  const data = Uint8Array.from({ length: 5000 }, (_, index) => (index % 13 === 0 ? 0xaa : (index * 7) % 31));
-  const original = lzmaJsCodec.encode(data, 8);
-  const edited = data.map((byte, index) => (index === 100 ? byte ^ 0xff : byte));
-  const presetSizes = [8, 7, 4, 2].map((preset) => lzmaJsCodec.encode(edited, preset).length);
-  const variantSizes = (lzmaJsCodec.fastByteVariants ?? []).map((fastBytes) => lzmaJsCodec.encodeVariant?.(edited, 24, fastBytes).length ?? Infinity);
-
-  it("is part of the real codec, with a dictionary and fast-byte count of its own", () => {
-    expect(lzmaJsCodec.fastByteVariants?.length).toBeGreaterThan(0);
-    const stream = lzmaJsCodec.encodeVariant?.(edited, 24, 144);
-    expect(stream && lzmaJsCodec.decode(stream)).toEqual(edited);
-  });
-
-  it("agrees with the preset that has the same dictionary, fast bytes and match finder", () => {
-    // Preset 8 is 2^24 with 255 fast bytes and bt4.
-    expect(lzmaJsCodec.encodeVariant?.(edited, 24, 255)).toEqual(lzmaJsCodec.encode(edited, 8));
-    expect(lzmaJsCodec.encodeVariant?.(edited, 23, 128)).toEqual(lzmaJsCodec.encode(edited, 7));
-  });
-
-  it("is tried after every preset, and a variant that fits is used and named", () => {
-    const smallest = Math.min(...variantSizes);
-    const bestPreset = Math.min(...presetSizes);
-    // Only meaningful when a variant really beats every preset on this data.
-    const limit = smallest < bestPreset ? smallest : bestPreset - 1;
-    const calls: string[] = [];
-    const codec: LzmaCodec = {
-      ...lzmaJsCodec,
-      encode: (bytes, preset) => (calls.push(`p${String(preset)}`), lzmaJsCodec.encode(bytes, preset)),
-      encodeVariant: (bytes, bits, fastBytes) => (calls.push(`v${String(fastBytes)}`), lzmaJsCodec.encodeVariant?.(bytes, bits, fastBytes) ?? new Uint8Array(0)),
-    };
-
-    const result = reencodeLzma(original, edited, codec, { maxBytes: limit });
-
-    expect(calls.slice(0, 4)).toEqual(["p8", "p7", "p4", "p2"]);
-    if (smallest < bestPreset) {
-      expect(result).toMatchObject({ ok: true });
-      if (result.ok) {
-        expect(result.fastBytes).toBeDefined();
-        expect(result.stream.length).toBeLessThanOrEqual(limit);
-        expect(lzmaJsCodec.decode(result.stream)).toEqual(edited);
-      }
-    } else {
-      expect(result.ok && result.stream.length).toBe(bestPreset);
-    }
-  });
-
-  it("does not run a variant when a preset already fits", () => {
-    const calls: number[] = [];
-    const codec: LzmaCodec = { ...lzmaJsCodec, encodeVariant: (_bytes, _bits, fastBytes) => (calls.push(fastBytes), new Uint8Array(0)) };
-
-    const result = reencodeLzma(original, edited, codec, { maxBytes: 100_000 });
-
-    expect(result.ok).toBe(true);
-    expect(calls).toEqual([]);
-  });
-
-  it("returns the smallest of presets and variants when nothing fits", () => {
-    const result = reencodeLzma(original, edited, lzmaJsCodec, { maxBytes: 1 });
-
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.stream.length).toBe(Math.min(...presetSizes, ...variantSizes));
-  });
-
-  it("names the variant when it throws or returns no header", () => {
-    const throwing: LzmaCodec = { ...lzmaJsCodec, encodeVariant: () => { throw new Error("boom"); } };
-    const headerless: LzmaCodec = { ...lzmaJsCodec, encodeVariant: () => new Uint8Array(3) };
-
-    const a = reencodeLzma(original, edited, throwing, { maxBytes: 1 });
-    const b = reencodeLzma(original, edited, headerless, { maxBytes: 1 });
-
-    expect(a).toMatchObject({ ok: false, code: "lzma-codec" });
-    expect(!a.ok && a.message).toMatch(/96 fast bytes.*boom/);
-    expect(!b.ok && b.message).toMatch(/96 fast bytes.*no LZMA header/);
-  });
-
-  it("is not tried beyond the ceiling and is deterministic", () => {
-    const a = reencodeLzma(original, edited, lzmaJsCodec, { maxBytes: 1 });
-    const b = reencodeLzma(original, edited, lzmaJsCodec, { maxBytes: 1 });
-    expect(a.ok && b.ok && a.stream).toEqual(a.ok && b.ok && b.stream);
-  });
-
-  it("is remembered per dictionary and fast-byte count by the memoizing codec", () => {
-    let calls = 0;
-    const codec = memoizeLzmaEncode({ ...lzmaJsCodec, encodeVariant: (bytes, bits, fastBytes) => (calls++, lzmaJsCodec.encodeVariant?.(bytes, bits, fastBytes) ?? new Uint8Array(0)) });
-
-    const first = codec.encodeVariant?.(edited, 24, 144);
-    const again = codec.encodeVariant?.(edited, 24, 144);
-    codec.encodeVariant?.(edited, 24, 160);
-    codec.encodeVariant?.(edited, 23, 144);
-
-    expect(calls).toBe(3);
-    expect(again).toBe(first);
   });
 });
 

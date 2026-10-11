@@ -28,14 +28,8 @@ export interface LzmaCodec {
   // The largest declared dictionary this codec's decoder can check a stream
   // for; a larger one is valid LZMA but could not be verified here.
   maxDictionarySize: number;
-  // Fast-byte counts worth trying, after every preset, when a stream does not
-  // fit: the same search with another fast-byte count packs a given buffer a
-  // little smaller or larger, unpredictably. Needs `encodeVariant`.
-  fastByteVariants?: readonly number[];
   // Writes a stream with a declared size and no end marker.
   encode(data: Uint8Array, preset: number): Uint8Array;
-  // The same, with an explicit dictionary (a power of two) and fast-byte count.
-  encodeVariant?: (data: Uint8Array, dictionaryBits: number, fastBytes: number) => Uint8Array;
   decode(stream: Uint8Array): Uint8Array;
 }
 
@@ -48,9 +42,7 @@ export type ReencodeRefusalCode =
   | "lzma-roundtrip";
 
 export type ReencodeResult =
-  // `fastBytes` is set when the stream came from a fast-byte variant; `preset`
-  // is then the preset whose dictionary it used.
-  | { ok: true; stream: Uint8Array; preset: number; fastBytes?: number }
+  | { ok: true; stream: Uint8Array; preset: number }
   | { ok: false; code: ReencodeRefusalCode; message: string };
 
 const headerSize = 13;
@@ -150,37 +142,26 @@ export function reencodeLzma(
   }
   const limit = options.maxBytes;
   const mayTryOthers = limit !== undefined && decoded.length <= presetSearchCeiling;
-  // The presets first, then (same dictionary as the best preset) the fast-byte
-  // variants, which only differ from it in how hard the search looks.
-  const tries: Try[] = candidates.map((preset) => ({ preset, run: () => codec.encode(decoded, preset) }));
-  const bestPreset = candidates[0];
-  const encodeVariant = codec.encodeVariant;
-  if (encodeVariant) {
-    const bits = codec.presetDictionaryBits[bestPreset - 1];
-    for (const fastBytes of codec.fastByteVariants ?? []) {
-      tries.push({ preset: bestPreset, fastBytes, run: () => encodeVariant(decoded, bits, fastBytes) });
-    }
-  }
-  let best: { stream: Uint8Array; preset: number; fastBytes?: number } | undefined;
-  for (const attempt of tries) {
+  let best: { stream: Uint8Array; preset: number } | undefined;
+  for (const preset of candidates) {
     let stream: Uint8Array;
     try {
-      stream = attempt.run().slice();
+      stream = codec.encode(decoded, preset).slice();
     } catch (error) {
-      return codecFailure("encode", error, attempt);
+      return codecFailure("encode", error, preset);
     }
     // A stream with no header could win the "smallest" comparison and then
     // break the header rewrite below: say which preset produced it.
     if (!readLzmaHeader(stream)) {
-      return codecFailure("encode", new Error("it returned a stream with no LZMA header"), attempt);
+      return codecFailure("encode", new Error("it returned a stream with no LZMA header"), preset);
     }
-    if (!best || stream.length < best.stream.length) best = { stream, preset: attempt.preset, ...(attempt.fastBytes !== undefined ? { fastBytes: attempt.fastBytes } : {}) };
+    if (!best || stream.length < best.stream.length) best = { stream, preset };
     if (limit === undefined || stream.length <= limit || !mayTryOthers) break;
   }
   // Prefer the first that fits (the order is best search first); otherwise the
   // smallest, which the caller will find does not fit.
   const chosen = best;
-  if (!chosen) return codecFailure("encode", new Error("no preset was tried"), { preset: 0 });
+  if (!chosen) return codecFailure("encode", new Error("no preset was tried"), 0);
   const stream = chosen.stream;
   // The stream only uses distances inside the preset's window, so declaring the
   // original's (larger or equal) dictionary is valid and keeps the decoder's
@@ -190,34 +171,21 @@ export function reencodeLzma(
   try {
     readBack = codec.decode(stream);
   } catch (error) {
-    return codecFailure("decode", error, chosen);
+    return codecFailure("decode", error, chosen.preset);
   }
   if (!sameBytes(readBack, decoded)) {
     return {
       ok: false,
       code: "lzma-roundtrip",
-      message: `The re-encoded LZMA stream (${describe(chosen)}) does not decode back to the data it was made from.`,
+      message: `The re-encoded LZMA stream (preset ${String(chosen.preset)}) does not decode back to the data it was made from.`,
     };
   }
-  return { ok: true, stream, preset: chosen.preset, ...(chosen.fastBytes !== undefined ? { fastBytes: chosen.fastBytes } : {}) };
+  return { ok: true, stream, preset: chosen.preset };
 }
 
-interface Attempt {
-  preset: number;
-  fastBytes?: number;
-}
-
-interface Try extends Attempt {
-  run: () => Uint8Array;
-}
-
-function describe(attempt: Pick<Attempt, "preset" | "fastBytes">) {
-  return attempt.fastBytes === undefined ? `preset ${String(attempt.preset)}` : `preset ${String(attempt.preset)}'s dictionary with ${String(attempt.fastBytes)} fast bytes`;
-}
-
-function codecFailure(step: "encode" | "decode", error: unknown, attempt: Pick<Attempt, "preset" | "fastBytes">): ReencodeResult {
+function codecFailure(step: "encode" | "decode", error: unknown, preset: number): ReencodeResult {
   const reason = error instanceof Error ? error.message : String(error);
-  const at = attempt.preset > 0 ? ` at ${describe(attempt)}` : "";
+  const at = preset > 0 ? ` at preset ${String(preset)}` : "";
   return { ok: false, code: "lzma-codec", message: `The LZMA codec failed to ${step}${at}: ${reason}` };
 }
 
@@ -227,29 +195,21 @@ function codecFailure(step: "encode" | "decode", error: unknown, attempt: Pick<A
 // shares a result, and only `encode` is remembered: reading the stream back
 // (`decode`) is always done afresh.
 export function memoizeLzmaEncode(codec: LzmaCodec): LzmaCodec {
-  const remembered = new WeakMap<Uint8Array, Map<string, Uint8Array>>();
-  const once = (data: Uint8Array, key: string, make: () => Uint8Array) => {
-    let byKey = remembered.get(data);
-    if (!byKey) {
-      byKey = new Map();
-      remembered.set(data, byKey);
-    }
-    let stream = byKey.get(key);
-    if (!stream) {
-      stream = make();
-      byKey.set(key, stream);
-    }
-    return stream;
-  };
-  const encodeVariant = codec.encodeVariant;
+  const remembered = new WeakMap<Uint8Array, Map<number, Uint8Array>>();
   return {
     ...codec,
-    encode: (data, preset) => once(data, `preset:${String(preset)}`, () => codec.encode(data, preset)),
-    ...(encodeVariant
-      ? {
-          encodeVariant: (data: Uint8Array, dictionaryBits: number, fastBytes: number) =>
-            once(data, `variant:${String(dictionaryBits)}:${String(fastBytes)}`, () => encodeVariant(data, dictionaryBits, fastBytes)),
-        }
-      : {}),
+    encode(data, preset) {
+      let byPreset = remembered.get(data);
+      if (!byPreset) {
+        byPreset = new Map();
+        remembered.set(data, byPreset);
+      }
+      let stream = byPreset.get(preset);
+      if (!stream) {
+        stream = codec.encode(data, preset);
+        byPreset.set(preset, stream);
+      }
+      return stream;
+    },
   };
 }
