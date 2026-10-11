@@ -354,7 +354,9 @@ only if that does not fit and the buffer is at most 8 MiB, one preset of each
 other group (the largest the original's dictionary allows), keeping the first
 that fits, or the smallest when none does. The choice is deterministic given the
 original stream, the data and the room, and the verification asks with the same
-room, so its canonical re-encode is the stream the rebuild wrote. Bigger buffers
+room, so its canonical re-encode is the stream the rebuild wrote (by construction:
+the rebuild's own check now reads it from a cache of what it encoded; a caller who
+verifies with fresh codecs gets a real re-encode). Bigger buffers
 get the best preset only: each extra encode of a 20 MB volume costs a minute or
 more.
 

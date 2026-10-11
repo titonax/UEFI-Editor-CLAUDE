@@ -505,6 +505,52 @@ describe("rebuildFirmware does not encode twice what it just encoded", () => {
     expect(count().encodes).toBe(2);
   });
 
+  it("an encoder that answers differently the second time is still caught when a caller verifies with its own codecs", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume(), { tail: 400 }));
+    const edit = flipEdit(graph, "setup-hii", 100, 8);
+    const rebuilt = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+    const unstable = { ...lzmaJsCodec, encode: (data: Uint8Array, preset: number) => Uint8Array.from([...lzmaJsCodec.encode(data, preset), 0]) };
+
+    const problems = verifyRebuiltFirmware(graph, [edit], rebuilt, { codecs: { lzma: unstable } });
+
+    expect(problems.join("\n")).toMatch(/canonical re-encoding/);
+  });
+
+  it("refuses when a buffer changes between its encode and the rebuild's own check, though the cache would still answer", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume(), { tail: 400 }));
+    let encoded: Uint8Array | undefined;
+    const spying = { ...lzmaJsCodec, encode: (data: Uint8Array, preset: number) => ((encoded = data), lzmaJsCodec.encode(data, preset)) };
+
+    const result = rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100, 8)], {
+      codecs: { lzma: spying },
+      onProgress: (message) => {
+        // After the encode, before the check: the buffer the stream was made from changes.
+        if (message.startsWith("Checking") && encoded) encoded[500] ^= 0x01;
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusals.length).toBeGreaterThan(0);
+      expect(result.refusals.every((refusal) => refusal.code === "verification-failed")).toBe(true);
+    }
+  });
+
+  it("builds the same image whether or not the encoder is asked twice", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume(), { tail: 400 }));
+    const edit = flipEdit(graph, "setup-hii", 100, 8);
+    // The same plan through the plain codec (no cache is involved when the
+    // caller's codec is used directly by a verifier) must give the same bytes.
+    let raw = 0;
+    const counting = { ...lzmaJsCodec, encode: (data: Uint8Array, preset: number) => (raw++, lzmaJsCodec.encode(data, preset)) };
+
+    const withCache = unwrap(rebuildFirmware(graph, [edit], { codecs: { lzma: counting } }));
+    const reference = unwrap(rebuildFirmware(graph, [edit], { codecs }));
+
+    expect(withCache.image).toEqual(reference.image);
+    expect(raw).toBe(1);
+  });
+
   it("still catches a stream that was damaged after it was encoded", async () => {
     const graph = await graphOf(wrapInLzma(innerVolume(), { tail: 400 }));
     const edit = flipEdit(graph, "setup-hii", 100, 8);
@@ -516,6 +562,22 @@ describe("rebuildFirmware does not encode twice what it just encoded", () => {
     damaged.buffers.set(0, damaged.image);
 
     expect(verifyRebuiltFirmware(graph, [edit], damaged, { codecs }).length).toBeGreaterThan(0);
+  });
+
+  it("stops, saying so, when the progress report itself fails, and leaves the source alone", async () => {
+    const graph = await graphOf(wrapInLzma(innerVolume(), { tail: 400 }));
+    const before = graph.buffers.map((node) => node.bytes.slice());
+
+    expect(() =>
+      rebuildFirmware(graph, [flipEdit(graph, "setup-hii", 100, 8)], {
+        codecs,
+        onProgress: () => {
+          throw new Error("ui exploded");
+        },
+      }),
+    ).toThrow(/The progress report failed \(.*\): ui exploded/);
+
+    expect(graph.buffers.map((node) => node.bytes)).toEqual(before);
   });
 
   it("says which section it is about to re-encode", async () => {

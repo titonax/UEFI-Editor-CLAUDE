@@ -3,6 +3,7 @@ import type { FirmwareDecompressor } from "./aptioIvExtractor";
 import { computeModifiedFiles } from "./binaryPatcher";
 import {
   rebuildFirmware,
+  reportProgress,
   verifyByReextraction,
   type ArtifactEdit,
   type RebuildCodecs,
@@ -235,14 +236,14 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
     // https or localhost; better to say so before the long work than after.
     return { ok: false, stage: "plan", messages: ["This page cannot compute SHA-256 (Web Crypto needs https or localhost), and the changelog must carry the image's hashes."] };
   }
-  deps.onProgress?.("Planning the edits");
+  reportProgress(deps.onProgress, "Planning the edits");
   const plan = planArtifactEdits(request.graph, request.changes);
   if (!plan.ok) return { ok: false, stage: "plan", messages: [plan.message] };
   if (plan.edits.length === 0) {
     return { ok: false, stage: "plan", messages: ["The applied plan leaves every byte of Setup, AMITSE and SetupData as it was, so there is nothing to put into the image."] };
   }
 
-  deps.onProgress?.("Rebuilding the image (re-encoding compressed sections takes the longest)");
+  reportProgress(deps.onProgress, "Rebuilding the image (re-encoding compressed sections takes the longest)");
   const rebuilt = rebuildFirmware(request.graph, plan.edits, {
     codecs: deps.codecs,
     ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
@@ -254,7 +255,7 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
   // result and refuses (verification-failed) if it finds anything; the
   // independent half is the read-back below.
 
-  deps.onProgress?.("Reading the rebuilt image back with the independent decoders");
+  reportProgress(deps.onProgress, "Reading the rebuilt image back with the independent decoders");
   const readBack = await verifyByReextraction(request.graph, plan.edits, rebuilt.value.image, {
     artifactSetId: request.artifactSetId,
     decompress: deps.decompress,
@@ -263,7 +264,7 @@ export async function checkFullImageOutput(given: FullImageRequest, deps: FullIm
 
   const root = request.graph.buffers.find((buffer) => buffer.id === request.graph.rootBufferId);
   if (!root) return { ok: false, stage: "report", messages: ["The provenance graph has no source image to describe."] };
-  deps.onProgress?.("Recording the hashes");
+  reportProgress(deps.onProgress, "Recording the hashes");
   let sourceSha256: string;
   let outputSha256: string;
   try {

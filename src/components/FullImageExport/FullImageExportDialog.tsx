@@ -58,6 +58,8 @@ export default function FullImageExportDialog({
 }: FullImageExportDialogProps) {
   const [state, setState] = React.useState<CheckState>({ phase: "idle" });
   const handle = React.useRef<FullImageCheckHandle | null>(null);
+  // Which run the dialog is showing; a note from an earlier run is ignored.
+  const currentRun = React.useRef(0);
   const source = files.firmwareSource;
 
   React.useEffect(
@@ -97,9 +99,11 @@ export default function FullImageExportDialog({
       return;
     }
     setState({ phase: "running", progress: "Starting" });
+    const thisRun = ++currentRun.current;
     let started: FullImageCheckHandle;
     try {
       started = startCheck(request, (progress) => {
+        if (currentRun.current !== thisRun) return;
         setState((current) => (current.phase === "running" ? { phase: "running", progress } : current));
       });
     } catch (error) {
@@ -124,6 +128,7 @@ export default function FullImageExportDialog({
   const cancel = () => {
     const running = handle.current;
     handle.current = null;
+    currentRun.current++;
     running?.cancel();
     setState({ phase: "idle" });
   };

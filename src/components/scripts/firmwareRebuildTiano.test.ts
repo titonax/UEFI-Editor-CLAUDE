@@ -214,6 +214,29 @@ describe("rebuildFirmware through an EFI/Tiano section", () => {
     expect(await verifyByReextraction(graph, edits, rebuilt.image, { decompress })).toEqual([]);
   });
 
+  it("encodes once through the rebuild and its own check, and refuses a buffer that changed in between", async () => {
+    const graph = await graphOf(wrapInTiano(innerVolume(), "efi"));
+    const edit = flipEdit(graph, "setup-hii", 100);
+    let encodes = 0;
+    let encoded: Uint8Array | undefined;
+    const counting = {
+      encode: (data: Uint8Array, variant: TianoVariant) => ((encoded = data), encodes++, encodeTiano(data, variant)),
+      decode: decodeTiano,
+    };
+
+    unwrap(rebuildFirmware(graph, [edit], { codecs: { tiano: counting } }));
+    expect(encodes).toBe(1);
+
+    const refused = rebuildFirmware(graph, [edit], {
+      codecs: { tiano: counting },
+      onProgress: (message) => {
+        if (message.startsWith("Checking") && encoded) encoded[300] ^= 0x01;
+      },
+    });
+    expect(codesOf(refused).length).toBeGreaterThan(0);
+    expect(new Set(codesOf(refused))).toEqual(new Set(["verification-failed"]));
+  });
+
   it("is deterministic", async () => {
     const graph = await graphOf(wrapInTiano(innerVolume(), "efi"));
     const edit = flipEdit(graph, "setup-hii", 100);

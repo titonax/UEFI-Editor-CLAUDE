@@ -70,6 +70,63 @@ describe("startFullImageCheck", () => {
     expect(worker().terminated).toBe(1);
   });
 
+  it("does not take anything but a well-formed answer for the result", async () => {
+    const malformed: unknown[] = [{ progress: 42 }, {}, [], { ok: false, stage: 1, messages: [] }, { ok: false, stage: "plan", messages: [3] }, { ok: true }, { ok: true, image: [1], changelog: "x", summary: {} }];
+    for (const data of malformed) {
+      install();
+      const handle = startFullImageCheck(request);
+
+      worker().onmessage?.({ data });
+
+      await expect(handle.result, JSON.stringify(data)).rejects.toThrow(/could not be read/);
+    }
+  });
+
+  it("takes a result that carries a progress key for a result, not a note", async () => {
+    install();
+    const notes: string[] = [];
+    const handle = startFullImageCheck(request, (note) => notes.push(note));
+    const result = { ...okResult, progress: "irrelevant" };
+
+    worker().onmessage?.({ data: result });
+
+    await expect(handle.result).resolves.toEqual(result);
+    expect(notes).toEqual([]);
+  });
+
+  it("accepts a well-formed success", async () => {
+    install();
+    const handle = startFullImageCheck(request);
+    const good: FullImageResult = { ok: true, image: new Uint8Array(1), changelog: "x", summary: {} as never };
+
+    worker().onmessage?.({ data: good });
+
+    await expect(handle.result).resolves.toBe(good);
+  });
+
+  it("lets a crash report outrank a progress note in the same message", async () => {
+    install();
+    const handle = startFullImageCheck(request, () => undefined);
+
+    worker().onmessage?.({ data: { progress: "x", crashed: "boom" } });
+
+    await expect(handle.result).rejects.toThrow("boom");
+  });
+
+  it("acts on nothing the worker delivers after the check has ended", async () => {
+    install();
+    const notes: string[] = [];
+    const handle = startFullImageCheck(request, (note) => notes.push(note));
+    const late = worker().onmessage;
+
+    handle.cancel();
+    late?.({ data: { progress: "late" } });
+    late?.({ data: okResult });
+
+    await expect(handle.result).rejects.toThrow(/cancelled/);
+    expect(notes).toEqual([]);
+  });
+
   it("ignores progress when nobody asked for it", async () => {
     install();
     const handle = startFullImageCheck(request);

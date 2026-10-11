@@ -152,6 +152,28 @@ describe("FullImageExportDialog", () => {
     expect(screen.getByText(/Re-encoding the LZMA section at 0x40/)).toBeInTheDocument();
   });
 
+  it("does not let a note from a cancelled run speak for the next one", async () => {
+    const { files, data } = await session({ unsuppress: true });
+    const reports: ((message: string) => void)[] = [];
+    const startCheck = (_request: FullImageRequest, onProgress?: (message: string) => void) => {
+      if (onProgress) reports.push(onProgress);
+      return { result: new Promise<FullImageResult>(() => undefined), cancel: vi.fn() };
+    };
+    renderDialog({ files, appliedData: data, startCheck });
+
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Cancel check/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Check firmware output/ }));
+    await screen.findByRole("button", { name: /Cancel check/ });
+    act(() => {
+      reports[1]("run two note");
+      reports[0]("RUN-ONE late note");
+    });
+
+    expect(screen.queryByText(/RUN-ONE late note/)).not.toBeInTheDocument();
+    expect(screen.getByText(/run two note/)).toBeInTheDocument();
+  });
+
   it("offers only the changelog on request", async () => {
     const { files, data } = await session({ unsuppress: true });
     renderDialog({ files, appliedData: data, startCheck: realCheck });

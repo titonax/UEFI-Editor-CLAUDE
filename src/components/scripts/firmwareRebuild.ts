@@ -85,6 +85,17 @@ export interface RebuildCodecs {
   tiano?: TianoCodec;
 }
 
+// A progress report must not be able to decide the outcome silently: if the
+// caller's callback throws, the rebuild stops and says so.
+export function reportProgress(onProgress: ((message: string) => void) | undefined, message: string) {
+  if (!onProgress) return;
+  try {
+    onProgress(message);
+  } catch (error) {
+    throw new Error(`The progress report failed (${message}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export interface RebuildOptions {
   codecs?: RebuildCodecs;
   // Told, in words, what a long step is about to do (rebuildFirmware is
@@ -702,7 +713,8 @@ export function rebuildFirmware(
     if (edge.compression !== "none") {
       const format = formatOf(edge, codecs);
       if (!format) continue; // refused above by checkEdge
-      options.onProgress?.(
+      reportProgress(
+        options.onProgress,
         `Re-encoding the ${format.label} section at ${hex(edge.sectionStart)} of buffer ${String(edge.parentBufferId)} (${String(copy.length)} bytes of data)`,
       );
       const propagated = propagateCompressed(edge, node.bytes, copy, parentOriginal.bytes, parentCopy, format);
@@ -736,7 +748,7 @@ export function rebuildFirmware(
     repairedFiles,
     layoutChanges,
   };
-  options.onProgress?.("Checking the rebuilt image against the source");
+  reportProgress(options.onProgress, "Checking the rebuilt image against the source");
   const problems = verifyRebuiltFirmware(graph, edits, value, { ...options, codecs });
   if (problems.length > 0) {
     return { ok: false, refusals: problems.map((message) => ({ code: "verification-failed", message })) };
