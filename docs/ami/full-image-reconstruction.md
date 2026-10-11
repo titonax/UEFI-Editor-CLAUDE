@@ -142,6 +142,20 @@ percent of EDK2's compressor in review, but a low-entropy or unusual buffer can
 come out larger, and a small edit can then be refused (`compressed-does-not-fit`)
 in a file with no spare tail. That is a refusal, never a truncated stream.
 
+Measured on real images (22 LZMA sections from 8 AMI images, a two-byte edit at
+two places in each, the file's real room as the limit): every section fit with
+the presets already tried, except one 7.3 MB buffer whose file has no spare room
+at all (room equals the vendor's stream). There the unedited buffer re-encodes
+6 bytes smaller than the vendor's, but an edit leaves it 16 to 190 bytes over.
+Sections of 12 KB to 18 MB re-encode 0.1 % to 3 % smaller than the vendor's, so
+a section with a few hundred bytes of room is the safe case; one with none is a
+coin toss on where the edit lands. Trying more fast-byte counts (96 to 273, with
+the best preset's dictionary) was implemented and measured: it fit nothing that
+the presets did not, and added about four minutes to the one case that still
+refused, so it was not kept. The remaining way to fit that case is not a better
+search but room: the next free space in the volume, which would move a file
+boundary and is outside what the rebuild does.
+
 ### What this stage does not prove
 
 - Whether the **platform's own LZMA decoder** accepts the re-encoded stream.
