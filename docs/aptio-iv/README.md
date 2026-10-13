@@ -22,7 +22,7 @@ upstream): every session now goes through the full-image preflight.
 - The full-image preflight is implemented and runs read-only in the browser: flash layout and firmware volume detection, recursive LZMA/Tiano decompression, extraction of the Setup, AMITSE and SetupData modules, and IFRExtractor-RS via WebAssembly. Every extracted buffer keeps its provenance (source buffer, encapsulation path, owning FFS file).
 - The Aptio IV/V generation is reported as evidence; shared structures alone never resolve it, and an unresolved image stays marked as such.
 - The AMITSE multi-FormSet root visibility vector is detected in the Setup PE32; changes to it are recorded as reversible pending plans and included in `data.json`.
-- Full-image output exists for same-size plans on AMI Aptio IV images: the footer's **Firmware image** dialog rebuilds the image from the applied change queue, verifies it and reads it back with the project's decoders before offering it with a `changelog.txt` (see `docs/ami/full-image-reconstruction.md`). It has not been flashed on any board. Exporting extracted UEFI files stays disabled for sessions opened from a complete image, and pending root-visibility plans cannot be applied yet. What stops an image from being rebuilt is listed by `assessFirmwareReconstruction()` and shown in the preflight report.
+- Full-image output exists for same-size plans on AMI Aptio IV images: the footer's **Firmware image** dialog rebuilds the image from the applied change queue, verifies it and reads it back with the project's decoders before offering it with a `changelog.txt` (see `docs/ami/full-image-reconstruction.md`). It has not been flashed on any board. Exporting extracted UEFI files stays disabled for sessions opened from a complete image. A pending root-visibility plan is applied by the same dialog (one byte of the Setup PE32's registration vector, checked by repeating the code analysis on the rebuilt image); its effect on a running Setup has not been observed. What stops an image from being rebuilt is listed by `assessFirmwareReconstruction()` and shown in the preflight report.
 - Parser and patching changes are based on reproducible firmware samples.
 - Modified output must never be flashed before independent validation and a recovery path are available.
 
@@ -45,17 +45,34 @@ Do not commit firmware images when redistribution rights are unclear. They can b
 
 ## Planned implementation
 
-1. Identify Aptio IV module and data-layout variants.
-2. Separate firmware-family detection from the existing parser.
-3. Add Aptio IV parsing behind an explicit experimental mode.
+State of each step of the original plan. "Done" means implemented and tested;
+none of it has been flashed on a board.
+
+1. Identify Aptio IV module and data-layout variants. **Partly done:** detection
+   and 22 recorded AMI cases; the generation stays `unresolved` by design.
+2. Separate firmware-family detection from the existing parser. **Done**
+   (`amiFirmwareImage.ts`, `brandKnowledge.ts`).
+3. Add Aptio IV parsing behind an explicit experimental mode. **Done.**
 4. Generate a change log containing every modified offset and byte sequence.
-5. Reject ambiguous layouts rather than guessing.
-6. Build sanitized test fixtures and regression tests.
+   **Done:** `changelog.txt` with hashes, changed ranges, repaired checksums and
+   re-encoded sections.
+5. Reject ambiguous layouts rather than guessing. **Done:** typed refusals.
+6. Build sanitized test fixtures and regression tests. **Done:** no firmware is
+   committed.
 7. Validate round-trip output before enabling downloads for Aptio IV images.
+   **Done for structure and read-back** with the project's own decoders; not
+   validated on hardware.
+
+What is still open (a real image with an EFI/Tiano Setup section, a root
+visibility change on a real image, corpus cases for the local sample set, room
+for an LZMA section that has none) is listed under "Pending" in
+[`docs/ami/full-image-reconstruction.md`](../ami/full-image-reconstruction.md).
 
 ## Compatibility record
 
 Each tested platform will be recorded with one of these states:
+
+(No platform is recorded as **Experimental write** or **Validated** yet: nothing has been flashed.)
 
 - **Parse only**: structures can be read but modified output is disabled.
 - **Experimental write**: output can be produced for controlled offline validation.
