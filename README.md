@@ -12,7 +12,8 @@ This is a maintenance/refactor fork of
 [BoringBoredom/UEFI-Editor](https://github.com/BoringBoredom/UEFI-Editor).
 The four-file Aptio V editing workflow is the same; see
 [`docs/aptio-iv/README.md`](docs/aptio-iv/README.md) for the full-image
-(Aptio IV) reconstruction roadmap and its current limitations.
+(Aptio IV) reconstruction roadmap and its current limitations. What is open overall, per item and status, is in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## ⚠️ Before you flash anything
 
