@@ -123,7 +123,7 @@ const documentedSamples: DocumentedSample[] = [
   },
   {
     brand: "ASUS",
-    sha256: "cb71e90c3863a3d0c097d5774bf5fdd536bf4f528f679e17d27c2d1add69c6462",
+    sha256: "cb71e90c3863a3d0c097d5774bf5dd536bf4f528f679e17d27c2d1add69c6462",
     source: "docs/aptio-iv/samples/cross-vendor-intake.md",
     generation: "aptio-iv",
     container: "vendor-image",

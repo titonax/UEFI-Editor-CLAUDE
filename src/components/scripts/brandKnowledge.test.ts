@@ -20,6 +20,19 @@ describe("classifyBrand", () => {
     ]);
   });
 
+  it("recognizes the ASUS Sabertooth Z97 sample by its real 64-character SHA-256", () => {
+    // The table once held a 65-character transcription of this hash, which
+    // can never equal a SHA-256, so the documented-hash path never fired.
+    const classification = classifyBrand(
+      "unrelated.bin",
+      "cb71e90c3863a3d0c097d5774bf5dd536bf4f528f679e17d27c2d1add69c6462",
+      [],
+    );
+
+    expect(classification.brand).toBe("ASUS");
+    expect(classification.basis).toBe("documented-hash");
+  });
+
   it("prefers a firmware-marker byte match over a filename token", () => {
     const classification = classifyBrand(
       "definitely-an-asus-board.bin",
