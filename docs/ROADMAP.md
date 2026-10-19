@@ -10,7 +10,7 @@ request, and updates this file in the same change. If no item is `Ready` it
 does nothing. Do not add a `Ready` item unless it really can be finished with
 code and the data already in the repository.
 
-Pick order: G1, W1, G2a, T1, D1, R1, R2, G2b, A4. Items that touch behaviour
+Pick order: G1, G5a, W1, G2a, T1, D1, R1, R2, G2b, A4. Items that touch behaviour
 users see (G1, G2a) go first; the two file splits (R1, R2) go after the test
 and docs items so they start from a documented base.
 
@@ -19,7 +19,6 @@ and docs items so they start from a documented base.
 | Ready | Code and repository data are enough. |
 | Needs sample | Cannot be done without a real firmware image that is not in the repository. Nobody may fabricate one. |
 | Needs decision | The owner (or both forks) must choose first. |
-| Needs access | Approved, but it needs to read the GPT fork, which the hourly task cannot reach. A session with that access does it. |
 | Deferred | The owner postponed it explicitly. Do not start. |
 | Blocked | Waits for another item; the id is given. |
 
@@ -43,21 +42,24 @@ the repository, and its analysis needs it.
 
 | Id | Status | Item | Done when |
 | --- | --- | --- | --- |
-| W1 | Ready | An LH5 **encoder** in the repo. | Round trip: encode, then decode with `phoenixLh5.ts`, gives the original bytes for varied inputs. No claim that the output matches what Award's own tool writes. |
+| W1 | Ready | An LH5 **encoder** in the repo. The GPT fork already has one (`phoenixLh5Encoder.ts`, 390 lines, with its codec contract); read it first, then port or write one, whichever is smaller to verify (see `docs/phoenix/gpt-comparison.md`). | Round trip: encode, then decode with `phoenixLh5.ts`, gives the original bytes for varied inputs. No claim that the output matches what Award's own tool writes. |
 | W2 | Needs sample | Link each item to its title in `_EN_CODE.BIN`. | Item names shown in the inventory, with the rule documented. |
 | W3 | Needs sample | Meaning of the flags word bits other than `0x8`, and of the bytes at +4/+5. | Each bit named from the setup code, with the instruction addresses that read it. |
 | W4 | Needs sample | A second Award image (4.51PG, a 2 MiB mirrored image, or another vendor's 6.00PG). | Inventory checked against it and differences recorded. |
-| W5 | Needs sample | Record `R01A2.BIN` as a case (metadata only). | Case added through the runner. |
+| W5 | Done | `R01A2.BIN` is recorded as a case (`src/knowledge/cases/award/award-d7ec1c70.json`, taken from the GPT fork's `docs/award/emachines-el1200-r01a2.md`; the board is an eMachines EL1200). | - |
 | W6 | Blocked (W1, W3) | Hide/Show of a **statically** hidden item by editing the flags word, rebuilding the module and its LHA header. | Export refuses when the item is also hidden by code at run time; read-back verified; documented as untested on hardware. |
+| W7 | Done | Module count reconciled with the GPT fork on 2026-10-19: the image has 19 `-lh5-` and 4 stored `-lh0-` members, and the GPT page says all 23 are `-lh5-`. Recorded in `docs/award/README.md`. | The owner may check the GPT page against the image. |
 
 W6 must stay behind an explicit experimental label: the code also sets the
 hide bit at run time, and no Award board has been tried.
 
 ## 3. Parity with the GPT fork
 
-The GPT fork is `titonax/UEFI-Editor-GPT`. The notes below come from reading
-its `main` at `e001282` (PR #77) in September 2026; it has moved since and
-could not be re-read when this was written, so check before starting any item.
+The GPT fork is `titonax/UEFI-Editor-GPT`. It was re-read on 2026-10-19 at
+`3cd7921` (PR #222), up from `e001282` (PR #77) in September. Its own plan is
+`docs/roadmap.md` there. It writes Phoenix full images, has a Phoenix editor
+workspace, a vendor-neutral UEFI HII editor and portable queue sessions; this
+fork has none of those four (it does write same-size AMI Aptio IV images). Check it again before starting any item here.
 
 | Id | Status | Item | Done when |
 | --- | --- | --- | --- |
@@ -65,8 +67,9 @@ could not be re-read when this was written, so check before starting any item.
 | G2a | Ready | An optional **Manufacturer** selector on the upload screen. `classifyBrand` already takes a `declaredBrand` ("user-supplied" signal, ranked below an exact documented SHA-256 and above marker/filename matches) but no screen passes one. | The selector lists `supportedBrands`, its choice reaches `classifyBrand`, the report shows the resulting brand and its basis, a choice that disagrees with a documented hash is shown as a disagreement rather than overriding it, and a component test covers each. |
 | G2b | Ready | Audit this fork's UI against what the GPT fork's screens showed, as seen in the owner's screenshots: a per-item visibility-gate badge ("hidden when true" / "no visibility gate") in the menu tree, per-item Hide / Show / Move controls in the tree, and the vendor badge on the upload screen. Read-only: write `docs/ui-parity.md` listing, for each, whether this fork has it (with file and component) or not. | The page exists and each missing piece is added below as its own `Ready` row with a test as its completion check. No UI is changed in this item. |
 | G3 | Deferred | **uefi-unbranded**: a vendor-neutral UEFI HII engine for Insyde and modern Phoenix UEFI firmware (the GPT fork's discovery, editing, patcher, suppression and workspace modules and its navigation table and menu actions). The owner asked that it not be forgotten and not be started yet. | Only when the owner lifts the deferral. |
-| G4 | Needs access | Approved by the owner on 2026-10-19 without picking a side. First step, read-only: a comparison of the GPT fork's separate Phoenix editor (its own form UI, footer and change queue) with this fork's legacy Phoenix Setup Table work, in `docs/phoenix/gpt-comparison.md`. No code is copied and neither path is removed until the owner reads it. | The page lists what each path can do, where they overlap and where they disagree, with file references on both sides. |
-| G5 | Needs access | Approved by the owner on 2026-10-19. The open points in `docs/knowledge-interchange.md` (generation policy, similarity rule, capsule container values, one format or translation) need the GPT fork's current code and its owner's agreement; this fork cannot settle them alone. First step: re-run the comparison against the GPT fork's current `main` and update that page and its test. | The page's comparison commit is current, and each open point is either settled in writing by both sides or restated with what is still undecided. |
+| G4 | Needs decision | The comparison is written: `docs/phoenix/gpt-comparison.md`, with three options (keep separate; port in stages behind this fork's queue; converge). The owner picks one. | The owner names the option; the chosen stages are then added here as their own rows. |
+| G5 | Needs decision | Re-compared on 2026-10-19 against the GPT fork's `main` (`3cd7921`): its knowledge layer is unchanged, and `docs/knowledge-interchange.md` now says so. The four open points there still need both sides. | The page's open points are each settled in writing by both sides, or restated with what is still undecided. |
+| G5a | Ready | Derive the documented-sample table in `brandKnowledge.ts` from the cases in `src/knowledge/cases` so a hash lives in one place, as the GPT fork does. Its duplicate held a 65-character hash (fixed on 2026-10-19). | `brandKnowledge.ts` reads its samples from the cases, every sample hash is checked as 64 lower-case hex by a test, and `classifyBrand`'s results do not change for any existing test. |
 
 ## 4. Code health
 

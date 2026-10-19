@@ -8,9 +8,12 @@ contract that both forks have signed: the GPT fork has not adopted this page.
 `src/knowledge/interchange.test.ts` fails when the page and this fork's code
 differ.
 
-The comparison was made against the GPT fork's `main` at `0895143` (its
-knowledge layer is unchanged at `d30cb3c`). It rests on reading its code and
-documents, not on running its tests.
+The comparison was last made against the GPT fork's `main` at `3cd7921`
+(PR #222, 2026-10-19). Its knowledge layer is the same as at `d30cb3c`, the
+commit an earlier comparison named: `git diff d30cb3c 3cd7921 -- src/knowledge
+docs/knowledge` is empty, and the counts below were recomputed from both
+catalogues on that date. It rests on reading its code and documents, not on
+running its tests.
 
 ## What the two forks share
 
@@ -88,8 +91,17 @@ A field with no counterpart is dropped when translating a case, never guessed.
   (`AREA-TOPIC-NNN`, `minimumCases`, evidence `single-sample`, `multi-sample` or
   `externally-confirmed`); there it is TypeScript with `implementation`
   `{path, symbol}`, `prerequisites`, `scope`, `limitations` and evidence
-  `reviewed-samples`, `single-sample` or `synthetic-only`. Only the hub rule
-  exists in both.
+  `reviewed-samples`, `single-sample` or `synthetic-only`. The GPT fork's
+  registry has four rules (the AMI single-FormSet hub, an Award legacy LHA
+  inventory, Phoenix fixed-allocation LH5 reconstruction and UEFI fixed-size
+  uncompressed reconstruction); this fork has three (`AMI-FLAGS-001`,
+  `AMI-HUB-001`, `AMI-NEST-001`). Only the hub rule exists in both.
+- **Brand table.** The GPT fork derives its 15 branded observations from its
+  cases, so a hash lives in one place. This fork keeps a separate table in
+  `brandKnowledge.ts` next to the cases. That duplication let a 65-character
+  transcription of the ASUS Sabertooth Z97 hash stay in this fork's table, where
+  it could never match; the GPT fork had already repaired it, and this fork's
+  table now holds the 64-character value its own case file has.
 
 ## Case (`FirmwareCase`), this fork
 
@@ -194,4 +206,7 @@ fork's own policy.
 
 These need a decision from both sides before anything is aligned further: the
 generation policy, the similarity rule, the container values for capsules, and
-whether to converge on one file format or keep translating.
+whether to converge on one file format or keep translating. The GPT fork's
+knowledge layer has not changed since the first comparison, so none of the four
+has moved and none is settled in writing by both sides. Until one is, a case
+moves between the forks only by hand, as above.

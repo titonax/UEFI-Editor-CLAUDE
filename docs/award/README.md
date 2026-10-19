@@ -16,7 +16,8 @@ The image holds a chain of LHA **level-1** entries (`-lh5-` compressed or
 - In a level-1 header the *skip size* covers the extended headers as well as the
   payload, so the payload starts after the extended-header chain and its packed
   size is `skip size - extended headers`.
-- The sample chains 23 modules: `R01A2.BIN` (the 128 KB system BIOS),
+- The sample chains 23 modules (19 `-lh5-` and 4 stored `-lh0-`; the GPT fork's
+  page `docs/award/emachines-el1200-r01a2.md` says all 23 are `-lh5-`): `R01A2.BIN` (the 128 KB system BIOS),
   `awardext.rom`, `_EN_CODE.BIN` (setup strings), `_ITEM.BIN` (setup items),
   `_DMI.BIN`, `ACPITBL.BIN`, option ROMs, AGESA blobs and logos.
 - Every `-lh5-` module decompresses to exactly its declared size with the Phoenix
