@@ -4,17 +4,22 @@ What is open, in what order, and what each item needs. Written 2026-10-18.
 `CLAUDE.md` still governs how every item is done (tests first, no firmware in
 the repo, evidence is not fact, nothing flashed).
 
-The scheduled hourly task works from this file: it takes **one** item whose
-status is `Ready`, does it on its own branch with a pull request, and updates
-this file in the same change. If no item is `Ready` it does nothing. Do not
-add a `Ready` item unless it really can be finished with code and the data
-already in the repository.
+The scheduled hourly task works from this file: it takes **one** `Ready` item,
+in the order of "Pick order" below, does it on its own branch with a pull
+request, and updates this file in the same change. If no item is `Ready` it
+does nothing. Do not add a `Ready` item unless it really can be finished with
+code and the data already in the repository.
+
+Pick order: G1, W1, G2a, T1, D1, R1, R2, G2b, A4. Items that touch behaviour
+users see (G1, G2a) go first; the two file splits (R1, R2) go after the test
+and docs items so they start from a documented base.
 
 | Status | Meaning |
 | --- | --- |
 | Ready | Code and repository data are enough. |
 | Needs sample | Cannot be done without a real firmware image that is not in the repository. Nobody may fabricate one. |
 | Needs decision | The owner (or both forks) must choose first. |
+| Needs access | Approved, but it needs to read the GPT fork, which the hourly task cannot reach. A session with that access does it. |
 | Deferred | The owner postponed it explicitly. Do not start. |
 | Blocked | Waits for another item; the id is given. |
 
@@ -57,12 +62,25 @@ could not be re-read when this was written, so check before starting any item.
 | Id | Status | Item | Done when |
 | --- | --- | --- | --- |
 | G1 | Ready | Name Hide/Show in the Change queue. Today a Hide/Show done by relocating a tab's Ref is worded as a "Move menu X" because the diff has the same shape (see `docs/ami/change-queue.md`). `RefPrompt` already carries `hiddenByTabToggle` and `repositionedWithinForm` from `tabVisibility.ts`; use them instead of adding an `ifrEdits` log. | The queue says Hide or Show for tab-toggle relocations and Move for the Move dialog, with a test for each, and `change-queue.md` loses its scope-cut section. Check how Show clears the markers first. |
-| G2 | Needs decision | UI parity: visibility-gate badges per item, per-item Hide/Show/Move in the tree, the manufacturer selector. Compare with what this fork already has before choosing. | A list of what is actually missing, agreed by the owner. |
+| G2a | Ready | An optional **Manufacturer** selector on the upload screen. `classifyBrand` already takes a `declaredBrand` ("user-supplied" signal, ranked below an exact documented SHA-256 and above marker/filename matches) but no screen passes one. | The selector lists `supportedBrands`, its choice reaches `classifyBrand`, the report shows the resulting brand and its basis, a choice that disagrees with a documented hash is shown as a disagreement rather than overriding it, and a component test covers each. |
+| G2b | Ready | Audit this fork's UI against what the GPT fork's screens showed, as seen in the owner's screenshots: a per-item visibility-gate badge ("hidden when true" / "no visibility gate") in the menu tree, per-item Hide / Show / Move controls in the tree, and the vendor badge on the upload screen. Read-only: write `docs/ui-parity.md` listing, for each, whether this fork has it (with file and component) or not. | The page exists and each missing piece is added below as its own `Ready` row with a test as its completion check. No UI is changed in this item. |
 | G3 | Deferred | **uefi-unbranded**: a vendor-neutral UEFI HII engine for Insyde and modern Phoenix UEFI firmware (the GPT fork's discovery, editing, patcher, suppression and workspace modules and its navigation table and menu actions). The owner asked that it not be forgotten and not be started yet. | Only when the owner lifts the deferral. |
-| G4 | Needs decision | The GPT fork's separate Phoenix editor (its own form UI, footer and change queue) overlaps this fork's own legacy Phoenix Setup Table work. Do not reconcile the two without direction. | The owner says which path wins or how they coexist. |
-| G5 | Needs decision | Knowledge-format interchange (`docs/knowledge-interchange.md`, "Open points"): generation policy, similarity rule, capsule container values, one format or translation. | Both sides agree; this fork's page and tests updated. |
+| G4 | Needs access | Approved by the owner on 2026-10-19 without picking a side. First step, read-only: a comparison of the GPT fork's separate Phoenix editor (its own form UI, footer and change queue) with this fork's legacy Phoenix Setup Table work, in `docs/phoenix/gpt-comparison.md`. No code is copied and neither path is removed until the owner reads it. | The page lists what each path can do, where they overlap and where they disagree, with file references on both sides. |
+| G5 | Needs access | Approved by the owner on 2026-10-19. The open points in `docs/knowledge-interchange.md` (generation policy, similarity rule, capsule container values, one format or translation) need the GPT fork's current code and its owner's agreement; this fork cannot settle them alone. First step: re-run the comparison against the GPT fork's current `main` and update that page and its test. | The page's comparison commit is current, and each open point is either settled in writing by both sides or restated with what is still undecided. |
 
-## 4. Keeping this file true
+## 4. Code health
+
+All of these keep behaviour identical. Tests stay green before and after, and
+public exports and test names do not change.
+
+| Id | Status | Item | Done when |
+| --- | --- | --- | --- |
+| T1 | Ready | A component test for `ChangeQueueDialog` (no test file today): the metrics badges, an entry's checkbox pausing it, remove, clear, the error and warning alerts, the empty state, and the "Plan applied" state. | `ChangeQueueDialog.test.tsx` covers each, and `npm test` is green. |
+| D1 | Ready | Bring the module map in `src/components/scripts/README.md` up to date: 13 of the 55 non-test modules in the folder are not named there (the Award, change-queue and Phoenix modules among them). | Every non-test module in `src/components/scripts/` and `src/components/ChangeQueue/` is named in the map, checked against `ls`. |
+| R1 | Ready | Split `amiFirmwareImage.ts` (873 lines, named in `CLAUDE.md`) along its own seams (vendor and brand signatures, container detection, generation assessment, setup-profile inspection). | No resulting file over about 600 lines, `amiFirmwareImage.ts` keeps re-exporting what other modules import, and the full suite passes unchanged. |
+| R2 | Ready | Split `menuTree.ts` (806 lines) the same way. | Same conditions as R1. |
+
+## 5. Keeping this file true
 
 - Change an item's status in the same pull request that changes the code.
 - When a `Needs sample` item gets its sample, say so here and set it to `Ready`.
