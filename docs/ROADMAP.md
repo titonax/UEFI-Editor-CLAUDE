@@ -5,14 +5,20 @@ What is open, in what order, and what each item needs. Written 2026-10-18.
 the repo, evidence is not fact, nothing flashed).
 
 The scheduled hourly task works from this file: it takes **one** `Ready` item,
-in the order of "Pick order" below, does it on its own branch with a pull
-request, and updates this file in the same change. If no item is `Ready` it
+in the order of "Pick order" below (skipping any that are `Blocked`), does it
+on its own branch with a pull request, and updates this file in the same
+change. The owner allowed it to merge its own pull requests on 2026-10-21, but
+only when every check on the pull request has passed and it merges cleanly; a
+red or pending check leaves the pull request open. If no item is `Ready` it
 does nothing. Do not add a `Ready` item unless it really can be finished with
 code and the data already in the repository.
 
-Pick order: G1, G5a, P1, G2a, T1, D1, R1, R2, G2b, A4. Items that touch behaviour
-users see (G1, G2a) go first; the two file splits (R1, R2) go after the test
-and docs items so they start from a documented base.
+Pick order: P1, P2, P3, P4, G1, G5a, G2a, T1, D1, R1, R2, G2b, A4. The staged
+Phoenix port (P1 to P4) goes first because the owner chose it and asked for P1
+before anything else; each stage waits for the one before it to merge. After
+that, items that touch behaviour users see (G1, G2a) go first, and the two file
+splits (R1, R2) go after the test and docs items so they start from a
+documented base.
 
 | Status | Meaning |
 | --- | --- |
