@@ -112,3 +112,10 @@ decoders, never flashed; a port inherits that limit and should say so.
 
 What a decision needs from the owner: which option, and whether a Phoenix
 image written by this fork is something this fork should offer at all.
+
+## Decision
+
+On 2026-10-21 the owner chose option 2, porting in stages behind this fork's
+queue. The stages are rows P1 to P4 of `docs/ROADMAP.md`; the GPT fork's
+queue sessions, callback tracing, menu graph and separate workspace are left
+for a later choice (P5).
